@@ -61,16 +61,33 @@ function showInfo(target) {
     const t = target.tower;
     const def = g.defs.towers[t.type];
     const st = g.towerStats(t);
+    const combos = g.zones
+      .filter((z) => z.a === t.id || z.b === t.id)
+      .map((z) => `<span>${z.def.kanji} ${z.def.name}</span>`)
+      .join('');
+    const next = t.level < g.rules.maxTowerLevel ? 'Glissez sur une lanterne identique pour fusionner.' : 'Niveau maximum.';
     hud.showInfo(
       `<h3>${def.kanji} ${def.name} · N${t.level}</h3>
        <div class="sub">${def.role} — ${def.desc}</div>
        <div class="rows">
          <span>Dégâts <b>${st.damage}</b></span><span>Cadence <b>${st.rate}/s</b></span>
          <span>Portée <b>${st.range}</b></span><span>Investi <b>${t.invested}</b></span>
+         ${combos ? `<span style="grid-column:1/-1">Combos : ${combos}</span>` : ''}
+         <span style="grid-column:1/-1;opacity:.7">${next}</span>
        </div>`,
       [
         { label: `Vendre +${g.sellValue(t)}`, cls: 'primary', run: () => g.sellTower(t.id) },
         { label: 'Fermer', run: () => (input.ui.selectedTower = null) },
+      ],
+    );
+  } else if (target.kind === 'stone') {
+    const refund = Math.floor(g.stoneCost() * g.rules.stoneRefund);
+    hud.showInfo(
+      `<h3>石 Pierre</h3>
+       <div class="sub">Détourne les yokai terrestres. Pierres restantes : ${g.stonesLeft()}</div>`,
+      [
+        { label: `Retirer +${refund}`, cls: 'primary', run: () => g.removeStone(target.c, target.r) },
+        { label: 'Fermer' },
       ],
     );
   }
@@ -146,4 +163,4 @@ window.__renderer = renderer;
 window.__state = state;
 
 resize();
-startLevel('1-1').then(() => requestAnimationFrame(frame));
+startLevel(new URLSearchParams(location.search).get('level') || '1-1').then(() => requestAnimationFrame(frame));

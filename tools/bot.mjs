@@ -118,21 +118,41 @@ export function bot(strategy, game) {
   function tryStone() {
     if (!opt.stones || !game.placeStone || !game.level.stones) return false;
     const cost = game.stoneCost();
-    if (game.gold < cost + 40) return false;
+    if (game.stonesLeft() <= 0 || game.gold < cost + 30) return false;
     const base = routeLength();
-    let best = -1;
-    let bestGain = 0;
+    const cands = [];
     for (let i = 0; i < g.size; i++) {
       if (g.type(i) !== T.OPEN || g.stone[i]) continue;
-      if (!game.canPlaceStone(g.col(i), g.row(i)).ok) continue;
-      g.stone[i] = 1;
+      if (game.canPlaceStone(g.col(i), g.row(i)).ok) cands.push(i);
+    }
+    const lenWith = (list) => {
+      for (const i of list) g.stone[i] = 1;
       game.flow.compute();
-      const len = routeLength();
-      g.stone[i] = 0;
+      let ok = g.spawns.every((s) => game.flow.dist[s] >= 0);
+      const len = ok ? routeLength() : -1;
+      for (const i of list) g.stone[i] = 0;
       game.flow.compute();
-      if (len - base > bestGain) {
-        bestGain = len - base;
+      return len;
+    };
+    let best = -1;
+    let bestGain = 0;
+    for (const i of cands) {
+      const gain = lenWith([i]) - base;
+      if (gain > bestGain) {
+        bestGain = gain;
         best = i;
+      }
+    }
+    // Aucun gain immédiat : on regarde les paires (un seul caillou ne suffit pas toujours).
+    if (best < 0 && game.stonesLeft() >= 2 && game.gold >= cost * 2 + 30) {
+      for (let a = 0; a < cands.length; a++) {
+        for (let b = a + 1; b < cands.length; b++) {
+          const gain = lenWith([cands[a], cands[b]]) - base;
+          if (gain > bestGain) {
+            bestGain = gain;
+            best = cands[a];
+          }
+        }
       }
     }
     if (best >= 0 && bestGain >= 1) {

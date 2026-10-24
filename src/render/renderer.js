@@ -7,6 +7,7 @@ import { drawEnemy } from './enemies.js';
 import { Fx, ELEMENT_COLORS } from './fx.js';
 import { INK, PALETTE, withAlpha, wash } from './brush.js';
 import { T } from '../core/grid.js';
+import { drawZones, drawComboLinks, drawTornado, drawStone } from './combos.js';
 
 export class Renderer {
   constructor(canvas) {
@@ -102,6 +103,7 @@ export class Renderer {
     this.drawSpawns(ctx, ts, time);
     this.drawRoutes(ctx, ts, time);
     this.drawGoalGlow(ctx, ts, time);
+    drawZones(ctx, game, ts, time);
     if (this.drawUnderlay) this.drawUnderlay(ctx, ts, time, ui);
 
     // Aperçus de pose / portée sous les entités.
@@ -115,6 +117,14 @@ export class Renderer {
       const ey = e.py + (e.y - e.py) * alpha;
       items.push({ y: e.flying ? ey + 5 : ey, k: 1, o: e, ex, ey });
     }
+    const g = game.grid;
+    for (let i = 0; i < g.size; i++) {
+      if (!g.stone[i]) continue;
+      const sx = g.cx(i) * ts;
+      const sy = g.cy(i) * ts;
+      items.push({ y: g.cy(i) - 0.1, k: 2, draw: (c) => drawStone(c, sx, sy, ts, i * 17 + 3) });
+    }
+    for (const t of game.tornadoes) items.push({ y: t.y + 0.2, k: 2, draw: (c, s, tm) => drawTornado(c, t, s, tm) });
     if (this.extraDrawables) this.extraDrawables(items);
     items.sort((a, b) => a.y - b.y);
     for (const it of items) {
@@ -136,6 +146,7 @@ export class Renderer {
       }
     }
 
+    drawComboLinks(ctx, game, ts, time);
     this.drawProjectiles(ctx, ts, time);
     this.fx.drawParts(ctx, ts);
     if (this.drawOverlayExtra) this.drawOverlayExtra(ctx, ts, time, ui);
@@ -313,6 +324,16 @@ export class Renderer {
       const y = (r + 0.5) * ts;
       this.drawRange(ctx, x, y, def.levels[0].range, ts, valid ? ELEMENT_COLORS[type]?.main || PALETTE.gold : PALETTE.vermillion, this.time);
       drawTower(ctx, x, y, ts, def, 1, this.time, { alpha: valid ? 0.6 : 0.3 });
+    }
+    // Outil pierre : cases de gravier ouvert disponibles.
+    if (ui.tool === 'stone') {
+      const g = game.grid;
+      ctx.strokeStyle = withAlpha(PALETTE.indigoLight, 0.5 + Math.sin(this.time * 4) * 0.2);
+      ctx.lineWidth = Math.max(1.5, ts * 0.04);
+      for (let i = 0; i < g.size; i++) {
+        if (g.type(i) !== T.OPEN || g.stone[i]) continue;
+        ctx.strokeRect(g.col(i) * ts + ts * 0.12, g.row(i) * ts + ts * 0.12, ts * 0.76, ts * 0.76);
+      }
     }
     // Mise en évidence des cases constructibles quand une lanterne est sélectionnée.
     if (ui.tool && ui.tool !== 'stone' && !ui.drag) {

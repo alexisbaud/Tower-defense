@@ -173,6 +173,59 @@ export class Fx {
         this.mark(ev.c, ev.r);
         break;
       }
+      case 'fuse': {
+        const t = ev.tower;
+        const c = col(t.type);
+        this.ring(t.x, t.y - 0.2, 0.1, 1.1, PALETTE.gold, 0.7, 0.08);
+        this.ring(t.x, t.y - 0.2, 0.1, 0.7, c.main, 0.5, 0.06);
+        this.burst(t.x, t.y - 0.3, 22, 'ember', PALETTE.goldLight, 2.6, 0.9, 0.06, { g: -1.2 });
+        this.burst(t.x, t.y - 0.3, 10, 'dot', c.light, 1.8, 0.8, 0.05);
+        // traînée depuis la lanterne absorbée
+        for (let i = 0; i < 8; i++) {
+          const k = i / 8;
+          this.add({ x: ev.from.x + (t.x - ev.from.x) * k, y: ev.from.y + (t.y - ev.from.y) * k, vx: 0, vy: -0.3, kind: 'wisp', color: c.light, life: 0.5 + k * 0.3, size: 0.08 });
+        }
+        this.text(t.x, t.y - 0.9, ev.level === 3 ? '極' : '合', PALETTE.vermillion, 0.5);
+        this.addShake(0.15);
+        break;
+      }
+      case 'stone': {
+        const x = ev.c + 0.5;
+        const y = ev.r + 0.5;
+        this.burst(x, y + 0.2, 12, 'dust', '#b59a6a', 1.4, 0.6, 0.09);
+        this.ring(x, y, 0.1, 0.6, INK, 0.4, 0.05);
+        if (ev.delta > 0) this.text(x, y - 0.4, `+${ev.delta} cases`, PALETTE.indigoLight, 0.3);
+        this.addShake(0.06);
+        break;
+      }
+      case 'unstone': {
+        const x = ev.c + 0.5;
+        const y = ev.r + 0.5;
+        this.burst(x, y, 10, 'dust', '#b59a6a', 1.2, 0.5, 0.08);
+        if (ev.refund) this.text(x, y - 0.4, `+${ev.refund}`, PALETTE.gold, 0.3);
+        break;
+      }
+      case 'combo': {
+        this.ring(ev.x, ev.y, 0.1, ev.def.radius, ev.def.color, 0.8, 0.07);
+        this.burst(ev.x, ev.y, 14, 'dot', ev.def.color, 1.6, 0.8, 0.05);
+        this.text(ev.x, ev.y - 0.6, ev.def.name, PALETTE.vermillion, 0.3);
+        break;
+      }
+      case 'pulse': {
+        const z = ev.zone;
+        if (z.def.id === 'frost') {
+          this.ring(z.x, z.y, 0.2, z.radius, '#bfe3ff', 0.6, 0.1);
+          this.burst(z.x, z.y, 18, 'snow', '#ffffff', 2.5, 0.8, 0.05, { drag: 0.94 });
+        } else {
+          this.ring(z.x, z.y, 0.2, z.radius, z.def.color, 0.6, 0.08);
+        }
+        break;
+      }
+      case 'tornado': {
+        const t = ev.tornado;
+        this.burst(t.x, t.y, 10, 'ember', '#ffb35c', 1.5, 0.6, 0.05, { g: -1 });
+        break;
+      }
       case 'earlyBonus':
         break;
       default:

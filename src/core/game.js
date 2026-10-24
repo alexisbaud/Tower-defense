@@ -3,8 +3,9 @@
 // file `events` remplie pendant `update()`.
 
 import { Grid, T } from './grid.js';
-import { FlowField } from './flowfield.js';
+import { FlowField, bfs } from './flowfield.js';
 import { Rng } from './rng.js';
+import { buildComboIndex, computeZones, updateZones, updateTornadoes, comboKey } from './combos.js';
 
 export const STEP = 1 / 60;
 
@@ -35,6 +36,10 @@ export class Game {
     this.towers = [];
     this.enemies = [];
     this.projectiles = [];
+    this.zones = []; // zones de synergie (combos)
+    this.tornadoes = [];
+    this.comboIndex = buildComboIndex(defs.combos);
+    this.stonesPlaced = 0;
 
     this.waves = level.waves;
     this.waveIndex = -1; // index de la dernière vague lancée
@@ -139,7 +144,121 @@ export class Game {
   }
 
   // Appelé à chaque modification de l'ensemble des tours.
-  onTowersChanged() {}
+  onTowersChanged() {
+    computeZones(this);
+  }
+
+  comboFor(a, b) {
+    return this.comboIndex.get(comboKey(a, b)) || null;
+  }
+
+  // ───────────────────────── fusion ─────────────────────────
+
+  canFuse(srcId, dstId) {
+    const a = this.towerById(srcId);
+    const b = this.towerById(dstId);
+    if (!a || !b || a === b) return { ok: false, reason: 'mismatch' };
+    if (this.state === 'won' || this.state === 'lost') return { ok: false, reason: 'over' };
+    if (a.type !== b.type || a.level !== b.level) return { ok: false, reason: 'mismatch' };
+    if (a.level >= this.rules.maxTowerLevel) return { ok: false, reason: 'level' };
+    return { ok: true };
+  }
+
+  // Glisser `src` sur `dst` : `src` disparaît, `dst` monte d'un niveau.
+  fuse(srcId, dstId) {
+    if (!this.canFuse(srcId, dstId).ok) return null;
+    const src = this.towerById(srcId);
+    const dst = this.towerById(dstId);
+    this.towers = this.towers.filter((t) => t !== src);
+    dst.level += 1;
+    dst.invested += src.invested;
+    dst.id = this.nextId++; // nouvelle identité : utile au rembobinage (écho)
+    dst.bornAt = this.time;
+    dst.cooldown = 0.3;
+    this.emit('fuse', { tower: dst, from: { x: src.x, y: src.y }, level: dst.level });
+    this.onTowersChanged();
+    return dst;
+  }
+
+  // ───────────────────────── pierres (chemin modifiable) ─────────────────────────
+
+  stoneConf() {
+    const s = this.level.stones;
+    if (!s) return null;
+    const o = typeof s === 'object' ? s : {};
+    return { cost: o.cost ?? this.rules.stoneCost, max: o.max ?? this.rules.stoneMax };
+  }
+
+  stoneCost() {
+    return this.stoneConf()?.cost ?? 0;
+  }
+
+  stonesLeft() {
+    const conf = this.stoneConf();
+    return conf ? conf.max - this.stonesPlaced : 0;
+  }
+
+  routeLength() {
+    let n = 0;
+    for (const s of this.grid.spawns) n += Math.max(0, this.flow.dist[s]);
+    return n;
+  }
+
+  canPlaceStone(c, r) {
+    const conf = this.stoneConf();
+    if (!conf) return { ok: false, reason: 'unknown' };
+    if (this.state === 'won' || this.state === 'lost') return { ok: false, reason: 'over' };
+    const g = this.grid;
+    if (!g.inBounds(c, r)) return { ok: false, reason: 'bounds' };
+    const i = g.idx(c, r);
+    if (g.type(i) !== T.OPEN) return { ok: false, reason: 'open' };
+    if (g.stone[i]) return { ok: false, reason: 'occupied' };
+    if (this.stonesPlaced >= conf.max) return { ok: false, reason: 'limit' };
+    if (this.gold < conf.cost) return { ok: false, reason: 'gold' };
+    for (const e of this.enemies) {
+      if (!e.alive || e.flying) continue;
+      if (e.cur === i || e.target === i || g.tileAt(e.x, e.y) === i) return { ok: false, reason: 'occupiedEnemy' };
+    }
+    // Le passage ne doit jamais être totalement bloqué.
+    const dist = bfs(g, i);
+    for (const s of g.spawns) if (dist[s] < 0) return { ok: false, reason: 'blocked' };
+    for (const e of this.enemies) {
+      if (!e.alive || e.flying) continue;
+      if (dist[e.cur] < 0 || dist[e.target] < 0) return { ok: false, reason: 'blocked' };
+    }
+    return { ok: true };
+  }
+
+  placeStone(c, r) {
+    const check = this.canPlaceStone(c, r);
+    if (!check.ok) {
+      this.emit('reject', { c, r, reason: check.reason });
+      return false;
+    }
+    const before = this.routeLength();
+    const i = this.grid.idx(c, r);
+    this.grid.stone[i] = 1;
+    this.gold -= this.stoneCost();
+    this.stonesPlaced++;
+    this.flow.compute();
+    this.emit('stone', { c, r, delta: this.routeLength() - before });
+    return true;
+  }
+
+  removeStone(c, r) {
+    const g = this.grid;
+    if (!g.inBounds(c, r)) return false;
+    const i = g.idx(c, r);
+    if (!g.stone[i]) return false;
+    const before = this.routeLength();
+    g.stone[i] = 0;
+    this.stonesPlaced--;
+    const refund = Math.floor(this.stoneCost() * this.rules.stoneRefund);
+    this.gold += refund;
+    this.flow.compute();
+    this.emit('unstone', { c, r, refund, delta: this.routeLength() - before });
+    return true;
+  }
 
   startNextWave() {
     if (this.state !== 'build') return false;
@@ -186,6 +305,8 @@ export class Game {
     this.updateEnemies(dt);
     this.updateTowers(dt);
     this.updateProjectiles(dt);
+    updateZones(this, dt);
+    updateTornadoes(this, dt);
     this.cleanup();
     this.checkWaveEnd();
   }
@@ -524,6 +645,11 @@ export class Game {
     e.slowT = Math.max(e.slowT, duration);
   }
 
+  applyStun(e, duration) {
+    const resist = this.defs.enemies[e.type].stunResist ?? 0;
+    e.stunT = Math.max(e.stunT, duration * (1 - resist));
+  }
+
   applyBurn(e, dps, duration) {
     if (this.immuneTo(e, 'fire')) return;
     e.burnDps = Math.max(e.burnT > 0 ? e.burnDps : 0, dps);
@@ -670,6 +796,7 @@ export class Game {
     if (!e.alive) return;
     if (st.burn) this.applyBurn(e, st.burn.dps * pw, st.burn.duration);
     if (st.slow) this.applySlow(e, 1 - (1 - st.slow.factor) * pw, st.slow.duration);
+    if (st.stun && !this.immuneTo(e, 'earth')) this.applyStun(e, st.stun * pw);
     if (st.knockback && !this.immuneTo(e, 'wind')) {
       const resist = this.defs.enemies[e.type].knockResist ?? 0;
       e.knock = Math.max(e.knock, st.knockback * pw * (1 - resist));

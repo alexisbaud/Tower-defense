@@ -12,6 +12,7 @@
 //   splash       rayon de dégâts de zone en cases
 //   pierce       0..1, part de l'armure ignorée
 //   airMultiplier multiplicateur de dégâts contre les volants
+//   stun         durée d'étourdissement infligée à l'impact (s)
 export default {
   fire: {
     name: 'Lanterne du Feu',
@@ -43,6 +44,38 @@ export default {
       { range: 2.2, rate: 1.0, damage: 6, slow: { factor: 0.6, duration: 1.4 }, projectileSpeed: 8 },
       { range: 2.5, rate: 1.2, damage: 13, slow: { factor: 0.5, duration: 1.8 }, splash: 0.6, projectileSpeed: 9 },
       { range: 2.9, rate: 1.5, damage: 24, slow: { factor: 0.4, duration: 2.2 }, splash: 0.9, projectileSpeed: 10 },
+    ],
+  },
+  wind: {
+    name: 'Lanterne du Vent',
+    kanji: '風',
+    role: 'Recul',
+    desc: 'Des bourrasques qui repoussent les yokai. Redoutable contre les volants.',
+    cost: 55,
+    color: '#5f8f6a',
+    glow: '#d9f2d0',
+    targets: { ground: true, air: true },
+    projectile: 'gust',
+    levels: [
+      { range: 2.3, rate: 0.9, damage: 7, knockback: 0.5, airMultiplier: 2, projectileSpeed: 12 },
+      { range: 2.6, rate: 1.1, damage: 15, knockback: 0.8, airMultiplier: 2, splash: 0.5, projectileSpeed: 13 },
+      { range: 3.0, rate: 1.3, damage: 30, knockback: 1.1, airMultiplier: 2.2, splash: 0.8, projectileSpeed: 14 },
+    ],
+  },
+  earth: {
+    name: 'Lanterne de la Terre',
+    kanji: '土',
+    role: 'Zone',
+    desc: 'Projette des rochers qui écrasent tout autour de l’impact et ignorent les carapaces. Ne touche pas les volants.',
+    cost: 65,
+    color: '#8a6a32',
+    glow: '#f0c870',
+    targets: { ground: true, air: false },
+    projectile: 'boulder',
+    levels: [
+      { range: 2.2, rate: 0.55, damage: 24, splash: 0.85, pierce: 1, projectileSpeed: 5 },
+      { range: 2.5, rate: 0.65, damage: 52, splash: 1.0, pierce: 1, projectileSpeed: 5.5 },
+      { range: 2.8, rate: 0.75, damage: 110, splash: 1.2, pierce: 1, stun: 0.4, projectileSpeed: 6 },
     ],
   },
 };

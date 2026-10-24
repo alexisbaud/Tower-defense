@@ -15,6 +15,6 @@ export default [
       accent: '#c8402a',
       ambient: 'petals', // particules d'ambiance : petals | snow | leaves | fireflies
     },
-    levels: ['1-1'],
+    levels: ['1-1', '1-2'],
   },
 ];

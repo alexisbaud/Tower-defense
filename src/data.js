@@ -3,8 +3,9 @@ import towers from '../data/towers.js';
 import enemies from '../data/enemies.js';
 import rules from '../data/rules.js';
 import worlds from '../data/worlds.js';
+import combos from '../data/combos.js';
 
-export const defs = { towers, enemies, rules };
+export const defs = { towers, enemies, rules, combos };
 export { worlds };
 
 const cache = new Map();
