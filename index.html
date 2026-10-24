@@ -58,7 +58,6 @@
           </div>
           <div class="wave-label" id="hud-wave"><small>Vague</small><b>0<i>/0</i></b></div>
           <div class="hud-buttons">
-            <button class="icon-btn" id="btn-mute" aria-label="Son"><span>音</span></button>
             <button class="icon-btn" id="btn-speed" aria-label="Vitesse"><span>×1</span></button>
             <button class="icon-btn" id="btn-pause" aria-label="Pause"><span class="ico-pause" aria-hidden="true"></span></button>
           </div>
@@ -66,7 +65,8 @@
         <div id="stage">
           <canvas id="board"></canvas>
           <div id="bossbar" class="bossbar hidden"><span class="boss-name"></span><div class="boss-track"><div class="boss-fill"></div></div></div>
-          <div id="intro" class="intro hidden"></div>
+          <div id="intro" class="intro hidden" role="button" aria-label="Fiche du yokai"></div>
+          <div id="tower-bar" class="tower-bar hidden" role="toolbar" aria-label="Actions de la lanterne"></div>
         </div>
         <footer id="hud-bottom" class="hud-bottom">
           <div class="action-row">
@@ -77,14 +77,17 @@
                 <div class="rewind-knob" id="rewind-knob">巻</div>
               </div>
             </div>
-            <button id="btn-wave" class="wave-btn"><span class="wave-btn-kanji">波</span><span id="btn-wave-label">Vague</span></button>
+            <div id="wave-preview" class="wave-preview" aria-label="Prochaine vague"></div>
+            <button id="btn-wave" class="wave-btn"><span class="wave-btn-kanji" id="btn-wave-kanji">波</span><span class="wave-btn-text"><span id="btn-wave-label">Vague</span><small id="btn-wave-sub"></small></span></button>
           </div>
           <div id="palette" class="palette"></div>
         </footer>
+        <button id="btn-undo" class="undo-pill hidden" aria-label="Annuler la pose"><span class="undo-ico" aria-hidden="true">↶</span>Annuler<i class="undo-bar"></i></button>
         <div id="toast" class="toast" role="status" aria-live="polite"></div>
         <div id="banner" class="banner"></div>
         <div id="info" class="sheet hidden"></div>
         <div id="hint" class="hint hidden"></div>
+        <div id="hold" class="hold hidden" aria-hidden="true"><svg viewBox="0 0 80 80"><circle class="hold-bg" cx="40" cy="40" r="31"/><circle class="hold-ink" cx="40" cy="40" r="31"/><circle class="hold-fill" cx="40" cy="40" r="31"/></svg></div>
       </section>
       <div id="modal" class="modal hidden"><div class="modal-card"></div></div>
     </div>

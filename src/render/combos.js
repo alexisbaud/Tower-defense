@@ -509,8 +509,10 @@ function linkGeom(a, b, ts) {
   const ay = (a.y - 0.25) * ts;
   const bx = b.x * ts;
   const by = (b.y - 0.25) * ts;
-  // la courbe s'écarte des corps des lanternes ; le sceau se pose en son milieu
-  const bow = 0.36;
+  // la courbe s'écarte des corps des lanternes ; le sceau se pose en son milieu.
+  // Paire verticale : le sceau s'écarte d'environ une demi-case sur le côté pour ne
+  // pas cacher le toit (niveau) des lanternes (D21).
+  const bow = Math.abs(bx - ax) < ts * 0.05 ? 0.84 : 0.36;
   const mx = (ax + bx) / 2 + (by - ay) * bow;
   const my = (ay + by) / 2 - (bx - ax) * bow;
   const sx = (ax + bx) / 2 + (by - ay) * bow * 0.5;
@@ -632,7 +634,7 @@ export function drawComboLinks(ctx, game, ts, time) {
       wash(ctx, px, py, ts * 0.13, col, Math.sin(u * Math.PI) * 0.9 * pop);
     }
     // sceau qui se pose comme un tampon (léger rebond)
-    const s = Math.round(ts * 0.32);
+    const s = Math.max(16, Math.round(ts * 0.36)); // sceau ≥ 16 px (B18)
     const S = sealSprite(z.def.kanji || '合', s, sc); // kanji facultatif dans les données
     const k = age < 0.35 ? 1.6 - easeOutBack(age / 0.35) * 0.6 : 1;
     ctx.globalAlpha = a0 * pop;
@@ -659,40 +661,120 @@ export function drawComboLinks(ctx, game, ts, time) {
   ctx.globalAlpha = a0;
 }
 
-// Aperçu d'un combo pendant la pose : portée pointillée, lien et sceau qui
-// palpitent, nom du combo au-dessus du sceau.
-export function drawComboPreview(ctx, a, b, def, ts, time) {
+// Aperçu d'un combo pendant la pose : zone pointillée, lien d'encre lumineux et
+// sceau qui palpitent, nom du combo sur une pastille lisible au-dessus du sceau.
+// opts.dim : pose refusée (or insuffisant…) — même aperçu, en grisé.
+export function drawComboPreview(ctx, a, b, def, ts, time, opts = {}) {
   const G = linkGeom(a, b, ts);
   const { sc } = scaleOf(ctx);
+  const dim = !!opts.dim;
   const a0 = ctx.globalAlpha;
   const pulse = 0.75 + 0.25 * Math.sin(time * 5);
-  ctx.globalAlpha = a0 * 0.7 * pulse;
-  ctx.strokeStyle = mix(def.color, INK, 0.4);
+  const col = dim ? '#8a8578' : def.color || PALETTE.gold;
+  ctx.globalAlpha = a0 * 0.75 * pulse;
+  ctx.strokeStyle = mix(col, INK, 0.4);
   ctx.lineWidth = Math.max(1.2, ts * 0.035);
   ctx.lineCap = 'round';
   ctx.setLineDash([ts * 0.02, ts * 0.11]);
   ctx.lineDashOffset = -time * ts * 0.3;
   ctx.beginPath();
-  ctx.arc((a.x + b.x) * 0.5 * ts, (a.y + b.y) * 0.5 * ts, (def.radius ?? 1.5) * ts, 0, TAU);
+  ctx.arc((a.x + b.x) * 0.5 * ts, (a.y + b.y) * 0.5 * ts, (opts.radius ?? def.radius ?? 1.5) * ts, 0, TAU);
   ctx.stroke();
   ctx.setLineDash([]);
-  ctx.globalAlpha = a0 * pulse;
-  const pts = quadPts(G.ax, G.ay, G.mx, G.my, G.bx, G.by, 12);
-  brushStroke(ctx, pts, Math.max(2, ts * 0.06), withAlpha(PALETTE.vermillion, 0.85), { taperIn: 0.3, taperOut: 0.3 });
-  const S = sealSprite(def.kanji, Math.round(ts * 0.34), sc);
+  // trait d'encre lumineux : halo clair, corps d'encre, cœur à la couleur du combo
+  const pts = quadPts(G.ax, G.ay, G.mx, G.my, G.bx, G.by, 14);
+  const w = Math.max(2, ts * 0.065);
+  ctx.globalAlpha = a0;
+  if (!dim) brushStroke(ctx, pts, w * 3.4, withAlpha(PALETTE.goldLight, 0.32 + 0.18 * pulse), { taperIn: 0.4, taperOut: 0.4 });
+  brushStroke(ctx, pts, w * 1.5, withAlpha(INK, dim ? 0.45 : 0.75), { taperIn: 0.3, taperOut: 0.3 });
+  brushStroke(ctx, pts, w * 0.75, withAlpha(dim ? '#d9ccaa' : mix(col, '#ffffff', 0.35), 0.95), { taperIn: 0.35, taperOut: 0.35 });
+  // étincelles qui courent le long du lien
+  if (!dim) {
+    for (let i = 0; i < 2; i++) {
+      const t = (time * 0.9 + i * 0.5) % 1;
+      const v = 1 - t;
+      const px = v * v * G.ax + 2 * v * t * G.mx + t * t * G.bx;
+      const py = v * v * G.ay + 2 * v * t * G.my + t * t * G.by;
+      wash(ctx, px, py, ts * 0.16, PALETTE.goldLight, Math.sin(t * Math.PI) * 0.9);
+    }
+  }
+  ctx.globalAlpha = a0 * (dim ? 0.55 : pulse);
+  const S = sealSprite(def.kanji || '合', Math.max(18, Math.round(ts * 0.38)), sc);
   ctx.drawImage(S.c, G.sx - S.w / 2, G.sy - S.h / 2, S.w, S.h);
   ctx.globalAlpha = a0;
-  ctx.font = `800 ${Math.round(ts * 0.26)}px "Shippori Mincho", serif`;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.lineJoin = 'round';
-  ctx.lineWidth = Math.max(2, ts * 0.08);
-  ctx.strokeStyle = withAlpha(PALETTE.cream, 0.92);
-  ctx.strokeText(def.name, G.sx, G.sy - ts * 0.36);
-  ctx.fillStyle = PALETTE.vermillion;
-  ctx.fillText(def.name, G.sx, G.sy - ts * 0.36);
+  nameTag(ctx, def.name, G.sx, G.sy - ts * 0.42, ts, dim ? 'muted' : 'combo');
   ctx.lineCap = 'butt';
   ctx.lineJoin = 'miter';
+}
+
+// Lien d'un combo existant pendant une fusion : 'lost' (rouge, barré : il
+// disparaîtra) ou 'kept' (or : il reste, renforcé). Rend le rectangle de son nom
+// (les autres étiquettes l'évitent).
+export function drawLinkPreview(ctx, a, b, def, ts, time, mode = 'kept') {
+  const G = linkGeom(a, b, ts);
+  const lost = mode === 'lost';
+  const a0 = ctx.globalAlpha;
+  const pulse = 0.8 + 0.2 * Math.sin(time * 6);
+  const pts = quadPts(G.ax, G.ay, G.mx, G.my, G.bx, G.by, 14);
+  const w = Math.max(2, ts * 0.07);
+  ctx.globalAlpha = a0 * pulse;
+  if (lost) {
+    brushStroke(ctx, pts, w * 1.6, withAlpha(INK, 0.7), { taperIn: 0.2, taperOut: 0.2 });
+    ctx.save();
+    ctx.setLineDash([ts * 0.1, ts * 0.08]);
+    ctx.strokeStyle = PALETTE.vermillion;
+    ctx.lineWidth = w * 0.8;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0], pts[0][1]);
+    for (const p of pts) ctx.lineTo(p[0], p[1]);
+    ctx.stroke();
+    ctx.restore();
+    // le lien est barré d'une croix au pinceau
+    const s = ts * 0.2;
+    brushStroke(ctx, [[G.sx - s, G.sy - s], [G.sx + s, G.sy + s]], w * 1.1, PALETTE.vermillion, { taperIn: 0.1, taperOut: 0.5 });
+    brushStroke(ctx, [[G.sx + s, G.sy - s], [G.sx - s, G.sy + s]], w, PALETTE.vermillion, { taperIn: 0.1, taperOut: 0.5 });
+  } else {
+    brushStroke(ctx, pts, w * 3, withAlpha(PALETTE.goldLight, 0.4), { taperIn: 0.4, taperOut: 0.4 });
+    brushStroke(ctx, pts, w * 1.4, withAlpha(INK, 0.7), { taperIn: 0.3, taperOut: 0.3 });
+    brushStroke(ctx, pts, w * 0.8, PALETTE.gold, { taperIn: 0.3, taperOut: 0.3 });
+  }
+  ctx.globalAlpha = a0;
+  return nameTag(ctx, def.name, G.sx, G.sy - ts * 0.45, ts, lost ? 'lost' : 'kept');
+}
+
+// Nom de combo sur une pastille crème cernée d'encre (texte ≥ 12 px) ;
+// 'lost' : barré en vermillon.
+function nameTag(ctx, text, x, y, ts, tone) {
+  const size = Math.max(12, Math.round(ts * 0.29));
+  ctx.save();
+  ctx.font = `800 ${size}px "Shippori Mincho", serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const w = ctx.measureText(text).width + 12;
+  const h = size + 8;
+  const x0 = x - w / 2;
+  const y0 = y - h / 2;
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(x0, y0, w, h, h / 2);
+  else ctx.rect(x0, y0, w, h);
+  ctx.fillStyle = tone === 'kept' ? PALETTE.goldLight : withAlpha(PALETTE.cream, 0.96);
+  ctx.fill();
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = INK;
+  ctx.stroke();
+  ctx.fillStyle = tone === 'muted' ? '#4a463e' : tone === 'kept' ? INK : '#a8321f';
+  ctx.fillText(text, x, y + 0.5);
+  if (tone === 'lost') {
+    ctx.strokeStyle = '#a8321f';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x0 + 5, y + 1);
+    ctx.lineTo(x0 + w - 5, y + 1);
+    ctx.stroke();
+  }
+  ctx.restore();
+  return { x: x0, y: y0, w, h };
 }
 
 // ───────────────────────── tornade de flammes ─────────────────────────

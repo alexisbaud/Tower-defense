@@ -71,6 +71,8 @@ export class Tutorial {
   // Affiche un doigt (tap ou glissé) et une bulle à des coordonnées page.
   // opts.above : ordonnée page au-dessus de laquelle la bulle doit rester
   // (ex. haut de la barre du bas, pour ne pas couvrir le bouton de vague).
+  // opts.avoid : rectangles page que la bulle ne doit pas cacher (ce qu'elle
+  // montre : case visée et ses voisines, lanternes, sanctuaire).
   show(key, x, y, text, drag = null, opts = {}) {
     const root = this.el.parentElement.getBoundingClientRect();
     const lx = x - root.left;
@@ -87,28 +89,79 @@ export class Tutorial {
     } else {
       html += `<div class="finger" style="left:${lx}px;top:${ly}px"></div>`;
     }
-    const bx = Math.max(90, Math.min(root.width - 90, lx));
-    let by = ly - 26; // bas de la bulle, au-dessus du doigt
-    if (opts.above != null) by = Math.min(by, opts.above - root.top - 10);
-    html += `<div class="bubble" style="left:${bx}px;top:${by}px">${text}</div>`;
+    html += `<div class="bubble" style="left:${lx}px;top:${ly - 26}px">${text}</div>`;
     this.el.innerHTML = html;
-    // Garde la bulle entièrement à l'écran.
     const bubble = this.el.querySelector('.bubble');
-    const half = bubble.offsetWidth / 2;
-    const clamped = Math.max(half + 8, Math.min(root.width - half - 8, bx));
-    bubble.style.left = `${clamped}px`;
-    // La bande sous la barre du haut est réservée aux messages (toast) : si la
-    // bulle y monterait, elle passe sous le doigt.
-    const h = bubble.offsetHeight;
-    const band = this.topBand(root);
-    if (by - h < band) bubble.style.top = `${Math.max(ly + 30 + h, band + h)}px`;
+    const bw = bubble.offsetWidth;
+    const bh = bubble.offsetHeight;
+    const W = root.width;
+    // Zones à laisser visibles, en coordonnées du calque.
+    const rel = (r) => ({ l: r.left - root.left, t: r.top - root.top, r: r.right - root.left, b: r.bottom - root.top });
+    const avoid = (opts.avoid || []).map(rel);
+    avoid.push({ l: lx - 24, t: ly - 24, r: lx + 24, b: ly + 24 });
+    if (drag) avoid.push({ l: drag.x - root.left - 30, t: drag.y - root.top - 30, r: drag.x - root.left + 30, b: drag.y - root.top + 30 });
+    const goal = this.goalRect();
+    if (goal) avoid.push(rel(goal));
+    const top = this.topBand(root);
+    let bottom = this.bottomBand(root);
+    if (opts.above != null) bottom = Math.min(bottom, opts.above - root.top - 10);
+    const union = avoid.reduce((u, r) => ({ l: Math.min(u.l, r.l), t: Math.min(u.t, r.t), r: Math.max(u.r, r.r), b: Math.max(u.b, r.b) }), { l: Infinity, t: Infinity, r: -Infinity, b: -Infinity });
+    // Positions candidates (centre x, bas de la bulle y), de la plus naturelle à la plus lointaine.
+    const cands = [
+      [lx, ly - 30],
+      [lx, union.t - 8],
+      [lx, union.b + 8 + bh],
+      [lx, ly + 34 + bh],
+      [union.l - 10 - bw / 2, ly + bh / 2],
+      [union.r + 10 + bw / 2, ly + bh / 2],
+    ];
+    const hit = (a, b) => a.l < b.r && a.r > b.l && a.t < b.b && a.b > b.t;
+    let best = null;
+    for (const [cx, by] of cands) {
+      const l = Math.max(8, Math.min(W - bw - 8, cx - bw / 2));
+      const r = { l, r: l + bw, t: by - bh, b: by };
+      if (r.t < top || r.b > bottom) continue;
+      if (avoid.some((a) => hit(a, r))) continue;
+      best = r;
+      break;
+    }
+    if (!best) {
+      // repli : au-dessus du doigt, gardée à l'écran
+      const l = Math.max(8, Math.min(W - bw - 8, lx - bw / 2));
+      const by = Math.max(top + bh, Math.min(bottom, ly - 30));
+      best = { l, t: by - bh, b: by };
+    }
+    bubble.style.left = `${best.l + bw / 2}px`;
+    bubble.style.top = `${best.b}px`;
   }
 
-  // Bas de la zone des toasts (sous la barre du haut), relatif au conteneur.
+  // Bas de la barre du haut (et de la barre de boss), relatif au conteneur.
   topBand(root) {
     const top = document.getElementById('hud-top');
     const r = top ? top.getBoundingClientRect() : null;
-    return r && r.height ? r.bottom - root.top + 54 : 70;
+    return r && r.height ? r.bottom - root.top + 30 : 70;
+  }
+
+  // Haut de la bande des messages, au-dessus de la barre du bas.
+  bottomBand(root) {
+    const t = this.footerTop();
+    return t != null ? t - root.top - 54 : root.height - 60;
+  }
+
+  // Sanctuaire (en coordonnées page) : la bulle ne le cache jamais.
+  goalRect() {
+    const g = this.c.game();
+    if (!g || !g.grid.goals.length) return null;
+    const gi = g.grid.goals[0];
+    return this.tileRect(g.grid.col(gi), g.grid.row(gi), 0);
+  }
+
+  // Rectangle page d'une case et de ses `pad` voisines de chaque côté.
+  tileRect(c, r, pad = 1) {
+    const rect = this.c.canvas.getBoundingClientRect();
+    const a = this.c.renderer.toScreen(c - pad, r - pad);
+    const b = this.c.renderer.toScreen(c + 1 + pad, r + 1 + pad);
+    return { left: rect.left + a.x, top: rect.top + a.y, right: rect.left + b.x, bottom: rect.top + b.y };
   }
 
   // Haut de la barre du bas (bouton de vague, palette), en coordonnées page.
@@ -131,7 +184,8 @@ export class Tutorial {
   update(paused) {
     const g = this.c.game();
     const input = this.c.input;
-    if (!g || paused || this.c.hud.infoOpen || input.ui.drag || g.state === 'won' || g.state === 'lost') {
+    // Rien pendant qu'un doigt est posé (pose, glisser, appui long) ni sur une fiche.
+    if (!g || paused || this.c.hud.infoOpen || input.pressing || input.ui.press || input.ui.drag || g.state === 'won' || g.state === 'lost') {
       this.hide();
       return;
     }
@@ -164,7 +218,7 @@ export class Tutorial {
         const slot = this.bestSlot(g, g.defs.towers[tool].levels[0].range);
         if (!slot) return false;
         const p = this.tileToPage(slot.c, slot.r);
-        this.show('place-slot', p.x, p.y, 'Touchez un socle près du chemin');
+        this.show('place-slot', p.x, p.y, 'Touchez un socle près du chemin', null, { avoid: [this.tileRect(slot.c, slot.r, 0)] });
         return true;
       }
       case 'wave': {
@@ -182,7 +236,9 @@ export class Tutorial {
         if (!pair) return false;
         const a = this.tileToPage(pair[0].c, pair[0].r);
         const b = this.tileToPage(pair[1].c, pair[1].r);
-        this.show('fuse', a.x, a.y, 'Glissez une lanterne sur sa jumelle : fusion !', b);
+        this.show('fuse', a.x, a.y, 'Glissez une lanterne sur sa jumelle : fusion !', b, {
+          avoid: [this.tileRect(pair[0].c, pair[0].r - 1, 0), this.tileRect(pair[1].c, pair[1].r - 1, 0), this.tileRect(pair[0].c, pair[0].r, 0), this.tileRect(pair[1].c, pair[1].r, 0)],
+        });
         return true;
       }
       case 'combo': {
@@ -194,7 +250,8 @@ export class Tutorial {
         const spot = this.comboSpot(g);
         if (!spot) return false;
         const p = this.tileToPage(spot.c, spot.r);
-        this.show('combo', p.x, p.y, 'Un autre élément à côté = combo');
+        // la case visée, ses voisines (et le lien de combo qui naîtra) restent visibles
+        this.show('combo', p.x, p.y, 'Un autre élément à côté = combo', null, { avoid: [this.tileRect(spot.c, spot.r, 1)] });
         return true;
       }
       case 'stone': {
@@ -210,7 +267,7 @@ export class Tutorial {
         const spot = this.stoneSpot(g);
         if (!spot) return false;
         const p = this.tileToPage(spot.c, spot.r);
-        this.show('stone-spot', p.x, p.y, 'Posez-la sur le gravier');
+        this.show('stone-spot', p.x, p.y, 'Glissez-la sur le gravier', null, { avoid: [this.tileRect(spot.c, spot.r, 1)] });
         return true;
       }
       default:
