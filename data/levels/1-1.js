@@ -30,6 +30,7 @@ export default {
   lives: 20,
   towers: ['fire', 'water'],
   tutorial: ['place', 'wave'],
+  introduce: ['kamaitachi'],
   waves: [
     { groups: [{ enemy: 'kodama', count: 5, interval: 1.8 }] },
     { groups: [{ enemy: 'kodama', count: 8, interval: 1.3 }] },

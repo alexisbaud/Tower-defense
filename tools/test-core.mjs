@@ -145,6 +145,44 @@ console.log('Capacités des yokai');
   void t;
 }
 
+console.log('Rendements décroissants');
+{
+  // Un yokai ne doit pas pouvoir être bloqué indéfiniment par du recul + des soins.
+  const map = [
+    ',,,,S,,,,',
+    ',,,,.,,,,',
+    ',,,,.#,,,',
+    ',,,,.#,,,',
+    ',,,,.,,,,',
+    ',,,,.,,,,',
+    ',,,,.,,,,',
+    ',,,,.,,,,',
+    ',,,,G,,,,',
+  ];
+  const g = new Game(
+    base({ map, waves: [{ groups: [{ enemy: 'yukionna', count: 3, interval: 0.4, hp: 30 }, { enemy: 'kodama', count: 3, interval: 0.4, hp: 30 }] }] }),
+    defs,
+  );
+  const w = g.placeTower('wind', 5, 2);
+  w.level = 3;
+  const a = g.placeTower('water', 5, 3);
+  a.level = 3;
+  g.startNextWave();
+  run(g, 120);
+  check('la vague progresse malgré Vent N3 + Eau N3 + soins', g.lives < 20 || g.state !== 'wave', `vies ${g.lives} état ${g.state}`);
+  const e = g.createEnemy('kodama');
+  g.applyStun(e, 1);
+  const first = e.stunT;
+  e.stunT = 0;
+  g.applyStun(e, 1);
+  check('étourdissements décroissants', e.stunT < first, `${e.stunT} < ${first}`);
+  g.applyKnockback(e, 1);
+  const k1 = e.knock;
+  e.knock = 0;
+  g.applyKnockback(e, 1);
+  check('reculs décroissants', e.knock < k1);
+}
+
 console.log('Rembobinage');
 {
   const lvl = base({

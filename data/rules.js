@@ -14,6 +14,12 @@ export default {
   stoneRefund: 0.5,
   // Combos : bonus de puissance par niveau moyen au-delà de 1
   comboLevelBonus: 0.4,
+  // Rendements décroissants : chaque recul / étourdissement subi augmente une
+  // « fatigue » qui réduit les suivants, puis retombe avec le temps.
+  knockFatigueGain: 1.5,
+  knockFatigueDecay: 0.25, // recul moyen maximal à l’équilibre ≈ decay / gain ≈ 0,17 case/s
+  stunFatigueGain: 1.5,
+  stunFatigueDecay: 0.35,
   // Rembobinage (niveaux avec `rewind: true`)
   rewindSeconds: 6,       // remonte le temps de 6 s, une fois par vague
   echoSeconds: 10,        // durée de vie des échos fantômes

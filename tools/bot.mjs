@@ -87,10 +87,29 @@ export function bot(strategy, game) {
     return best;
   }
 
+  // Points échantillonnés sur les lignes de vol S→G (pondérés si des volants arrivent).
+  function flightPoints() {
+    const info = upcoming();
+    if (!info.air || !info.total) return [];
+    const w = (1.5 * info.air) / info.total;
+    const pts = [];
+    for (const s of g.spawns) {
+      const goal = game.nearestGoal(g.cx(s), g.cy(s));
+      const x0 = g.cx(s);
+      const y0 = g.cy(s);
+      const x1 = g.cx(goal);
+      const y1 = g.cy(goal);
+      const n = Math.ceil(Math.hypot(x1 - x0, y1 - y0) * 2);
+      for (let k = 0; k <= n; k++) pts.push([x0 + ((x1 - x0) * k) / n, y0 + ((y1 - y0) * k) / n, w]);
+    }
+    return pts;
+  }
+
   function bestSlot(type) {
     const tiles = routeTiles();
     const def = game.defs.towers[type];
     const range = def.levels[0].range;
+    const air = def.targets.air ? flightPoints() : [];
     let best = null;
     let bestScore = 0;
     for (let i = 0; i < g.size; i++) {
@@ -99,12 +118,12 @@ export function bot(strategy, game) {
       const r = g.row(i);
       if (game.towerAt(c, r)) continue;
       let score = coverage(c, r, range, tiles);
+      for (const [x, y, w] of air) if (Math.hypot(x - (c + 0.5), y - (r + 0.5)) <= range) score += w * 0.5;
       if (opt.combos && game.comboFor) {
         for (const t of game.towers) {
           if (Math.max(Math.abs(t.c - c), Math.abs(t.r - r)) === 1 && t.type !== type && game.comboFor(t.type, type)) score += 3;
         }
       }
-      // Légère préférence pour les cases proches du sanctuaire (dernière ligne de défense).
       if (score > bestScore) {
         bestScore = score;
         best = { c, r };
@@ -135,7 +154,7 @@ export function bot(strategy, game) {
   }
 
   function tryStone() {
-    if (!opt.stones || !game.placeStone || !game.level.stones) return false;
+    if (!opt.stones || !game.placeStone || !game.level.stones || game.towers.length < 2) return false;
     const cost = game.stoneCost();
     if (game.stonesLeft() <= 0 || game.gold < cost + 30) return false;
     const base = routeLength();

@@ -1,5 +1,6 @@
 // Simulateur headless : joue chaque niveau avec un « bot » pour vérifier qu'il
-// est gagnable. Usage : node tools/sim.mjs [idNiveau ...] [--verbose]
+// est gagnable. Usage : node tools/sim.mjs [idNiveau ...] [--bots=smart,basic,lazy] [--seeds=1,2,3] [--verbose]
+// Lanternes affichées : F feu, E eau, V vent, T terre, suivies du niveau.
 import { Game, STEP } from '../src/core/game.js';
 import { defs, loadLevel, levelOrder } from '../src/data.js';
 import { bot } from './bot.mjs';
@@ -32,7 +33,7 @@ export async function simulate(id, strategy, seed = 1) {
     wave: game.waveIndex + 1,
     waves: game.totalWaves,
     gold: Math.round(game.gold),
-    towers: game.towers.map((x) => x.type[0] + x.level).join(' '),
+    towers: game.towers.map((x) => ({ fire: 'F', water: 'E', wind: 'V', earth: 'T' })[x.type] + x.level).join(' '),
     time: Math.round(t),
     log: b.log,
   };

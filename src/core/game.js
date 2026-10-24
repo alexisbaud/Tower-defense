@@ -403,6 +403,9 @@ export class Game {
       shredM: 1,
       shredT: 0,
       knock: 0,
+      knockFatigue: 0, // rendements décroissants du recul
+      stunFatigue: 0, // rendements décroissants des étourdissements
+      healT: 0, // délai avant de pouvoir être soigné de nouveau (auras non cumulables)
       hitT: 0,
       spawnT: opts.spawnT ?? 0.7,
       age: 0,
@@ -478,6 +481,9 @@ export class Game {
   }
 
   updateStatuses(e, dt) {
+    if (e.knockFatigue > 0) e.knockFatigue = Math.max(0, e.knockFatigue - dt * (this.rules.knockFatigueDecay ?? 0.25));
+    if (e.stunFatigue > 0) e.stunFatigue = Math.max(0, e.stunFatigue - dt * (this.rules.stunFatigueDecay ?? 0.35));
+    if (e.healT > 0) e.healT -= dt;
     if (e.slowT > 0 && (e.slowT -= dt) <= 0) e.slowF = 1;
     if (e.stunT > 0) e.stunT -= dt;
     if (e.blindT > 0) e.blindT -= dt;
@@ -506,9 +512,10 @@ export class Game {
         tm.heal += ab.healAura.interval;
         let healed = false;
         for (const o of this.enemies) {
-          if (o === e || !o.alive || o.hp >= o.maxHp) continue;
+          if (o === e || !o.alive || o.hp >= o.maxHp || o.healT > 0) continue;
           if (Math.hypot(o.x - e.x, o.y - e.y) > ab.healAura.radius) continue;
           o.hp = Math.min(o.maxHp, o.hp + o.maxHp * ab.healAura.amount);
+          o.healT = ab.healAura.interval * 0.9; // plusieurs soigneuses ne se cumulent pas
           healed = true;
         }
         if (healed) this.emit('heal', { enemy: e, radius: ab.healAura.radius });
@@ -856,9 +863,23 @@ export class Game {
     e.slowT = Math.max(e.slowT, duration);
   }
 
+  // Étourdissement avec rendements décroissants : chaque étourdissement subi
+  // raccourcit les suivants tant que la « fatigue » n'est pas retombée.
   applyStun(e, duration) {
     const resist = this.defs.enemies[e.type].stunResist ?? 0;
-    e.stunT = Math.max(e.stunT, duration * (1 - resist));
+    const d = (duration * (1 - resist)) / (1 + e.stunFatigue);
+    e.stunFatigue += d * (this.rules.stunFatigueGain ?? 1.5);
+    e.stunT = Math.max(e.stunT, d);
+  }
+
+  // Recul avec rendements décroissants : un yokai ne peut pas être repoussé
+  // indéfiniment (sinon une vague pourrait ne jamais finir).
+  applyKnockback(e, amount) {
+    if (amount <= 0 || this.immuneTo(e, 'wind')) return;
+    const resist = this.defs.enemies[e.type].knockResist ?? 0;
+    const k = (amount * (1 - resist)) / (1 + e.knockFatigue);
+    e.knockFatigue += k * (this.rules.knockFatigueGain ?? 1.5);
+    e.knock = Math.max(e.knock, k);
   }
 
   applyBurn(e, dps, duration) {
@@ -1019,10 +1040,7 @@ export class Game {
     if (st.burn) this.applyBurn(e, st.burn.dps * pw, st.burn.duration);
     if (st.slow) this.applySlow(e, 1 - (1 - st.slow.factor) * pw, st.slow.duration);
     if (st.stun && !this.immuneTo(e, 'earth')) this.applyStun(e, st.stun * pw);
-    if (st.knockback && !this.immuneTo(e, 'wind')) {
-      const resist = this.defs.enemies[e.type].knockResist ?? 0;
-      e.knock = Math.max(e.knock, st.knockback * pw * (1 - resist));
-    }
+    if (st.knockback) this.applyKnockback(e, st.knockback * pw);
   }
 
   cleanup() {

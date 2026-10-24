@@ -1,0 +1,40 @@
+# Vérifie le jeu (tests du moteur, schéma des niveaux, simulation) puis publie
+# le dépôt tel quel sur la branche gh-pages, servie par GitHub Pages.
+name: Tests et déploiement GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  test-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Tests du moteur
+        run: node tools/test-core.mjs
+      - name: Validation des niveaux
+        run: node tools/validate-levels.mjs
+      - name: Chaque niveau est gagnable (bot)
+        run: node tools/sim.mjs --bots=smart
+      - name: Publication sur gh-pages
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout --orphan gh-pages-build
+          git rm -rf --cached .github tools > /dev/null
+          rm -rf .github tools
+          git add -A
+          git commit -q -m "Publication de ${GITHUB_SHA::7}"
+          git push --force origin gh-pages-build:gh-pages

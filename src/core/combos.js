@@ -142,10 +142,7 @@ export function updateTornadoes(game, dt) {
       if (Math.hypot(e.x - t.x, e.y - t.y) > t.size + e.size * 0.5) continue;
       game.applyBurn(e, t.dps * 0.25, 1);
       game.damage(e, t.dps * dt, 'fire', { dot: true });
-      if (t.knockback && !game.immuneTo(e, 'wind')) {
-        const resist = game.defs.enemies[e.type].knockResist ?? 0;
-        e.knock = Math.max(e.knock, t.knockback * (1 - resist));
-      }
+      if (t.knockback && e.knock <= 0) game.applyKnockback(e, t.knockback);
     }
   }
   if (game.tornadoes.some((t) => t.life <= 0)) game.tornadoes = game.tornadoes.filter((t) => t.life > 0);

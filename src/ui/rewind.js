@@ -83,8 +83,8 @@ export class RewindGauge {
     const ready = g.canRewind();
     let text;
     if (g.rewindAnim) text = 'Le temps recule…';
-    else if (g.rewindUsed) text = 'Utilisé pour cette vague';
-    else if (g.state !== 'wave') text = 'Disponible pendant la vague';
+    else if (g.rewindUsed) text = 'Déjà utilisé';
+    else if (g.state !== 'wave') text = 'Pendant la vague';
     else if (!ready) text = 'Le passé s’accumule…';
     else text = `◀◀ glisser · −${avail.toFixed(0)} s`;
     if (text !== this.last.text) {
