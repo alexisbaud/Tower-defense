@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Jardin Esprits" />
+    <meta name="theme-color" content="#1f2f4f" />
+    <meta name="format-detection" content="telephone=no" />
+    <meta name="description" content="Tower defense au style estampe japonaise : protégez le sanctuaire des yokai." />
+    <title>Jardin des Esprits</title>
+    <link rel="manifest" href="manifest.json" />
+    <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png" />
+    <link rel="apple-touch-icon" href="icons/icon-180.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@500;700;800&family=Zen+Kaku+Gothic+New:wght@500;700&display=swap"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <section id="screen-game" class="screen active" aria-label="Partie">
+        <header id="hud-top" class="hud-top">
+          <div class="stats">
+            <div class="stat stat-lives" aria-label="Vies"><span class="seal seal-red">命</span><b id="hud-lives">20</b></div>
+            <div class="stat stat-gold" aria-label="Or"><span class="seal seal-gold">金</span><b id="hud-gold">0</b></div>
+          </div>
+          <div class="wave-label" id="hud-wave">Vague 0/0</div>
+          <div class="hud-buttons">
+            <button class="icon-btn" id="btn-mute" aria-label="Son"><span>音</span></button>
+            <button class="icon-btn" id="btn-speed" aria-label="Vitesse"><span>×1</span></button>
+            <button class="icon-btn" id="btn-pause" aria-label="Pause"><span>❙❙</span></button>
+          </div>
+        </header>
+        <div id="stage"><canvas id="board"></canvas></div>
+        <footer id="hud-bottom" class="hud-bottom">
+          <div class="action-row">
+            <div id="rewind" class="rewind hidden" aria-label="Rembobinage : glissez vers la gauche">
+              <div class="rewind-track">
+                <div class="rewind-fill" id="rewind-fill"></div>
+                <div class="rewind-label">◀◀ glisser · 巻戻</div>
+                <div class="rewind-knob" id="rewind-knob">巻</div>
+              </div>
+            </div>
+            <button id="btn-wave" class="wave-btn"><span class="wave-btn-kanji">波</span><span id="btn-wave-label">Vague</span></button>
+          </div>
+          <div id="palette" class="palette"></div>
+        </footer>
+        <div id="toast" class="toast" role="status" aria-live="polite"></div>
+        <div id="banner" class="banner"></div>
+        <div id="info" class="sheet hidden"></div>
+        <div id="hint" class="hint hidden"></div>
+      </section>
+    </div>
+    <div id="rotate" class="rotate"><div><span>↻</span><p>Tournez votre téléphone en portrait</p></div></div>
+    <script type="module" src="src/main.js"></script>
+  </body>
+</html>

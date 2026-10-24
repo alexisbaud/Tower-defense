@@ -1,0 +1,12 @@
+{
+  "name": "jardin-des-esprits",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Tower defense mobile (PWA) en Canvas 2D — style estampe japonaise.",
+  "type": "module",
+  "scripts": {
+    "serve": "python3 -m http.server 8080",
+    "sim": "node tools/sim.mjs",
+    "validate": "node tools/validate-levels.mjs"
+  }
+}
