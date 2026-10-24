@@ -50,8 +50,8 @@ export default {
   // Coopération (1 à 4 joueurs) : facteurs selon le nombre de joueurs.
   // Chaque joueur a sa bourse ; les vies du sanctuaire sont communes.
   coop: {
-    startGold: [1, 0.6, 0.45, 0.38], // part de l'or de départ du niveau, par joueur
+    startGold: [1, 0.65, 0.55, 0.5], // part de l'or de départ du niveau, par joueur
     reward: [1, 0.6, 0.45, 0.38], // part de chaque récompense, versée à chaque joueur
-    hp: [1, 1.25, 1.5, 1.75], // multiplicateur des PV des yokai
+    hp: [1, 1.2, 1.4, 1.6], // multiplicateur des PV des yokai
   },
 };

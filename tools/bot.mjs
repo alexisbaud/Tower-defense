@@ -220,8 +220,16 @@ export function bot(strategy, game, opts = {}) {
 
   // ───────── choix de la lanterne ─────────
 
+  // Défi « N lanternes » : le bot ne dépasse jamais le nombre de poses permis.
+  function buildLimitReached() {
+    const max = game.challengeRule?.maxTowers;
+    return max != null && (game.stats.towersBuilt >= max || game.towers.length >= max);
+  }
+
   function pickType() {
-    const avail = available().filter((t) => defs.towers[t]);
+    if (buildLimitReached()) return null;
+    // seules comptent les lanternes qui ont encore un socle libre (socles typés)
+    const avail = available().filter((t) => defs.towers[t] && freeSlots(t).length);
     if (!avail.length) return null;
     if (opt.random) return avail[Math.floor(rng.next() * avail.length)];
     if (mono) return avail[0];
