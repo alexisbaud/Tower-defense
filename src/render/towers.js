@@ -2723,6 +2723,10 @@ export function drawTower(ctx, x, y, ts, def, level, time, opts = {}) {
   ctx.save();
   if (opts.alpha != null) ctx.globalAlpha *= opts.alpha;
   ctx.translate(gx, gy);
+  // échelle animée (retour d'une lanterne déposée à côté) : appliquée après le cache
+  // du corps, comme l'écrasement au tir — une taille de case animée créerait un
+  // nouveau corps (canvas) à chaque image
+  if (opts.scale != null && opts.scale !== 1) ctx.scale(opts.scale, opts.scale);
   if (stun) ctx.rotate(Math.sin(time * 12 + ph) * 0.06);
   if (squash) ctx.scale(1 + rec * 0.05, 1 - rec * 0.07);
   // derrière la lanterne : auréole tournante et esprits qui passent derrière (N3)

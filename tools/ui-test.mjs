@@ -1569,6 +1569,205 @@ console.log('9. Recette solo au doigt (défauts corrigés)');
   }
 }
 
+console.log('10. Correctifs de la relecture (dernière chance, pause, vieux Safari, rendu)');
+{
+  const c = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+  const pg = await c.newPage();
+  pg.on('pageerror', (e) => errors.push(e.message));
+  pg.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
+  const cd = await c.newCDPSession(pg);
+  const touch = (type, q) => cd.send('Input.dispatchTouchEvent', { type, touchPoints: type === 'touchEnd' ? [] : [{ x: q.x, y: q.y, id: 1, radiusX: 8, radiusY: 8 }] });
+  const tap = async (q, ms = 60) => {
+    await touch('touchStart', q);
+    await pg.waitForTimeout(ms);
+    await touch('touchEnd');
+    await pg.waitForTimeout(160);
+  };
+  const center = async (sel) => {
+    const r = await pg.locator(sel).first().boundingBox();
+    return r && { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  };
+  const ev = (fn, arg) => pg.evaluate(fn, arg);
+  let tutoSeen = false;
+  const openLevel = async (id) => {
+    if (!tutoSeen) {
+      // la règle du Rembobinage (fenêtre du tutoriel) est déjà lue
+      await pg.goto('http://localhost:8080/?broker=off', { waitUntil: 'networkidle' });
+      await ev(() => window.__save.set('rewindTutorialSeen', true));
+      tutoSeen = true;
+    }
+    await pg.goto(`http://localhost:8080/?level=${id}&broker=off`, { waitUntil: 'networkidle' });
+    await pg.waitForTimeout(500);
+  };
+  const atTile = async (cc, rr) => {
+    const box = await pg.locator('#board').boundingBox();
+    const q = await ev(([cc, rr]) => window.__renderer.toScreen(cc + 0.5, rr + 0.5), [cc, rr]);
+    return { x: box.x + q.x, y: box.y + q.y };
+  };
+
+  // Dernière chance ouverte, menu de pause (arrière-plan), « Recommencer » : l'appel
+  // « Rembobinez ! » et l'interface inerte ne doivent pas suivre dans la partie suivante.
+  await openLevel('1-3');
+  await ev(() => window.__state.game.startNextWave());
+  await pg.waitForTimeout(3200);
+  await ev(() => {
+    const g = window.__state.game;
+    g.rewindCharge = g.rules.rewindCost;
+    g.lives = 1;
+    g.leak(g.enemies.find((e) => e.alive && !e.flying && !e.timeless) || g.enemies[0]);
+  });
+  await pg.waitForTimeout(300);
+  const lc0 = await ev(() => ({ t: window.__state.game.lastChanceT, ov: !document.getElementById('last-chance').classList.contains('hidden') }));
+  await ev(() => {
+    Object.defineProperty(document, 'hidden', { value: true, configurable: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+    Object.defineProperty(document, 'hidden', { value: false, configurable: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await pg.locator('.modal-card .actions .btn', { hasText: 'Recommencer' }).click();
+  await pg.waitForTimeout(900);
+  const lc1 = await ev(() => ({
+    wave: window.__state.game.waveIndex,
+    lives: window.__state.game.lives,
+    ov: !document.getElementById('last-chance').classList.contains('hidden'),
+    lcOn: document.getElementById('screen-game').classList.contains('lc-on'),
+    pe: ['btn-pause', 'btn-wave'].map((id) => getComputedStyle(document.getElementById(id)).pointerEvents),
+  }));
+  check('dernière chance puis « Recommencer » : appel masqué, interface active', lc0.t > 0 && lc0.ov && lc1.wave === -1 && !lc1.ov && !lc1.lcOn && lc1.pe.every((v) => v !== 'none'), JSON.stringify([lc0, lc1]));
+  await tap(await center('#btn-pause'));
+  check('… la pause répond dans la nouvelle partie', await ev(() => window.__state.paused === true));
+  await ev(() => document.querySelector('#modal .modal-card .actions .btn.primary')?.click());
+
+  // En pause, une fiche passée en haut découvre la barre du bas : ni appel de vague
+  // ni rembobinage tant que le jeu est figé.
+  await openLevel('1-3');
+  await ev(() => {
+    const g = window.__state.game;
+    g.gold = 9999;
+    g.placeTower('fire', 3, 11);
+    g.startNextWave();
+  });
+  await pg.waitForTimeout(3200);
+  await ev(() => (window.__state.game.rewindCharge = window.__state.game.rules.rewindCost));
+  await tap(await center('#btn-pause'));
+  const tw = await atTile(3, 11);
+  await touch('touchStart', tw);
+  await pg.waitForTimeout(700);
+  await touch('touchEnd');
+  await pg.waitForTimeout(400);
+  const p0 = await ev(() => ({ wave: window.__state.game.waveIndex, gold: window.__state.game.gold, rw: window.__state.game.rewindsUsed, top: document.querySelector('#info')?.classList.contains('top') }));
+  await tap(await center('#btn-wave'));
+  const k = await pg.locator('#rewind .rewind-knob').boundingBox();
+  const tr = await pg.locator('#rewind .rewind-track').boundingBox();
+  if (k && tr) {
+    const a = { x: k.x + k.width / 2, y: k.y + k.height / 2 };
+    await touch('touchStart', a);
+    for (let i = 1; i <= 12; i++) {
+      await touch('touchMove', { x: a.x + (tr.x + 8 - a.x) * (i / 12), y: a.y });
+      await pg.waitForTimeout(16);
+    }
+    await touch('touchEnd');
+  }
+  await pg.waitForTimeout(400);
+  const p1 = await ev(() => ({ wave: window.__state.game.waveIndex, gold: window.__state.game.gold, rw: window.__state.game.rewindsUsed, paused: window.__state.paused }));
+  check('en pause (fiche en haut) : ni vague appelée ni rembobinage', p1.paused && p1.wave === p0.wave && p1.gold === p0.gold && p1.rw === p0.rw, JSON.stringify([p0, p1]));
+
+  // Retour d'une lanterne déposée à côté : son corps n'est pas redessiné à chaque image.
+  await openLevel('1-3');
+  await ev(() => {
+    const g = window.__state.game;
+    g.gold = 9999;
+    window.__dragT = g.placeTower('fire_mortar', 3, 11);
+  });
+  await pg.waitForTimeout(400);
+  const made = await ev(
+    () =>
+      new Promise((res) => {
+        const orig = document.createElement.bind(document);
+        let n = 0;
+        // (seuls comptent les corps de lanterne : portails et effets ont leurs propres caches)
+        document.createElement = (tag, ...rest) => {
+          if (String(tag).toLowerCase() === 'canvas' && /getBody/.test(new Error().stack)) n++;
+          return orig(tag, ...rest);
+        };
+        let rounds = 0;
+        const go = () => {
+          const t = window.__dragT;
+          const p = window.__renderer.toScreen(t.x + 2, t.y - 3);
+          window.__input.ui.dragBack = { towerId: t.id, x: p.x, y: p.y, t0: performance.now() };
+          if (++rounds < 4) setTimeout(go, 220);
+          else
+            setTimeout(() => {
+              document.createElement = orig;
+              res(n);
+            }, 220);
+        };
+        go();
+      }),
+  );
+  check('retour d’une lanterne (4 fois) : corps en cache, pas de canvas neufs', made <= 1, `${made} corps créés`);
+
+  // Membres et sablier des yokai : aucun tracé NaN, aucune couleur invalide.
+  const paths = await ev(async () => {
+    const { LOOKS } = await import('/src/render/enemies.js');
+    const out = {};
+    for (const look of Object.keys(LOOKS)) {
+      const cv = document.createElement('canvas');
+      cv.width = cv.height = 300;
+      const g = cv.getContext('2d');
+      const bad = { nan: 0, style: 0 };
+      for (const m of ['moveTo', 'lineTo', 'quadraticCurveTo', 'bezierCurveTo', 'arc', 'arcTo', 'ellipse']) {
+        const f = g[m].bind(g);
+        g[m] = (...a) => {
+          if (a.some((v) => typeof v === 'number' && !Number.isFinite(v))) bad.nan++;
+          return f(...a);
+        };
+      }
+      for (const prop of ['fillStyle', 'strokeStyle']) {
+        const d = Object.getOwnPropertyDescriptor(CanvasRenderingContext2D.prototype, prop);
+        Object.defineProperty(g, prop, {
+          get: () => d.get.call(g),
+          set: (v) => {
+            if (typeof v === 'number') bad.style++;
+            d.set.call(g, v);
+          },
+        });
+      }
+      g.translate(150, 150);
+      for (const t of [0, 0.3, 0.6]) LOOKS[look](g, { seed: 0.5, breakT: 0, enraged: false, blocked: null }, 40, t);
+      if (bad.nan || bad.style) out[look] = bad;
+    }
+    return out;
+  });
+  check('dessins des yokai : aucun tracé NaN ni couleur invalide (membres, sablier)', Object.keys(paths).length === 0, JSON.stringify(paths));
+  await c.close();
+
+  // Safari < 16 (iPhone 6s, 7, SE) : pas de ctx.roundRect. L'accueil, la carte et un
+  // niveau s'affichent quand même, et la boucle tourne.
+  const old = await browser.newContext({ viewport: { width: 375, height: 667 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+  const op = await old.newPage();
+  const oldErr = [];
+  op.on('pageerror', (e) => oldErr.push(e.message));
+  op.on('console', (m) => m.type() === 'error' && oldErr.push(m.text()));
+  await op.addInitScript(() => {
+    delete CanvasRenderingContext2D.prototype.roundRect;
+    if (window.Path2D) delete Path2D.prototype.roundRect;
+  });
+  await op.goto('http://localhost:8080/?broker=off', { waitUntil: 'networkidle' });
+  await op.waitForTimeout(400);
+  await op.locator('#btn-play').click();
+  await op.waitForTimeout(900);
+  const nodes = await op.locator('.map-node').count();
+  await op.goto('http://localhost:8080/?level=1-1&broker=off', { waitUntil: 'networkidle' });
+  await op.waitForTimeout(800);
+  const t1 = await op.evaluate(() => (window.__renderer.game ? window.__renderer.time : -1));
+  await op.waitForTimeout(600);
+  const t2 = await op.evaluate(() => window.__renderer.time);
+  const native = await op.evaluate(() => /native code/.test(String(CanvasRenderingContext2D.prototype.roundRect)));
+  check('sans ctx.roundRect (Safari < 16) : carte et plateau dessinés, boucle vivante', !native && nodes === 8 && t1 >= 0 && t2 > t1 && oldErr.length === 0, JSON.stringify({ nodes, t1, t2, native, err: oldErr.slice(0, 3) }));
+  await old.close();
+}
+
 check('aucune erreur console', errors.length === 0, errors.join(' | '));
 await browser.close();
 console.log(failures ? `\n${failures} échec(s)` : '\nTous les tests d’interface passent');

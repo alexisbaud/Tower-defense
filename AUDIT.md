@@ -312,3 +312,31 @@ Tous les bugs du bloc 1 et l’ergonomie mobile du bloc 2 sont corrigés ; la re
 Vérifications de fin de refonte : `node tools/test-core.mjs`, `node tools/validate-levels.mjs`, `node tools/sim.mjs --check` (bot équilibré gagnant seul et en coop ×2 / ×4, aucune mono-lanterne gagnante hors 1-1, courbe en dents de scie sans saut ×2, 5 à 8 minutes, défis, Difficile), `node tools/ui-test.mjs`, `node tools/mp-test.mjs`, `node tools/net-test.mjs`, `node tools/layout-check.mjs` (390×844, 430×932, 375×667), `node tools/qa.mjs`, `node tools/play-browser.mjs` (8 niveaux gagnés, console propre), `node tools/perf.mjs 2-4`.
 
 Restent ouverts : annulation de fusion (B8), quelques textes du canvas sous 12 px (B18), cases sous 44 pt en 375 (B21, atténué), rendement des pierres (C8, D19), élément des dégâts de combo face à l’absorption (D20).
+
+## Revue adversariale finale (après la v3)
+
+Quatre relecteurs (moteur, réseau, interface, rendu) ont signalé des défauts ; chacun a été **reproduit** par un vérificateur indépendant avant d'être retenu, puis corrigé avec un test qui échoue sans la correction.
+
+| Domaine | Gravité | Défaut | Correction |
+|---|---|---|---|
+| moteur | bloquant | Le rembobinage remettait une pierre sous un tokihami, figé pour toujours | La pierre retirée n'est pas restaurée sous un yokai hors du temps ni là où elle le couperait du sanctuaire |
+| moteur | majeur | Pas de dernière chance quand la fuite fatale vient d'un tokihami, même si le rembobinage rendrait des vies | Dernière chance ouverte dès qu'un rembobinage rend au moins une vie |
+| moteur | majeur | Mur automatique du Gardien posé hors du trajet réel (avec des pierres) | Trajet calculé comme le parcourent les yokai (`flow.routeOf`), aussi pour l'aperçu et le tracé |
+| moteur | mineur | Défi « Aucune fuite » validé après une fuite de tokihami ; prime de tokihami perdue au rembobinage | Fuites et primes hors du temps conservées |
+| moteur | mineur | Mur dressé sur la case d'un yokai : il le traversait | Case occupée refusée (« Un yokai est là ») |
+| moteur | mineur | Coop : la pierre retirée remboursait celui qui la retire | Chaque pierre garde son propriétaire |
+| réseau | majeur | Injection HTML par un message « end » forgé | Message lié à l'identifiant de partie, résultat réduit à des nombres, toutes les sorties échappées |
+| réseau | majeur | Annuler une recherche de salon tuait son propre salon | Tentatives numérotées ; une tentative dépassée n'agit plus |
+| réseau | majeur | Invité reconnecté après la fin : bloqué sur une partie morte | Partie close si l'hôte n'y est plus |
+| réseau | majeur | Le « bye » d'une ancienne connexion expulsait un invité reconnecté | « bye » lié à sa connexion |
+| réseau | majeur | Un état absurde gelait le miroir de l'invité | États validés, application protégée, boucle protégée |
+| réseau | mineur | Coordonnées en chaînes acceptées dans les commandes | Schéma d'arguments par commande, `inBounds` entier |
+| réseau | mineur | Aucune authentification des invités | Messages des invités signés (ECDSA P-256, clé épinglée par l'hôte, compteur anti-rejeu) — protocole 5 |
+| interface | bloquant | « Rembobinez ! » restait affiché dans la partie suivante | Remis à zéro à chaque partie |
+| interface | majeur | « Recommencer » en coop gardait les joueurs partis | Joueurs absents retirés à la relance |
+| interface | mineur | Appel de vague et rembobinage possibles en pause | Refusés en pause |
+| rendu | majeur | `roundRect` absent sur Safari < 16 : aucun niveau ne s'affichait | Repli commun, rendu protégé |
+| rendu | mineur | Invité : trajectoires des volants, recharge des combos, animations du Torrent / des Follets / de la Source absentes | Données envoyées par l'hôte, états posés côté invité |
+| rendu | mineur | Membres des yokai sans contour, sablier du tokihami vide, sprite reconstruit à chaque image au retour d'un glisser | Arguments, segment et clé de cache corrigés |
+
+Limite connue : les messages de l'hôte ne sont pas signés (un code à 4 lettres ne permet pas d'échanger une clé de confiance) ; ils sont validés, ce qui écarte injections et plantages, mais un tiers à l'écoute du relais public pourrait encore interrompre une partie.

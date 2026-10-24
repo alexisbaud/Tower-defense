@@ -36,6 +36,50 @@ export function bfs(grid, extraBlocked = -1) {
   return dist;
 }
 
+// Case suivante depuis i selon un champ de distances `dist` : un voisin plus proche
+// du sanctuaire d'une case, de préférence dans la direction actuelle (dx, dy) pour
+// préférer les lignes droites. C'est le pas des yokai (FlowField.next) ; les tracés
+// (aperçu de pierre, trajet du mur) le suivent aussi, pour montrer le vrai passage.
+export function nextTile(grid, dist, i, dx = 0, dy = 0) {
+  const { cols, rows } = grid;
+  const d = dist[i];
+  if (d <= 0) return -1;
+  const c = i % cols;
+  const r = (i / cols) | 0;
+  let best = -1;
+  let bestScore = -Infinity;
+  for (const [ex, ey] of DIRS) {
+    const nc = c + ex;
+    const nr = r + ey;
+    if (nc < 0 || nr < 0 || nc >= cols || nr >= rows) continue;
+    const n = nr * cols + nc;
+    if (dist[n] !== d - 1) continue;
+    const score = ex * dx + ey * dy;
+    if (score > bestScore) {
+      bestScore = score;
+      best = n;
+    }
+  }
+  return best;
+}
+
+// Suite de cases depuis `start` jusqu'au sanctuaire, en partant dans la direction
+// (dx, dy) : spawnEnemy lance les yokai vers le bas, (0, 1).
+export function routeOf(grid, dist, start, dx = 0, dy = 0) {
+  const out = [start];
+  let i = start;
+  const cols = grid.cols;
+  for (let guard = 0; guard < grid.size; guard++) {
+    const n = nextTile(grid, dist, i, dx, dy);
+    if (n < 0) break;
+    dx = (n % cols) - (i % cols);
+    dy = ((n / cols) | 0) - ((i / cols) | 0);
+    out.push(n);
+    i = n;
+  }
+  return out;
+}
+
 export class FlowField {
   constructor(grid) {
     this.grid = grid;
@@ -48,42 +92,11 @@ export class FlowField {
   }
   // Case suivante depuis i. (dx, dy) = direction actuelle, pour préférer les lignes droites.
   next(i, dx = 0, dy = 0) {
-    const { cols, rows } = this.grid;
-    const d = this.dist[i];
-    if (d <= 0) return -1;
-    const c = i % cols;
-    const r = (i / cols) | 0;
-    let best = -1;
-    let bestScore = -Infinity;
-    for (const [ex, ey] of DIRS) {
-      const nc = c + ex;
-      const nr = r + ey;
-      if (nc < 0 || nr < 0 || nc >= cols || nr >= rows) continue;
-      const n = nr * cols + nc;
-      if (this.dist[n] !== d - 1) continue;
-      const score = ex * dx + ey * dy;
-      if (score > bestScore) {
-        bestScore = score;
-        best = n;
-      }
-    }
-    return best;
+    return nextTile(this.grid, this.dist, i, dx, dy);
   }
-  // Suite de cases depuis `start` jusqu'au sanctuaire (pour l'affichage du tracé).
-  route(start) {
-    const out = [start];
-    let i = start;
-    let dx = 0;
-    let dy = 0;
-    const cols = this.grid.cols;
-    for (let guard = 0; guard < this.grid.size; guard++) {
-      const n = this.next(i, dx, dy);
-      if (n < 0) break;
-      dx = (n % cols) - (i % cols);
-      dy = ((n / cols) | 0) - ((i / cols) | 0);
-      out.push(n);
-      i = n;
-    }
-    return out;
+  // Suite de cases depuis `start` jusqu'au sanctuaire (affichage du tracé, trajet du mur),
+  // (dx, dy) : direction de départ.
+  route(start, dx = 0, dy = 0) {
+    return routeOf(this.grid, this.dist, start, dx, dy);
   }
 }

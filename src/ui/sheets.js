@@ -703,16 +703,21 @@ export class Sheets {
     const conf = g.stoneConf?.();
     const left = g.stonesLeft();
     const canStone = typeof g.canUseStones === 'function' ? g.canUseStones() : true;
+    // en coopération, seul celui qui a posé (et payé) la pierre la retire
+    const owner = g.stoneOwner?.[grid.idx(c, r)] ?? -1;
+    const mine = !(g.players?.length > 1 && owner >= 0 && owner !== g.localPlayer);
+    const canRemove = canStone && mine;
+    const ownerName = !mine ? g.players[owner]?.name : null;
     return {
-      sig: `${c},${r}|${left}|${canStone}`,
+      sig: `${c},${r}|${left}|${canStone}|${owner}`,
       pic: '<span class="sheet-pic stone">石</span>',
       title: 'Pierre',
       tags: `<span>${left}${conf ? `/${conf.max}` : ''} restante${left > 1 ? 's' : ''}</span>`,
       body: `<p class="sheet-desc">Elle détourne les yokai terrestres et allonge leur chemin. Les volants l’ignorent.</p>${
-        canStone ? row('Retirer', `rend ${refund} or et une pierre`) : row('Retirer', 'réservé aux joueurs de la Terre')
+        canRemove ? row('Retirer', `rend ${refund} or et une pierre`) : !canStone ? row('Retirer', 'réservé aux joueurs de la Terre') : row('Retirer', `réservé à ${esc(ownerName || 'celui qui l’a posée')}`)
       }`,
       // en coopération, seuls les joueurs de la Terre façonnent le chemin
-      actions: canStone ? `<button class="btn" data-act="unstone">Retirer +${refund}</button>` : '',
+      actions: canRemove ? `<button class="btn" data-act="unstone">Retirer +${refund}</button>` : '',
     };
   }
 

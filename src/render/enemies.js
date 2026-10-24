@@ -213,8 +213,9 @@ function line(ctx, pts, w, color = INK, tin = 0.25, tout = 0.4) {
   brushStroke(ctx, pts, w, color, { taperIn: tin, taperOut: tout });
 }
 
-// Membre « cerné » : trait d'encre large puis trait de couleur par-dessus.
-function limb(ctx, pts, w, color, edge) {
+// Membre « cerné » : trait d'encre large (liseré `edge` de chaque côté) puis trait de
+// couleur par-dessus. (Ordre des appels : largeur, liseré, couleur.)
+function limb(ctx, pts, w, edge, color) {
   brushStroke(ctx, pts, w + edge * 2, INK, { taperIn: 0.08, taperOut: 0.12 });
   brushStroke(ctx, pts, w, color, { taperIn: 0.1, taperOut: 0.2 });
 }
@@ -908,7 +909,7 @@ export const LOOKS = {
     const bulb = (y0, y1) =>
       qpath(r, -0.24, y0, [
         [-0.26, (y0 + y1) / 2 - (y1 - y0) * 0.1, -0.03, y1],
-        [0.03, y1],
+        [0, y1, 0.03, y1], // col du sablier : segment droit (contrôle sur la droite)
         [0.26, (y0 + y1) / 2 - (y1 - y0) * 0.1, 0.24, y0],
       ], 6);
     const top = bulb(0.04, 0.3);

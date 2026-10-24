@@ -642,5 +642,164 @@ console.log('Vagues qui se chevauchent');
   check('l’écho forme un combo affaibli', g.zones.some((z) => z.echo && z.mult < 1), JSON.stringify(g.zones.map((z) => [z.def.id, z.echo, z.mult])));
 }
 
+console.log('Rembobinage et yokai hors du temps');
+{
+  // Une pierre retirée après l'instantané ne revient pas sous un tokihami : il resterait
+  // figé dessus (vague sans fin, plus aucune pierre posable).
+  const g = new Game(base({ rewind: true, rewindStart: 100, waves: [{ groups: [{ enemy: 'kodama', count: 4, interval: 1.5 }, { enemy: 'tokihami', count: 1, delay: 4 }] }] }), defs);
+  const X = g.grid.idx(4, 3);
+  g.placeStone(4, 3);
+  const gold0 = g.gold;
+  g.startNextWave();
+  const tk = () => g.enemies.find((e) => e.type === 'tokihami');
+  for (let k = 0; k < 20 / STEP && !(tk() && g.grid.row(tk().cur) === 1 && tk().spawnT <= 0); k++) g.update(STEP);
+  g.removeStone(4, 3);
+  for (let k = 0; k < 10 / STEP && tk()?.target !== X; k++) g.update(STEP);
+  check('tokihami en route vers la case de la pierre retirée', tk()?.target === X && g.canRewind(), `${tk()?.target} ${X}`);
+  g.rewind();
+  run(g, 1.3);
+  const e = tk();
+  check('rembobinage : pas de pierre sous le tokihami', !g.grid.stone[X] && e && g.flow.dist[e.cur] >= 0 && g.flow.dist[e.target] >= 0, `pierre ${g.grid.stone[X]}`);
+  check('… pierre restée retirée : compte et remboursement justes', g.stonesPlaced === 0 && g.gold === gold0 + Math.floor(g.stoneCost() * g.rules.stoneRefund), `${g.stonesPlaced} ${g.gold} / ${gold0}`);
+  run(g, 40);
+  check('… le tokihami repart, la vague finit', g.state === 'won', `${g.state} ${e && g.grid.col(e.cur)},${e && g.grid.row(e.cur)}`);
+  check('… et les pierres restent posables', g.canPlaceStone(3, 3).ok || g.state === 'won');
+}
+{
+  // Pierre remise là où elle enfermerait le tokihami (sans être sous ses pieds) : refusée aussi.
+  const map = [',,,,S,,,,', ',,,,o,,,,', ',,,,o,,,,', ',,,oo,,,,', ',,,,o,,,,', ',,,,.,,,,', ',,,,G,,,,'];
+  const g = new Game(base({ map, rewind: true, rewindStart: 100, waves: [{ groups: [{ enemy: 'kodama', count: 4, interval: 1.5 }, { enemy: 'tokihami', count: 1, delay: 5 }] }] }), defs);
+  g.placeStone(3, 3); // cul-de-sac à gauche de la colonne
+  g.startNextWave();
+  run(g, 6.5);
+  // le tokihami entre dans le cul-de-sac (simulé) : on retire la pierre, il s'y trouve
+  const e = g.enemies.find((x) => x.type === 'tokihami');
+  g.removeStone(3, 3);
+  e.cur = e.target = g.grid.idx(3, 3);
+  e.mx = 3.5;
+  e.my = 3.5;
+  g.rewind();
+  run(g, 1.3);
+  check('rembobinage : pas de pierre remise sur le tokihami ni autour de lui', !g.grid.stone[g.grid.idx(3, 3)] && g.flow.dist[e.cur] >= 0);
+}
+{
+  // Dernière chance : la fuite fatale vient d'un tokihami, mais un rembobinage rendrait
+  // les vies prises par les autres yokai.
+  const lvl = base({ rewind: true, rewindStart: 100, lives: 4, waves: [{ groups: [{ enemy: 'kodama', count: 6, interval: 0.5 }, { enemy: 'tokihami', count: 1, delay: 0.5 }] }] });
+  const g = new Game(lvl, defs);
+  g.startNextWave();
+  run(g, 3);
+  const ks = g.enemies.filter((e) => e.type === 'kodama');
+  g.leak(ks[0]);
+  g.leak(ks[1]);
+  g.leak(g.enemies.find((e) => e.type === 'tokihami'));
+  check('fuite fatale d’un tokihami : dernière chance (le rembobinage rend des vies)', g.state === 'wave' && g.lastChanceT > 0, `${g.state} ${g.lastChanceT}`);
+  check('… rembobinage possible', g.rewind());
+  run(g, 1.3);
+  check('… vies rendues, sauf celles du tokihami', g.lives === 2 && g.state === 'wave', `${g.lives} ${g.state}`);
+  // seul un tokihami a pris des vies : le rembobinage n'en rendrait aucune
+  const g2 = new Game(base({ rewind: true, rewindStart: 100, lives: 2, waves: lvl.waves }), defs);
+  g2.startNextWave();
+  run(g2, 3);
+  g2.leak(g2.enemies.find((e) => e.type === 'tokihami'));
+  check('… rien à rendre : défaite immédiate', g2.state === 'lost', g2.state);
+}
+{
+  // Défi « Aucune fuite » : la fuite d'un tokihami reste comptée après un rembobinage.
+  const lvl = base({ rewind: true, rewindStart: 100, challenge: { name: 'Aucune fuite', desc: '', rule: { noLeak: true } }, waves: [{ groups: [{ enemy: 'kodama', count: 6, interval: 0.5 }, { enemy: 'tokihami', count: 1, delay: 0.5 }] }] });
+  const g = new Game(lvl, defs);
+  g.challenge = true;
+  g.startNextWave();
+  run(g, 3);
+  g.leak(g.enemies.find((e) => e.type === 'tokihami'));
+  g.rewind();
+  run(g, 1.3);
+  check('défi « Aucune fuite » : la fuite du tokihami survit au rembobinage', g.challengeBroken() && g.stats.leaks === 1 && g.lives === 18, `${g.stats.leaks} ${g.lives}`);
+  for (const sp of g.spawners) sp.spawned = sp.count;
+  for (const e of g.enemies) g.kill(e, 'fire');
+  run(g, 1);
+  check('… victoire sans défi réussi', g.state === 'won' && !g.challengeMet(), g.state);
+}
+{
+  // Prime d'un tokihami abattu après l'instantané : il ne revient pas, sa prime reste.
+  for (const players of [null, [{ name: 'A', elements: ['fire', 'wind'] }, { name: 'B', elements: ['water', 'earth'] }]]) {
+    const g = new Game(base({ rewind: true, rewindStart: 100, waves: [{ groups: [{ enemy: 'kodama', count: 6, interval: 0.5 }, { enemy: 'tokihami', count: 1, delay: 0.5 }] }] }), defs, players ? { players } : {});
+    g.startNextWave();
+    run(g, 3);
+    const tk = g.enemies.find((e) => e.type === 'tokihami');
+    const before = g.players.map((p) => p.gold);
+    g.kill(tk, 'fire');
+    const bounty = g.players.map((p, i) => p.gold - before[i]);
+    const snap = g.history[g.rewindSnapIndex()];
+    g.rewind();
+    run(g, 1.3);
+    const label = players ? 'coop' : 'solo';
+    check(`prime du tokihami gardée au rembobinage (${label})`, bounty[0] > 0 && g.players.every((p, i) => p.gold === snap.gold[i] + bounty[i]), `${g.players.map((p) => p.gold)} / ${snap.gold} + ${bounty}`);
+    check(`… et son élimination comptée (${label})`, g.stats.kills === snap.stats.kills + 1 && !g.enemies.some((e) => e.type === 'tokihami'), `${g.stats.kills}`);
+  }
+}
+
+console.log('Barrières : trajet réel et case occupée');
+{
+  // Deux plus courts chemins : le mur du Gardien suit le passage des yokai (tout droit),
+  // pas un tracé qui préfère toujours descendre.
+  const map = [',S,,,,,,,', ',o###,,,,', ',oooooo#,', ',#oooooo,', ',,#ooo#o,', ',,,,,,,.,', ',,,,,,,G,'];
+  const lvl = base({ map, towers: ALL, waves: [{ groups: [{ enemy: 'kodama', count: 3, interval: 1, hp: 30 }] }] });
+  const g = new Game(lvl, defs);
+  const s = g.grid.spawns[0];
+  const real = new Set(g.flow.route(s, 0, 1));
+  const guard = g.placeTower('earth_guard', 1, 3);
+  const bar = g.barriers[0];
+  check('mur posé sur le trajet réel des yokai', bar && real.has(bar.tile) && [...g.routeTiles()].every((i) => real.has(i)), bar && `${g.grid.col(bar.tile)},${g.grid.row(bar.tile)}`);
+  g.startNextWave();
+  let blocked = 0;
+  for (let k = 0; k < 8 / STEP; k++) {
+    g.update(STEP);
+    if (g.enemies.some((e) => e.blocked === bar.id)) blocked++;
+  }
+  check('… et il arrête les yokai', blocked > 30, `${blocked} images`);
+  void guard;
+  // aperçu de pierre : le tracé montré est celui que suivront les yokai
+  const g2 = new Game(lvl, defs);
+  const shown = g2.previewStone(4, 4).routes[0];
+  g2.placeStone(4, 4);
+  check('aperçu de pierre : même tracé que les yokai', shown.join() === g2.flow.route(s, 0, 1).join(), `${shown.join()} / ${g2.flow.route(s, 0, 1).join()}`);
+}
+{
+  // Ralliement ou pose de Gardien sur la case d'un yokai : refusés (il traverserait le mur).
+  const g = new Game(base({ map: CORRIDOR, towers: ALL, waves: [{ groups: [{ enemy: 'kodama', count: 1, hp: 50 }] }] }), defs);
+  const t = g.placeTower('earth_guard', 1, 2);
+  const bar = g.barriers[0];
+  g.startNextWave();
+  run(g, 4);
+  const e = g.enemies[0];
+  check('yokai arrêté devant le mur', e.blocked === bar.id && e.cur === g.grid.idx(2, 1), `${e.blocked} ${e.cur}`);
+  check('ralliement sur sa case refusé', !g.setRally(t.id, 2, 1) && bar.tile === g.grid.idx(2, 2) && !g.rallyTiles(t.id).includes(g.grid.idx(2, 1)));
+  run(g, 0.5);
+  check('… il reste arrêté', e.blocked === bar.id);
+  const g2 = new Game(base({ map: CORRIDOR, towers: ALL, waves: [{ groups: [{ enemy: 'kodama', count: 1, hp: 50 }] }] }), defs);
+  g2.startNextWave();
+  const e2 = () => g2.enemies[0];
+  for (let k = 0; k < 10 / STEP && !(e2() && e2().cur === g2.grid.idx(2, 2) && e2().spawnT <= 0); k++) g2.update(STEP);
+  g2.placeTower('earth_guard', 1, 2);
+  const bar2 = g2.barriers[0];
+  check('Gardien posé en pleine vague : mur hors de la case du yokai', bar2 && bar2.tile !== e2().cur && bar2.tile !== g2.grid.tileAt(e2().mx, e2().my), bar2 && `${bar2.tile}`);
+  let stopped = 0;
+  for (let k = 0; k < 3 / STEP; k++) {
+    g2.update(STEP);
+    if (e2()?.blocked === bar2.id) stopped++;
+  }
+  check('… et le yokai est arrêté', stopped > 30, `${stopped}`);
+}
+
+console.log('Coopération : pierres');
+{
+  const g = new Game(base(), defs, { players: [{ name: 'A', elements: ['fire', 'wind', 'earth'] }, { name: 'B', elements: ['water', 'wind', 'earth'] }] });
+  const [a0, b0] = [g.goldOf(0), g.goldOf(1)];
+  g.placeStone(4, 2, 0);
+  check('retirer la pierre d’un coéquipier : refusé', !g.removeStone(4, 2, 1) && g.grid.stone[g.grid.idx(4, 2)] === 1 && g.canRemoveStone(4, 2, 1).reason === 'owner');
+  check('… celui qui l’a posée la retire et est remboursé', g.removeStone(4, 2, 0) && g.goldOf(0) === a0 - g.stoneCost() + Math.floor(g.stoneCost() * g.rules.stoneRefund) && g.goldOf(1) === b0, `${g.goldOf(0)} ${g.goldOf(1)}`);
+}
+
 console.log(failures ? `\n${failures} échec(s)` : '\nTous les tests passent');
 process.exit(failures ? 1 : 0);

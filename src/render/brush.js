@@ -1,5 +1,35 @@
 // Outils de dessin « pinceau et encre » partagés par les modules de rendu.
 
+// ctx.roundRect n'existe que depuis Safari 16 (iPhone 6s, 7, SE de 1re génération :
+// iOS 15 au plus). Les lanternes, l'écran titre et la carte s'en servent : sans lui,
+// aucun niveau ne s'affichait. Repli installé une fois, pour tous les canvas (y compris
+// hors écran) : rectangle aux coins arrondis par arcTo, nouveau sous-chemin fermé.
+if (typeof CanvasRenderingContext2D !== 'undefined' && !CanvasRenderingContext2D.prototype.roundRect) {
+  CanvasRenderingContext2D.prototype.roundRect = function (x, y, w, h, radii = 0) {
+    const list = Array.isArray(radii) ? radii : [radii];
+    const rad = list.map((v) => Math.max(0, (typeof v === 'object' ? v?.x : v) || 0));
+    // 1 à 4 rayons, comme l'API : [tous] · [hg+bd, hd+bg] · [hg, hd+bg, bd] · [hg, hd, bd, bg]
+    const [tl, tr, br, bl] = rad.length >= 4 ? rad : rad.length === 3 ? [rad[0], rad[1], rad[2], rad[1]] : rad.length === 2 ? [rad[0], rad[1], rad[0], rad[1]] : [rad[0] ?? 0, rad[0] ?? 0, rad[0] ?? 0, rad[0] ?? 0];
+    if (w < 0) {
+      x += w;
+      w = -w;
+    }
+    if (h < 0) {
+      y += h;
+      h = -h;
+    }
+    // rayons réduits ensemble s'ils dépassent les côtés
+    const k = Math.min(1, w / (tl + tr || 1), w / (bl + br || 1), h / (tl + bl || 1), h / (tr + br || 1));
+    this.moveTo(x + tl * k, y);
+    this.arcTo(x + w, y, x + w, y + h, tr * k);
+    this.arcTo(x + w, y + h, x, y + h, br * k);
+    this.arcTo(x, y + h, x, y, bl * k);
+    this.arcTo(x, y, x + w, y, tl * k);
+    this.closePath();
+    this.moveTo(x, y);
+  };
+}
+
 export const INK = '#1d1b22';
 export const PALETTE = {
   ink: '#1d1b22',

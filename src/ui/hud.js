@@ -47,6 +47,8 @@ const SHORT = {
 };
 
 const STONE_COLOR = '#7d7a70';
+// Texte inséré dans le HTML : le nom d'une vague peut venir de l'hôte (réseau).
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const ICON = 52; // taille CSS par défaut des icônes de la palette
 const UNDO_SECONDS = 3;
 
@@ -619,7 +621,7 @@ export class Hud {
   banner(big, small = '', cls = '') {
     const el = this.bannerEl;
     this.bannerAt = performance.now(); // la carte « Nouveau yokai » évite la bannière affichée
-    el.innerHTML = `<span class="big">${big}</span>${small ? `<span class="small">${small}</span>` : ''}`;
+    el.innerHTML = `<span class="big">${esc(big)}</span>${small ? `<span class="small">${esc(small)}</span>` : ''}`;
     el.classList.toggle('climax', cls === 'climax');
     el.classList.remove('show');
     void el.offsetWidth;

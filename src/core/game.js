@@ -7,7 +7,7 @@
 // joueur prennent un identifiant de joueur `pid` (par défaut le joueur local).
 
 import { Grid, T } from './grid.js';
-import { FlowField, bfs } from './flowfield.js';
+import { FlowField, bfs, routeOf } from './flowfield.js';
 import { Rng } from './rng.js';
 import { buildComboIndex, computeZones, updateZones, updateTornadoes, comboKey } from './combos.js';
 
@@ -75,6 +75,7 @@ export class Game {
     this.beams = []; // jets du Torrent (rendu uniquement)
     this.comboIndex = buildComboIndex(defs.combos);
     this.stonesPlaced = 0;
+    this.stoneOwner = new Int8Array(this.grid.size).fill(-1); // joueur qui a payé chaque pierre (−1 : aucune)
     // Rembobinage
     this.echoes = []; // lanternes fantômes (puissance réduite, durée limitée)
     this.history = [];
@@ -84,6 +85,12 @@ export class Game {
     this.rewindsUsed = 0;
     this.lastChanceT = 0;
     this.timelessLoss = 0; // vies perdues à cause des yokai hors du temps (non rembobinables)
+    // … leurs fuites (défi « Aucune fuite ») et leurs éliminations, avec l'or gagné par
+    // chaque joueur : un yokai hors du temps abattu ne revient pas, sa prime non plus.
+    this.timelessLeaks = 0;
+    this.timelessKills = 0;
+    this.timelessGold = this.players.map(() => 0);
+    this.timelessEarned = 0;
     this.timelessSpawned = {}; // apparitions déjà faites de yokai hors du temps, par groupe
     // Ce qui a déjà rechargé la jauge (survit au rembobinage : rejouer les mêmes
     // éliminations ou le même appel anticipé ne la recharge pas une seconde fois).
@@ -425,6 +432,7 @@ export class Game {
     const before = this.routeLength();
     const i = this.grid.idx(c, r);
     this.grid.stone[i] = 1;
+    this.stoneOwner[i] = this.player(pid).id;
     this.player(pid).gold -= this.stoneCost();
     this.stonesPlaced++;
     this.stats.stones++;
@@ -434,19 +442,36 @@ export class Game {
     return true;
   }
 
-  removeStone(c, r, pid = this.localPlayer) {
+  // Retirer une pierre : réservé aux joueurs de la Terre ; en coopération, à celui
+  // qui l'a posée (comme on ne vend que ses propres lanternes).
+  canRemoveStone(c, r, pid = this.localPlayer) {
     const g = this.grid;
-    if (!g.inBounds(c, r) || this.busy() || !this.canUseStones(pid)) return false;
+    if (!g.inBounds(c, r)) return { ok: false, reason: 'bounds' };
+    const busy = this.busy();
+    if (busy) return { ok: false, reason: busy };
+    if (!this.canUseStones(pid)) return { ok: false, reason: 'element' };
     const i = g.idx(c, r);
-    if (!g.stone[i]) return false;
+    if (!g.stone[i]) return { ok: false, reason: 'open' };
+    const owner = this.stoneOwner[i];
+    if (this.players.length > 1 && owner >= 0 && owner !== pid) return { ok: false, reason: 'owner', owner };
+    return { ok: true };
+  }
+
+  removeStone(c, r, pid = this.localPlayer) {
+    if (!this.canRemoveStone(c, r, pid).ok) return false;
+    const g = this.grid;
+    const i = g.idx(c, r);
     const before = this.routeLength();
     g.stone[i] = 0;
     this.stonesPlaced--;
     const refund = Math.floor(this.stoneCost() * this.rules.stoneRefund);
-    this.player(pid).gold += refund;
+    // le remboursement revient à celui qui a payé la pierre
+    const owner = this.stoneOwner[i] >= 0 ? this.stoneOwner[i] : pid;
+    this.stoneOwner[i] = -1;
+    this.player(owner).gold += refund;
     this.flow.compute();
     this.refreshBarriers();
-    this.emit('unstone', { c, r, refund, delta: this.routeLength() - before, pid });
+    this.emit('unstone', { c, r, refund, delta: this.routeLength() - before, pid, owner });
     return true;
   }
 
@@ -488,7 +513,8 @@ export class Game {
     for (const s of g.spawns) {
       if (dist[s] < 0) continue;
       len += dist[s];
-      routes.push(routeFrom(g, dist, s));
+      // même départage que les yokai (spawnEnemy : ils partent vers le bas)
+      routes.push(routeOf(g, dist, s, 0, 1));
     }
     return { ok: check.ok, reason: check.reason, delta: check.ok || check.reason === 'gold' ? len - this.routeLength() : 0, routes };
   }
@@ -625,6 +651,14 @@ export class Game {
 
   spawnersDone(wave = null) {
     return this.spawners.every((s) => (wave != null && s.wave !== wave) || s.spawned >= s.count);
+  }
+
+  // Portails (index des cases S) d'où sortiront encore des volants pendant les vagues
+  // en cours : le rendu trace leur ligne droite vers le sanctuaire.
+  flyerPortals() {
+    const out = new Set();
+    for (const sp of this.spawners) if (sp.spawned < sp.count && this.defs.enemies[sp.enemy]?.abilities?.flying) out.add(sp.spawn ?? 0);
+    return [...out];
   }
 
   // Fin de chaque vague (récompense) et victoire.
@@ -1112,13 +1146,17 @@ export class Game {
     e.alive = false;
     const dmg = this.defs.enemies[e.type].damage ?? 1;
     this.lives = Math.max(0, this.lives - dmg);
-    if (e.timeless) this.timelessLoss += dmg;
+    if (e.timeless) {
+      this.timelessLoss += dmg;
+      this.timelessLeaks++;
+    }
     this.stats.leaks++;
     this.emit('leak', { enemy: e, damage: dmg });
     if (this.lives <= 0 && this.state !== 'lost') {
-      // Jauge pleine : dernière chance de rembobiner avant la chute du sanctuaire.
-      // (inutile si la fuite vient d'un yokai hors du temps : le rembobinage ne l'efface pas)
-      if (this.canRewind() && !e.timeless) {
+      // Jauge pleine : dernière chance de rembobiner avant la chute du sanctuaire, si le
+      // rembobinage rend des vies (pas celles des yokai hors du temps, qui restent perdues ;
+      // une fuite fatale de tokihami peut donc être sauvée par les autres fuites effacées).
+      if (this.canRewind() && this.rewindLives() > 0) {
         this.lastChanceT = this.rules.lastChanceSeconds ?? 4;
         this.emit('lastChance', { seconds: this.lastChanceT });
       } else this.lose();
@@ -1172,6 +1210,14 @@ export class Game {
     const reward = def.reward ?? 0;
     const each = this.reward(reward, 'kill');
     this.stats.kills++;
+    if (e.timeless) {
+      // hors du temps : le rembobinage ne le ramène pas, il ne reprend donc pas sa prime
+      this.timelessKills++;
+      if (each) {
+        for (const p of this.players) this.timelessGold[p.id] += each;
+        this.timelessEarned += each;
+      }
+    }
     if (this.rewindEnabled && !this.chargedKills.has(e.uid)) {
       this.chargedKills.add(e.uid);
       this.rewindCharge = Math.min(this.rules.rewindCost ?? 100, this.rewindCharge + reward * (this.rules.rewindPerGold ?? 0));
@@ -1199,7 +1245,17 @@ export class Game {
     if (ty !== T.PATH && ty !== T.OPEN && ty !== T.BRIDGE) return false;
     if (g.stone[i] || this.flow.dist[i] < 0) return false;
     if (Math.hypot(g.cx(i) - t.x, g.cy(i) - t.y) > range + 0.01) return false;
-    return !this.barriers.some((b) => b.tile === i && b.towerId !== t.id);
+    if (this.barriers.some((b) => b.tile === i && b.towerId !== t.id)) return false;
+    // Pas de mur sous les pieds d'un yokai (pose, ralliement, déplacement) : seule la
+    // case suivante l'arrête, il traverserait. Le mur reste bien sûr sur sa propre case.
+    if (this.barriers.some((b) => b.tile === i && b.towerId === t.id)) return true;
+    return !this.groundEnemyOn(i);
+  }
+
+  // Un yokai terrestre vivant se tient-il sur la case i ?
+  groundEnemyOn(i) {
+    const g = this.grid;
+    return this.enemies.some((e) => e.alive && !e.flying && (e.cur === i || g.tileAt(e.mx, e.my) === i));
   }
 
   // Cases où le Gardien `id` peut dresser son mur (pour l'interface « Déplacer le mur »).
@@ -1231,11 +1287,13 @@ export class Game {
     return best;
   }
 
-  // Cases du trajet actuel (de chaque apparition au sanctuaire).
+  // Cases du trajet actuel (de chaque apparition au sanctuaire), parcouru comme les
+  // yokai le parcourent : départ vers le bas, puis tout droit tant que c'est possible
+  // (sans quoi, entre deux plus courts chemins, le mur pouvait finir à côté du passage).
   routeTiles() {
     if (this._routeV === this.flow.version && this._route) return this._route;
     const set = new Set();
-    for (const sp of this.grid.spawns) for (const i of routeFrom(this.grid, this.flow.dist, sp)) set.add(i);
+    for (const sp of this.grid.spawns) for (const i of this.flow.route(sp, 0, 1)) set.add(i);
     this._route = set;
     this._routeV = this.flow.version;
     return set;
@@ -1305,7 +1363,7 @@ export class Game {
       bar.respawnT -= dt;
       if (bar.respawnT > 0) continue;
       // on ne relève pas la barrière sous les pieds d'un yokai
-      if (this.enemies.some((e) => !e.flying && e.alive && (e.cur === bar.tile || this.grid.tileAt(e.mx, e.my) === bar.tile))) continue;
+      if (this.groundEnemyOn(bar.tile)) continue;
       const st = this.towerStats(t);
       bar.alive = true;
       bar.maxHp = st.barrierHp;
@@ -1380,9 +1438,14 @@ export class Game {
       gold: this.players.map((p) => p.gold),
       lives: this.lives,
       timelessLoss: this.timelessLoss,
+      timelessLeaks: this.timelessLeaks,
+      timelessKills: this.timelessKills,
+      timelessGold: this.timelessGold.slice(),
+      timelessEarned: this.timelessEarned,
       stonesPlaced: this.stonesPlaced,
       stats: { ...this.stats, elementsUsed: { ...this.stats.elementsUsed } },
       stones: Uint8Array.from(this.grid.stone),
+      stoneOwner: Int8Array.from(this.stoneOwner),
       enemies: this.enemies.map(cloneEnemy),
       towers: this.towers.map((t) => ({ ...t })),
       barriers: this.barriers.map((b) => ({ ...b })),
@@ -1395,11 +1458,24 @@ export class Game {
     };
   }
 
+  // Instantané où ramènerait un rembobinage lancé maintenant (6 s plus tôt, ou le plus ancien).
+  rewindSnapIndex() {
+    const target = this.ct - (this.rules.rewindSeconds ?? 6);
+    const idx = this.history.findIndex((h) => h.ct >= target - 1e-6);
+    return idx < 0 ? 0 : idx;
+  }
+
+  // Vies du sanctuaire après un rembobinage lancé maintenant : celles de l'instantané,
+  // moins ce que les yokai hors du temps ont pris depuis (ces vies ne reviennent pas).
+  rewindLives() {
+    const snap = this.history[this.rewindSnapIndex()];
+    if (!snap) return this.lives;
+    return Math.max(0, snap.lives - (this.timelessLoss - snap.timelessLoss));
+  }
+
   rewind(pid = this.localPlayer) {
     if (!this.canRewind()) return false;
-    const target = this.ct - (this.rules.rewindSeconds ?? 6);
-    let idx = this.history.findIndex((h) => h.ct >= target - 1e-6);
-    if (idx < 0) idx = 0;
+    const idx = this.rewindSnapIndex();
     const snap = this.history[idx];
     const frames = [{ enemies: this.enemies.map(cloneEnemy) }, ...this.history.slice(idx).reverse()];
     const snapIds = new Set(snap.towers.map((t) => t.id));
@@ -1450,15 +1526,24 @@ export class Game {
       return copy;
     });
     this.barriers = snap.barriers.map((b) => ({ ...b }));
+    // L'or revient à l'instantané, sauf les primes des yokai hors du temps abattus
+    // depuis : eux ne reviennent pas, leur prime reste donc acquise.
     snap.gold.forEach((g, i) => {
-      if (this.players[i]) this.players[i].gold = g;
+      if (this.players[i]) this.players[i].gold = g + (this.timelessGold[i] - (snap.timelessGold[i] ?? 0));
     });
     // Les vies perdues face aux yokai hors du temps ne reviennent pas.
     this.lives = Math.max(0, snap.lives - (this.timelessLoss - snap.timelessLoss));
-    // Les lanternes construites et les pierres posées restent comptées.
-    this.stats = { ...snap.stats, towersBuilt: this.stats.towersBuilt, stones: Math.max(this.stats.stones, snap.stats.stones) };
-    this.grid.stone.set(snap.stones);
-    this.stonesPlaced = snap.stonesPlaced;
+    // Les lanternes construites et les pierres posées restent comptées ; les fuites et
+    // éliminations des yokai hors du temps aussi (défi « Aucune fuite », bilan).
+    this.stats = {
+      ...snap.stats,
+      kills: snap.stats.kills + (this.timelessKills - snap.timelessKills),
+      leaks: snap.stats.leaks + (this.timelessLeaks - snap.timelessLeaks),
+      goldEarned: snap.stats.goldEarned + (this.timelessEarned - snap.timelessEarned),
+      towersBuilt: this.stats.towersBuilt,
+      stones: Math.max(this.stats.stones, snap.stats.stones),
+    };
+    this.restoreStones(snap, timeless);
     this.flow.compute();
     this.ct = snap.ct;
     this.waveIndex = snap.waveIndex;
@@ -1473,6 +1558,40 @@ export class Game {
     for (const z of this.zones) if (timers.has(z.key)) z.timer = timers.get(z.key);
     this.emit('rewindEnd', { echoes: this.echoes.length });
     if (this.lives <= 0) this.lose();
+  }
+
+  // Pierres de l'instantané. Les yokai hors du temps restent dans le présent : une
+  // pierre retirée depuis ne revient pas sous leurs pieds ni là où elle les enfermerait
+  // (figés sur place, la vague ne finirait jamais et plus aucune pierre ne se poserait).
+  // Elle reste alors retirée, et son remboursement acquis.
+  restoreStones(snap, timeless) {
+    const g = this.grid;
+    const ground = timeless.filter((e) => !e.flying);
+    const back = []; // pierres retirées depuis l'instantané, à remettre
+    for (let i = 0; i < g.size; i++) {
+      if (snap.stones[i] && !g.stone[i]) back.push(i);
+      else g.stone[i] = snap.stones[i];
+    }
+    this.stoneOwner.set(snap.stoneOwner);
+    let placed = snap.stonesPlaced;
+    const refund = Math.floor(this.stoneCost() * (this.rules.stoneRefund ?? 0.5));
+    const reach = (dist, i) => i < 0 || dist[i] >= 0;
+    for (const i of back) {
+      let ok = !ground.some((e) => e.cur === i || e.target === i || g.tileAt(e.mx, e.my) === i);
+      if (ok && ground.length) {
+        const dist = bfs(g, i);
+        ok = ground.every((e) => reach(dist, e.cur) && reach(dist, e.target));
+      }
+      if (ok) {
+        g.stone[i] = 1;
+        continue;
+      }
+      placed--;
+      const owner = this.stoneOwner[i];
+      this.player(owner >= 0 ? owner : this.localPlayer).gold += refund;
+      this.stoneOwner[i] = -1;
+    }
+    this.stonesPlaced = placed;
   }
 
   // ───────────────────────── statuts ─────────────────────────
@@ -1902,36 +2021,4 @@ function refreshStatus(e) {
   }
   e.shredM = m;
   e.shredT = mt;
-}
-
-// Tracé d'une apparition au sanctuaire selon un champ de distances donné.
-function routeFrom(g, dist, start) {
-  const out = [start];
-  let i = start;
-  for (let guard = 0; guard < g.size; guard++) {
-    const d = dist[i];
-    if (d <= 0) break;
-    const c = g.col(i);
-    const r = g.row(i);
-    let next = -1;
-    for (const [dx, dy] of [
-      [0, 1],
-      [1, 0],
-      [0, -1],
-      [-1, 0],
-    ]) {
-      const nc = c + dx;
-      const nr = r + dy;
-      if (!g.inBounds(nc, nr)) continue;
-      const n = g.idx(nc, nr);
-      if (dist[n] === d - 1) {
-        next = n;
-        break;
-      }
-    }
-    if (next < 0) break;
-    out.push(next);
-    i = next;
-  }
-  return out;
 }

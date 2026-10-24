@@ -56,7 +56,9 @@ export class BoardOverlay {
   rallyOf(game, ui) {
     const t = ui?.rally ? game.towerById(ui.rally.towerId) : null;
     if (!t) return null;
-    const key = `${t.id}|${t.level}|${game.flow.version}|${game.barriers.map((b) => b.tile).join(',')}`;
+    // (les cases où se tiennent des yokai ne s'allument pas : elles suivent leur marche)
+    const feet = game.enemies.map((e) => (e.flying ? '' : game.grid.tileAt(e.mx, e.my))).join(',');
+    const key = `${t.id}|${t.level}|${game.flow.version}|${game.barriers.map((b) => b.tile).join(',')}|${feet}`;
     if (this.rallyCache?.key !== key) this.rallyCache = { key, tower: t, tiles: rallyTiles(game, t) };
     return this.rallyCache;
   }

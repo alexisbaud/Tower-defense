@@ -315,6 +315,9 @@ export class LobbyUI {
     this.btnJoin.classList.toggle('hidden', this.joinOpen || guest);
     this.joinForm.classList.toggle('hidden', !this.joinOpen || guest);
     this.btnLeave.classList.toggle('hidden', !guest);
+    // pendant la recherche, ce bouton l'annule (on retrouve son propre salon)
+    const leaveLabel = this.joining ? 'Annuler la recherche' : 'Quitter ce salon';
+    if (this.btnLeave.textContent !== leaveLabel) this.btnLeave.textContent = leaveLabel;
     // hors ligne : le jeu seul marche ; « Réessayer » rouvre le salon
     const offlineHint = state === 'offline' && !this.error && !guest ? 'Salon hors ligne : vous pouvez jouer seul. Réessayez pour inviter des amis.' : '';
     this.errorBox.textContent = this.joining ? 'Recherche du salon…' : this.error || offlineHint;
@@ -403,6 +406,8 @@ export class LobbyUI {
       this.toast(`Vous avez rejoint le salon ${code}`);
       return true;
     } catch (e) {
+      // recherche annulée (« Quitter ce salon », autre salon) : le joueur a déjà choisi la suite
+      if (e.cancelled) return false;
       this.error = ERRORS[e.message] || `Connexion impossible (${e.message}).`;
       // on retrouve son propre salon
       this.hostFn();
@@ -414,8 +419,9 @@ export class LobbyUI {
   }
 
   leave() {
+    const searching = this.joining;
     this.hostFn();
-    this.toast('Vous avez quitté le salon');
+    this.toast(searching ? 'Recherche annulée' : 'Vous avez quitté le salon');
   }
 
   retry() {

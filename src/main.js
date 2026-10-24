@@ -74,6 +74,22 @@ const session = new NetSession({
   brokers,
   // sans réseau, inutile d'attendre les relais : le salon reste local, le solo marche
   connect: (urls, opts, from) => (navigator.onLine === false ? Promise.reject(new Error('hors ligne')) : connectAny(urls, opts, from)),
+  // clés qui signent nos messages d'invité : gardées le temps de l'onglet (après un
+  // rechargement, l'hôte nous reconnaît encore)
+  keyStore: {
+    load: () => {
+      try {
+        return JSON.parse(sessionStorage.getItem(`jardin-esprits.cles.${profile.id}`) || 'null');
+      } catch {
+        return null;
+      }
+    },
+    save: (v) => {
+      try {
+        sessionStorage.setItem(`jardin-esprits.cles.${profile.id}`, JSON.stringify(v));
+      } catch {}
+    },
+  },
 });
 const coop = new Coop(session);
 // Codes de salon gardés le temps de l'onglet : un rechargement retrouve son salon
@@ -505,7 +521,9 @@ const hud = new Hud(screenGame, {
 // tout moment, même pendant une vague : bonus d'or et charge de Rembobinage).
 function callWave() {
   const g = state.game;
-  if (!g || g.rewindAnim || coopFrozen()) return;
+  // En pause, on étudie le plateau sans rien changer (une fiche passée en haut de
+  // l'écran découvre la barre du bas) ; le menu d'un invité, lui, ne fige rien.
+  if (!g || g.rewindAnim || coopFrozen() || pausedHere()) return;
   const can = typeof g.canCallNextWave === 'function' ? g.canCallNextWave() : g.state === 'build';
   if (!can) return;
   // Double toucher accidentel : le bouton montre aussitôt la vague suivante, un
@@ -660,7 +678,7 @@ function setSpeed(s) {
 
 const gauge = new RewindGauge($('rewind'), {
   game: () => state.game,
-  onRewind: () => !coopFrozen() && state.game?.rewind(),
+  onRewind: () => !coopFrozen() && !pausedHere() && state.game?.rewind(),
   // Simple indication (pas d'erreur rouge ni de son de refus) : la jauge réduite
   // dit comment elle se remplit ; un appui long ouvre la règle.
   onRefuse: (why, pct) => {
@@ -694,6 +712,11 @@ const tutorial = new Tutorial($('hint'), {
     return showModal(html, buttons);
   },
 });
+
+// Partie figée par sa propre pause (solo, hôte) : ni appel de vague ni rembobinage.
+function pausedHere() {
+  return state.paused && state.coopRole !== 'guest';
+}
 
 function setPaused(p) {
   state.paused = p;
@@ -975,8 +998,15 @@ async function startLevel(id, opts = {}) {
   if (!level || token !== state.startToken) return;
   const mode = { hard: !!(opts.hard && level.hard), challenge: !!(opts.challenge && level.challenge) };
   let game;
-  // entre deux parties, les joueurs partis entre-temps ne sont plus du voyage
-  if (session.isHost && !session.inGame) session.prune();
+  // entre deux parties, les joueurs partis entre-temps ne sont plus du voyage ; de même
+  // quand l'hôte relance en pleine partie (« Recommencer pour tous ») : leurs éléments
+  // reviennent aux autres
+  if (session.isHost) {
+    const relaunch = session.inGame;
+    session.prune(relaunch);
+    // plus personne avec lui : la partie coopérative s'arrête, il rejoue seul
+    if (relaunch && !coopReady()) session.endGame(null);
+  }
   if (coopReady()) {
     const players = coop.playersFromLobby();
     const seed = 1 + Math.floor(Math.random() * 1e9);
@@ -1003,8 +1033,17 @@ async function startLevel(id, opts = {}) {
 
 // Invité : l'hôte lance une partie (ou la renvoie après un rechargement).
 async function startGuestGame(msg) {
-  // le message vient du réseau : on n'accepte qu'un niveau connu du jeu
-  if (!order.some((o) => o.id === msg.level) || !Array.isArray(msg.players)) return;
+  // le message vient du réseau : on n'accepte qu'un niveau connu du jeu, une graine
+  // entière, des joueurs aux éléments connus (ils finissent dans le HTML de la palette)
+  if (!order.some((o) => o.id === msg.level) || !Number.isSafeInteger(msg.seed) || !Array.isArray(msg.players) || !msg.players.length) return;
+  const known = (el) => typeof el === 'string' && Object.hasOwn(defs.elements, el);
+  const players = msg.players.slice(0, 4).map((p) => ({
+    name: String(p?.name ?? 'Esprit').slice(0, 16),
+    elements: Array.isArray(p?.elements) ? p.elements.filter(known) : [],
+    element: known(p?.element) ? p.element : null,
+  }));
+  if (players.some((p) => !p.elements.length)) return;
+  msg = { ...msg, players };
   const token = ++state.startToken;
   const level = await fetchLevel(msg.level);
   if (!level || token !== state.startToken || session.role !== 'guest') return;
@@ -1025,7 +1064,6 @@ function beginGame(id, level, game, mode) {
   state.mode = mode;
   state.game = game;
   state.challengeLost = false;
-  state.lastChance = false;
   state.acc = 0;
   state.resultShown = false;
   state.resultPending = false;
@@ -1050,7 +1088,9 @@ function beginGame(id, level, game, mode) {
   hud.banner(level.name, marks.length ? marks.join(' · ') : team || `${world.name} · ${idx + 1}/${order.length}`);
   screenGame.classList.toggle('mode-hard', state.mode.hard);
   screenGame.classList.toggle('coop-guest', state.coopRole === 'guest');
-  setLastChance(false);
+  // l'appel « Rembobinez ! » d'une partie quittée pendant sa dernière chance disparaît
+  // (forcé : l'état mémorisé peut déjà dire « éteint »)
+  setLastChance(false, true);
   state.introduced = new Set();
   state.combosSeen = new Set();
   state.zones = null;
@@ -1103,8 +1143,8 @@ function showResult(won, record = false, challenge = false) {
       `<div class="modal-kanji">勝</div><h2>Victoire !</h2>
        <div class="result-stars">${[0, 1, 2].map((k) => `<i class="${k < stars ? 'on' : ''}">★</i>`).join('')}</div>
        <div class="result-stats">
-         <span>Vies : <b>${g.lives}/${g.maxLives}</b></span><span>Yokai apaisés : <b>${kills}</b></span>
-         <span>Lanternes : <b>${built}</b></span><span>${record ? '<b style="color:var(--vermillion)">Nouveau record</b>' : ''}</span>
+         <span>Vies : <b>${esc(g.lives)}/${esc(g.maxLives)}</b></span><span>Yokai apaisés : <b>${esc(kills)}</b></span>
+         <span>Lanternes : <b>${esc(built)}</b></span><span>${record ? '<b style="color:var(--vermillion)">Nouveau record</b>' : ''}</span>
        </div>
        ${resultMarks(g, challenge)}
        ${!next ? '<p>Le sanctuaire est sauvé. Les esprits retrouvent la paix.</p>' : ''}
@@ -1156,8 +1196,8 @@ function resultMarks(g, challenge) {
 // Dernière chance : la partie est figée, seul le Rembobinage peut sauver le
 // sanctuaire ; le reste de l'interface est inactif.
 const lcEl = $('last-chance');
-function setLastChance(on) {
-  if (on === state.lastChance) return;
+function setLastChance(on, force = false) {
+  if (on === state.lastChance && !force) return;
   state.lastChance = on;
   lcEl.classList.toggle('hidden', !on);
   screenGame.classList.toggle('lc-on', on);
@@ -1273,10 +1313,11 @@ function handleEvents(game) {
         break;
       case 'win': {
         if (state.resultPending || state.resultShown) break; // fin déjà annoncée (coopération)
+        ev.stars = Math.max(0, Math.min(3, Math.floor(Number(ev.stars) || 0))); // (invité : vient de l'hôte)
         hud.banner('Victoire', '★'.repeat(ev.stars) + '☆'.repeat(3 - ev.stars));
         // Enregistrée tout de suite : quitter (ou recommencer) pendant la bannière ne perd pas la victoire.
         // En coopération, chacun garde ses étoiles dans sa propre sauvegarde.
-        const challenge = ev.challenge ?? (game.challengeMet ? game.challengeMet() : false);
+        const challenge = ev.challenge != null ? ev.challenge === true : game.challengeMet ? game.challengeMet() : false;
         const record = save.record(state.levelId, ev.stars, { hard: game.hard, challenge });
         // une victoire en Difficile compte aussi pour les étoiles du mode normal
         if (game.hard) save.record(state.levelId, ev.stars);
@@ -1375,9 +1416,14 @@ function frame(now) {
       if (steps >= 8) state.acc = 0;
     }
     // Coopération : avant de consommer game.events (ils partent aussi vers les invités).
+    // (un état inattendu de l'hôte n'arrête pas la boucle de l'invité)
     if (coop.active) {
       coop.speed = state.speed;
-      coop.afterUpdate(dt);
+      try {
+        coop.afterUpdate(dt);
+      } catch (e) {
+        console.error(e);
+      }
     }
     const hold = updateCoopGuest(g);
     try {
@@ -1412,7 +1458,13 @@ function frame(now) {
     // Invité : son menu ne fige pas le plateau (la partie continue) ; la pause de
     // l'hôte, si. Les yokai sont interpolés entre deux états reçus (coop.alpha).
     const still = guest ? hold === 'pause' : state.paused;
-    renderer.render(still ? 0 : dt, guest ? coop.alpha ?? 1 : state.paused ? 1 : state.acc / STEP, input.ui);
+    try {
+      renderer.render(still ? 0 : dt, guest ? coop.alpha ?? 1 : state.paused ? 1 : state.acc / STEP, input.ui);
+    } catch (e) {
+      // un dessin qui échoue (API absente d'un vieux Safari…) ne fige pas le jeu
+      if (!state.renderError) console.error(e);
+      state.renderError = true;
+    }
     if (raw < 0.25) adaptQuality(raw, (performance.now() - t0) / 1000);
   }
   requestAnimationFrame(frame);
@@ -1606,6 +1658,7 @@ session.on('status', ({ state: st, role, code, error }) => {
 session.on('lobby', () => {
   updateTitleActions();
   if (state.screen === 'game') updateRoster(true);
+  guestGameOver();
 });
 
 // Invité : l'hôte lance une partie. Départ renvoyé (rechargement, reconnexion) alors
@@ -1618,7 +1671,9 @@ session.on('start', (msg) => {
 // Invité : fin de partie annoncée par l'hôte (résultat), ou partie arrêtée (null).
 session.on('end', (msg) => {
   if (state.coopRole !== 'guest' || state.screen !== 'game') return;
-  const r = msg.result;
+  // fin d'une autre partie (message égaré, ou forgé par un tiers du relais) : ignorée
+  if (msg.gid !== state.gid) return;
+  const r = cleanResult(msg.result, state.levelId);
   const g = state.game;
   if (r) {
     state.coopResult = r;
@@ -1639,6 +1694,43 @@ session.on('end', (msg) => {
   ]);
 });
 
+// Résultat de partie annoncé par l'hôte : il finit dans le HTML du résultat et dans la
+// sauvegarde. Il vient du réseau : seuls des nombres bornés et des booléens passent.
+function cleanResult(r, levelId) {
+  if (!r || typeof r !== 'object' || (r.level != null && r.level !== levelId)) return null;
+  const int = (v, max) => (Number.isInteger(v) && v >= 0 && v <= max ? v : null);
+  return {
+    won: r.won === true,
+    stars: int(r.stars, 3) ?? 0,
+    challenge: r.challenge === true,
+    lives: int(r.lives, 999),
+    maxLives: int(r.maxLives, 999),
+    kills: int(r.kills, 1e6),
+    towers: int(r.towers, 1e5),
+    wave: int(r.wave, 99),
+  };
+}
+
+// Invité : l'hôte n'est plus dans la partie affichée (fin manquée pendant une coupure :
+// il est revenu au salon, ou en a lancé une autre) : on la conclut comme un « end ».
+function guestGameOver(later = false) {
+  if (state.coopRole !== 'guest' || state.screen !== 'game' || !coop.isGuest) return;
+  if (state.resultShown || state.resultPending || session.role !== 'guest' || !session.online) return;
+  const lobby = session.lobby;
+  if (!lobby || (lobby.inGame && (lobby.gid == null || lobby.gid === state.gid))) return;
+  // une autre partie a commencé : son départ suit d'ordinaire aussitôt (on y passe
+  // directement) ; sinon (on n'en est pas), celle-ci est bien finie
+  if (lobby.inGame && !later) {
+    setTimeout(() => guestGameOver(true), 2000);
+    return;
+  }
+  coop.stop();
+  setPaused(true);
+  showModal(`<div class="modal-kanji">終</div><h2>Partie terminée</h2><p>L’hôte a mis fin à la partie. Il choisira bientôt la suivante.</p>`, [
+    { label: 'Retour au salon', cls: 'primary', run: () => showScreen('title') },
+  ]);
+}
+
 // Invité : pause de l'hôte (message direct ; l'état suivant la confirme).
 session.on('paused', (msg) => {
   coop.client?.setPaused(!!msg.on);
@@ -1656,11 +1748,19 @@ session.on('closed', async ({ reason }) => {
     let ok = false;
     try {
       ok = await session.join(session.code, 6000);
-    } catch {
+    } catch (e) {
       ok = false;
+      // le joueur a fait autre chose entre-temps (quitté le salon, rejoint un autre) : rien à reprendre
+      if (e.cancelled) {
+        rejoining = false;
+        return;
+      }
     }
     rejoining = false;
-    if (ok) return;
+    if (ok) {
+      guestGameOver(); // la partie a pu finir pendant la coupure
+      return;
+    }
   }
   const inGame = state.screen === 'game' && state.coopRole === 'guest' && !state.resultShown && !state.resultPending;
   if (inGame) coop.stop();

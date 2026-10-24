@@ -191,6 +191,7 @@ tools/                      simulateur, bots, validateur, tests, QA navigateur
 - Le chemin est un champ de flux BFS recalculé à chaque pierre ; une pierre qui couperait tout passage (pour une apparition ou un yokai déjà en route) est refusée avec un retour visuel et sonore.
 - Le rembobinage enregistre un instantané de l'état toutes les 0,1 s pendant la partie ; chaque yokai a une identité stable (`uid`) pour que rejouer les mêmes éliminations ne recharge pas la jauge deux fois.
 - **Multijoueur hôte-autoritaire** : seul l'hôte simule. Les invités tiennent un *miroir* (une instance de `Game` qui ne simule rien) mis à jour par les états reçus et interpolé à l'affichage ; leurs commandes (`placeTower`, `fuse`…) partent vers l'hôte, qui les valide avec l'identifiant du joueur. On ne simule pas chez chacun : les fonctions mathématiques diffèrent légèrement entre Safari et Chrome et les parties divergeraient.
+- **Relais public** : n'importe qui peut y lire et y publier. Les messages des invités sont **signés** (ECDSA P-256, clé gardée le temps de l'onglet, compteur contre le rejeu) : un tiers ne peut ni agir au nom d'un joueur ni le faire sortir. L'hôte vérifie la forme de chaque commande ; l'invité, celle de chaque état et du résultat (nombres bornés, jamais de HTML), et ignore une fin qui ne cite pas sa partie.
 
 ---
 

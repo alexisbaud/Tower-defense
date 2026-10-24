@@ -526,6 +526,11 @@ export class Input {
       this.h.onAction?.('selectTower', { tower: other });
       return;
     }
+    // case du chemin où se tient un yokai : le mur ne s'y dresse pas (il le traverserait)
+    if (i >= 0 && game.groundEnemyOn?.(i)) {
+      this.h.onFeedback?.('reject', { reason: 'occupiedEnemy', x, y });
+      return;
+    }
     const walk = i >= 0 && g.isWalkableType(i);
     this.h.onFeedback?.(walk ? 'rallyFar' : 'cancel', { x, y });
   }

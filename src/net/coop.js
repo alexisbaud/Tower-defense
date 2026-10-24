@@ -57,8 +57,8 @@ export class Coop {
     this.client = new ClientSync(mirror, (op, args) => this.session.sendCommand(op, args));
     this.client.gid = start.seed ?? null;
     this.offs.push(this.session.on('snap', (snap) => {
-      this.lastSnapAt = performance.now();
-      this.client.apply(snap);
+      // seuls les états acceptés (bien formés, de cette partie) disent que l'hôte est là
+      if (this.client.apply(snap)) this.lastSnapAt = performance.now();
     }));
     this.lastSnapAt = performance.now();
     this.start = start;

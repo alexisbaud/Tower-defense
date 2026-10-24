@@ -438,7 +438,7 @@ export class Tutorial {
 
   routeTiles(g) {
     const tiles = new Set();
-    for (const s of g.grid.spawns) for (const i of g.flow.route(s)) tiles.add(i);
+    for (const s of g.grid.spawns) for (const i of g.flow.route(s, 0, 1)) tiles.add(i);
     return tiles;
   }
 

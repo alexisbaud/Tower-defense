@@ -69,8 +69,10 @@ export class Grid {
   row(i) {
     return (i / this.cols) | 0;
   }
+  // Entiers seulement : une chaîne ('4') passait les comparaisons mais donnait un
+  // indice faux (idx : 9 + '4' = '94') qui contournait les contrôles de pose.
   inBounds(c, r) {
-    return c >= 0 && r >= 0 && c < this.cols && r < this.rows;
+    return Number.isInteger(c) && Number.isInteger(r) && c >= 0 && r >= 0 && c < this.cols && r < this.rows;
   }
   cx(i) {
     return (i % this.cols) + 0.5;

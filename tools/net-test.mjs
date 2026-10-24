@@ -2,6 +2,7 @@
 // local (tools : npm i aedes aedes-server-factory, puis un serveur WebSocket).
 // Usage : node tools/net-test.mjs ws://localhost:8883/mqtt
 import { NetSession } from '../src/net/lobby.js';
+import { MqttClient, connectAny } from '../src/net/mqtt.js';
 import { HostSync, ClientSync, applyCommand, makeMirror } from '../src/net/sync.js';
 import { Game, STEP, assignElements } from '../src/core/game.js';
 import { defs, loadLevel } from '../src/data.js';
@@ -138,5 +139,178 @@ await wait(300);
 await a.leave();
 await b.leave();
 await d.leave();
+
+// Tiers du relais : un client MQTT quelconque, abonné aux jokers (il voit tous les salons).
+const spyClient = async (topics) => {
+  const c = new MqttClient(url);
+  await c.connect();
+  c.inbox = [];
+  c.onmessage = (topic, text) => c.inbox.push({ topic, text });
+  for (const t of topics) await c.subscribe(t);
+  return c;
+};
+
+console.log('Commandes mal formées');
+{
+  // Coordonnées en chaîne : idx('4', 1) = '94' contournait inBounds et le contrôle de
+  // blocage ; une pierre pouvait couper l'unique chemin (partie bloquée pour tous).
+  const lvl = await loadLevel('1-4');
+  const els = assignElements(['fire', 'earth']);
+  const g = new Game(lvl, defs, { seed: 7, players: [{ name: 'H', elements: els[0] }, { name: 'T', elements: els[1] }] });
+  const stones = () => g.grid.stone.reduce((x, y) => x + y, 0);
+  const res = [];
+  for (const [op, args] of [
+    ['placeStone', ['4', 1]],
+    ['placeStone', [4.5, 1]],
+    ['removeStone', ['4', 1]],
+    ['placeTower', ['earth', '4', 1]],
+    ['placeTower', ['inconnue', 4, 1]],
+    ['setPriority', [1, 'nimporte']],
+    ['constructor', []],
+    ['toString', []],
+  ]) {
+    try {
+      res.push(applyCommand(g, 1, op, args));
+    } catch (e) {
+      res.push(`exception ${e.message}`);
+    }
+  }
+  check('arguments mal formés refusés (chaînes, réels, inconnus)', res.every((r) => r === null), JSON.stringify(res));
+  check('… aucune pierre posée, chemin intact', stones() === 0 && g.grid.spawns.every((sp) => g.flow.dist[sp] >= 0));
+  let ok = false;
+  for (let i = 0; i < g.grid.size && !ok; i++) if (g.canPlaceStone(g.grid.col(i), g.grid.row(i), 1).ok) ok = applyCommand(g, 1, 'placeStone', [g.grid.col(i), g.grid.row(i)]) === true;
+  check('… une commande honnête passe', ok && stones() === 1);
+}
+
+console.log('Recherche de salon annulée');
+{
+  // « Annuler la recherche » (ou « Quitter ce salon ») pendant « Recherche du salon… » :
+  // le salon recréé ne doit pas être fermé par la recherche qui s'achève ensuite.
+  const spy = await spyClient(['jde/v1/+/c']);
+  const X = new NetSession({ id: 'X', brokers: [url, url] }); // deux relais : la recherche passe au suivant
+  await X.host({ code: 'XXXA' });
+  const joining = X.join('ZZZZ', 1500).then(
+    () => 'rejoint',
+    (e) => (e.cancelled ? 'annulé' : e.message),
+  );
+  await wait(300);
+  await X.host({ code: 'XXXB' });
+  const r = await joining;
+  await wait(2500);
+  check('recherche annulée : elle le dit (pas « rejoint »)', r === 'annulé', r);
+  check('… le salon recréé reste en ligne', X.online && X.isHost && !!X.client?.connected && X.code === 'XXXB', `${X.state} ${X.role} ${!!X.client} ${X.code}`);
+  const F = new NetSession({ id: 'F', brokers: [url] });
+  check('… un ami le rejoint', await F.join('XXXB').then(() => true, (e) => e.message));
+  const stray = spy.inbox.filter((m) => m.topic === 'jde/v1/XXXB/c' && JSON.parse(m.text).id === 'X');
+  check('… aucun « hello » de la recherche vers son propre salon', stray.length === 0, `${stray.length}`);
+  await F.leave();
+  await X.leave();
+  spy.close();
+}
+
+console.log('« bye » d’une connexion morte');
+{
+  // Changement de réseau : l'invité se reconnecte aussitôt, mais le relais ne publie le
+  // message de départ (will) de l'ancienne connexion que bien plus tard.
+  const H2 = new NetSession({ id: 'H2', brokers: [url] });
+  await H2.host({ code: 'WWLL' });
+  const wills = [];
+  const G2 = new NetSession({
+    id: 'G2',
+    brokers: [url],
+    connect: (urls, opts, from) => {
+      wills.push(opts.will?.payload);
+      return connectAny(urls, opts, from);
+    },
+  });
+  await G2.join('WWLL');
+  const lvl = await loadLevel('1-1');
+  H2.startGame({ level: '1-1', seed: 11, players: [{ name: 'H2', elements: ['fire', 'water'] }, { name: 'G2', elements: ['wind', 'earth'] }] });
+  await wait(300);
+  void lvl;
+  G2.client.ws.close(); // socket coupée (le relais publie aussitôt ce départ)
+  await wait(300);
+  await G2.join('WWLL'); // nouvelle connexion (comme main.js sur « closed »)
+  await wait(400);
+  const raw = await spyClient([]);
+  raw.publish('jde/v1/WWLL/c', wills[0]); // l'ancien départ, publié bien après
+  await wait(600);
+  const p = H2.lobby.players.find((x) => x.id === 'G2');
+  check('« bye » de l’ancienne connexion ignoré : l’invité reste présent', p && p.online !== false, JSON.stringify(H2.lobby.players));
+  H2.endGame(null);
+  H2.prune();
+  await wait(300);
+  check('… et il reste dans le salon après la partie', H2.lobby.players.some((x) => x.id === 'G2') && G2.lobby.players.some((x) => x.id === 'G2'));
+  // le bon « bye » (connexion actuelle) fait toujours sortir
+  await G2.leave();
+  await wait(400);
+  check('… son vrai départ est pris en compte', !H2.lobby.players.some((x) => x.id === 'G2'));
+  raw.close();
+  await H2.leave();
+}
+
+console.log('Messages usurpés');
+{
+  const H3 = new NetSession({ id: 'H3', brokers: [url] });
+  await H3.host({ code: 'SPYQ' });
+  const V = new NetSession({ id: 'pvictim1', brokers: [url] });
+  await V.join('SPYQ');
+  const spy = await spyClient(['jde/v1/+/h', 'jde/v1/+/c']);
+  const lvl = await loadLevel('1-1');
+  const players = [{ name: 'H3', elements: ['fire', 'water'] }, { name: 'V', elements: ['wind', 'earth'] }];
+  const ends = [];
+  V.on('end', (m) => ends.push(m));
+  H3.startGame({ level: '1-1', seed: 21, players });
+  const g = new Game(lvl, defs, { seed: 21, players });
+  H3.on('command', ({ pid, op, args }) => applyCommand(g, pid, op, args));
+  await wait(300);
+  let slot = null;
+  for (let i = 0; i < g.grid.size && !slot; i++) if (g.canPlaceTower('wind', g.grid.col(i), g.grid.row(i), 1).ok) slot = [g.grid.col(i), g.grid.row(i)];
+  V.sendCommand('placeTower', ['wind', ...slot]);
+  await wait(500);
+  const t = g.towers.find((x) => x.owner === 1);
+  check('commande signée de l’invité appliquée', !!t);
+  const forge = (msg) => spy.publish('jde/v1/SPYQ/c', typeof msg === 'string' ? msg : JSON.stringify(msg));
+  const n = Date.now() * 2000;
+  // ancien format, enveloppe sans signature, puis enveloppe signée par une autre clé
+  forge({ type: 'cmd', id: 'pvictim1', op: 'sellTower', args: [t.id] });
+  forge({ type: 'sig', id: 'pvictim1', d: JSON.stringify({ type: 'cmd', id: 'pvictim1', n, conn: V.conn, op: 'sellTower', args: [t.id] }) });
+  const subtle = globalThis.crypto.subtle;
+  const mine = await subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
+  const jwk = await subtle.exportKey('jwk', mine.publicKey);
+  const signAs = async (inner) => {
+    const d = JSON.stringify(inner);
+    const sig = btoa(String.fromCharCode(...new Uint8Array(await subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, mine.privateKey, new TextEncoder().encode(d)))));
+    return { type: 'sig', id: 'pvictim1', d, sig };
+  };
+  forge(await signAs({ type: 'hello', id: 'pvictim1', n: n + 1, conn: 'tiers', v: 5, name: 'Tiers', pk: `${jwk.x}.${jwk.y}` }));
+  forge(await signAs({ type: 'cmd', id: 'pvictim1', n: n + 2, conn: 'tiers', op: 'sellTower', args: [t.id] }));
+  // rejeu des messages signés de l'invité, captés au passage
+  for (const m of spy.inbox.filter((x) => x.topic === 'jde/v1/SPYQ/c')) forge(m.text);
+  forge({ type: 'bye', id: 'pvictim1' });
+  forge({ type: 'sig', id: 'pvictim1', d: JSON.stringify({ type: 'bye', id: 'pvictim1', n: n + 3, conn: V.conn }) });
+  // fin de partie forgée chez l'invité (sans la partie qu'elle termine)
+  spy.publish('jde/v1/SPYQ/h', JSON.stringify({ type: 'end', result: { won: true, stars: 3, challenge: true, kills: '<img src=x onerror=alert(1)>' } }));
+  await wait(800);
+  check('usurpations ignorées : la lanterne de l’invité reste', !!g.towerById(t.id) && g.towers.filter((x) => x.owner === 1).length === 1);
+  check('« bye » usurpé ignoré : l’invité reste présent', H3.lobby.players[1]?.online === true, JSON.stringify(H3.lobby.players));
+  check('identité de l’invité non reprise par un tiers', H3.lobby.players.length === 2 && !H3.lobby.players.some((x) => x.name === 'Tiers'));
+  check('fin de partie forgée ignorée par l’invité', ends.length === 0, JSON.stringify(ends));
+  // ses vrais messages passent toujours
+  V.sendCommand('sellTower', [t.id]);
+  await wait(500);
+  check('… ses vrais messages passent toujours', !g.towerById(t.id));
+  // relance en pleine partie (« Recommencer pour tous ») : les absents ne sont plus du voyage
+  await V.leave();
+  await wait(400);
+  H3.prune();
+  const kept = H3.lobby.players.length;
+  H3.prune(true);
+  check('relance : l’absent est retiré du salon (prune forcé), pas avant', kept === 2 && H3.lobby.players.length === 1, `${kept} → ${H3.lobby.players.length}`);
+  H3.endGame(null);
+  await wait(200);
+  spy.close();
+  await H3.leave();
+}
 console.log(failures ? `\n${failures} échec(s)` : '\nTous les tests réseau passent');
 process.exit(failures ? 1 : 0);

@@ -291,6 +291,129 @@ async function syncChecks() {
 }
 await syncChecks();
 
+// ─────────── ce que voit l'invité (horloge simulée, sans relais) ───────────
+// Miroir d'une partie sur un couloir bordé de socles : trajectoires des volants pendant
+// la vague, recharge des combos, activité des lanternes (Torrent, Feux follets, Source),
+// propriétaire des pierres, états mal formés ou forgés qui ne figent rien.
+async function mirrorChecks() {
+  console.log('Miroir de l’invité (horloge simulée)');
+  const { Game, STEP } = await import('../src/core/game.js');
+  const { defs } = await import('../src/data.js');
+  const { HostSync, ClientSync, applyCommand, makeMirror } = await import('../src/net/sync.js');
+  const { Renderer } = await import('../src/render/renderer.js');
+  const level = {
+    id: 'miroir',
+    world: 'moss',
+    map: [',,S,,,,', ',#.#oo,', ',#.#,o,', ',#.#,o,', ',#.#oo,', ',#.#,,,', ',,.,,,,', ',,G,,,,'],
+    startGold: 5000,
+    lives: 999,
+    towers: Object.keys(defs.towers),
+    stones: { cost: 10, max: 10 },
+    // dernière vague : ni la suivante ni l'appel anticipé n'affichent les volants
+    waves: [{ groups: [{ enemy: 'kodama', count: 30, interval: 0.7, hp: 40 }, { enemy: 'tengu', count: 30, interval: 1, delay: 1 }] }],
+  };
+  const players = [
+    { name: 'Hôte', elements: ['fire', 'water', 'earth'] },
+    { name: 'Aki', elements: ['wind', 'earth'] },
+  ];
+  const nowOrig = performance.now;
+  let clock = 0;
+  performance.now = () => clock;
+  const thrown = [];
+  try {
+    const game = new Game(level, defs, { seed: 5, players });
+    const net = [];
+    const host = new HostSync(game, (snap) => {
+      const json = JSON.stringify(snap);
+      net.push({ at: clock + 60, fn: () => client.apply(JSON.parse(json)) });
+    });
+    const mirror = makeMirror(Game, level, defs, { seed: 5, players, you: 1 });
+    const client = new ClientSync(mirror, (op, args) => net.push({ at: clock + 60, fn: () => applyCommand(game, 1, op, args) }));
+    const frame = (each) => {
+      clock += 1000 / 60;
+      game.update(STEP);
+      host.collect(game.events);
+      game.events.length = 0;
+      host.tick(1 / 60);
+      for (const m of net.filter((m) => m.at <= clock)) {
+        try {
+          m.fn();
+        } catch (e) {
+          thrown.push(e.message);
+        }
+      }
+      for (let i = net.length - 1; i >= 0; i--) if (net[i].at <= clock) net.splice(i, 1);
+      try {
+        client.tick(1 / 60);
+      } catch (e) {
+        thrown.push(e.message);
+      }
+      mirror.events.length = 0;
+      each?.();
+    };
+    const run = (sec, each) => {
+      for (let k = 0; k < sec * 60; k++) frame(each);
+    };
+    game.placeTower('water_torrent', 3, 2, 0);
+    game.placeTower('fire_wisp', 1, 2, 0);
+    game.placeTower('water', 1, 1, 0);
+    game.placeTower('wind', 3, 1, 1); // Givre (Eau + Vent) : combo à impulsions
+    game.placeTower('earth_guard', 3, 4, 1);
+    game.placeTower('water_spring', 1, 4, 0); // soigne le mur du Gardien
+    game.placeStone(4, 1, 0); // pierre de l'hôte, sur le gravier du bas-côté
+    game.startNextWave(0, false);
+    const shot = { water_torrent: [0, 0], fire_wisp: [0, 0], water_spring: [0, 0] };
+    let lines = 0;
+    let linesMissing = 0;
+    let zoneFrames = 0;
+    let zoneOff = 0;
+    run(25, () => {
+      for (const t of game.towers) if (shot[t.type] && t.shotT > 0) shot[t.type][0]++;
+      for (const t of mirror.towers) if (shot[t.type] && t.shotT > 0) shot[t.type][1]++;
+      const h = Renderer.prototype.flyerLines(game).length;
+      const m = Renderer.prototype.flyerLines(mirror).length;
+      if (h) lines++;
+      if (h && !m) linesMissing++;
+      const zh = game.zones.find((z) => z.def.id === 'frost');
+      const zm = mirror.zones.find((z) => z.def.id === 'frost');
+      if (zh && zm) {
+        zoneFrames++;
+        // (l'invité lit l'état ~0,2 s en retard : l'impulsion y repart à 0 un peu plus tard)
+        if (Math.abs(zh.timer - zm.timer) > 0.6) zoneOff++;
+      }
+    });
+    check('trajectoires des volants pendant la vague : vues aussi par l’invité', lines > 300 && linesMissing < 30, `${linesMissing}/${lines} images sans trajectoire`);
+    check('recharge du Givre : même arc chez l’invité (écart ≤ 0,6 s, 90 % du temps)', zoneFrames > 600 && zoneOff / zoneFrames < 0.1, `${zoneOff}/${zoneFrames} images décalées`);
+    for (const [type, [h, m]] of Object.entries(shot)) check(`${type} : en action chez l’invité aussi`, h > 0 && m > 0, `hôte ${h}, invité ${m} images`);
+    const si = mirror.grid.idx(4, 1);
+    check('pierre de l’hôte : l’invité Terre ne peut pas la retirer', mirror.grid.stone[si] === 1 && mirror.stoneOwner?.[si] === 0 && mirror.canRemoveStone?.(4, 1, 1).reason === 'owner', `${mirror.stoneOwner?.[si]}`);
+
+    // états mal formés ou forgés (n'importe quel client du relais peut publier)
+    const rec0 = client.received;
+    let ret = null;
+    try {
+      ret = client.apply({ type: 'snap', seq: 1e15 });
+      client.apply({ type: 'snap', seq: 1e15 + 1, rt: 1 });
+    } catch (e) {
+      thrown.push(e.message);
+    }
+    run(1);
+    check('état absurde ignoré, la lecture continue', ret === false && client.received > rec0 + 4 && client.lastSeq < 1e15 && thrown.length === 0, `${ret} ${client.received - rec0} ${client.lastSeq} ${thrown.join(' | ')}`);
+    // état bien formé mais à la séquence faussée : les vrais états reprennent la main
+    const real = host.snapshot();
+    client.apply({ ...JSON.parse(JSON.stringify(real)), seq: 1e15 });
+    const rec1 = client.received;
+    const before = mirror.enemies.map((e) => `${e.id}:${e.x}`).join();
+    run(3);
+    check('séquence faussée : le miroir repart en moins de 3 s', client.received > rec1 + 8 && mirror.enemies.map((e) => `${e.id}:${e.x}`).join() !== before && thrown.length === 0, `${client.received - rec1} ${thrown.join(' | ')}`);
+  } catch (e) {
+    check('miroir : exception', false, e.stack);
+  } finally {
+    performance.now = nowOrig;
+  }
+}
+await mirrorChecks();
+
 if (!(await relayUp())) {
   console.log(`Relais MQTT injoignable (${BROKER}) : lancez-le d'abord (voir tools/net-test.mjs).`);
   process.exit(1);
@@ -927,6 +1050,112 @@ try {
   let ended = true;
   for (const p of G) ended = (await p.until(() => /mis fin à la partie/.test(document.querySelector('.modal-card')?.textContent || ''), null, 8000)) && ended;
   check('l’hôte quitte la partie : « L’hôte a mis fin à la partie »', ended);
+  for (const p of [H, ...G]) await p.close();
+
+  // ─────────────── trois joueurs : départs, relance, fin manquée, messages forgés ───────────────
+  console.log('Départs et relance');
+  const { MqttClient } = await import('../src/net/mqtt.js');
+  const X = await new Player('X').open();
+  await X.until(() => window.__session?.online);
+  const codeX = (await lobby(X)).code;
+  await X.tapSel('.lobby-fold');
+  await X.tapSel('.lobby-el[data-el="fire"]');
+  const Y = await new Player('Y').open(url(`&salon=${codeX}`));
+  const Z = await new Player('Z').open(url(`&salon=${codeX}`));
+  for (const [p, el] of [
+    [Y, 'water'],
+    [Z, 'wind'],
+  ]) {
+    await p.until(() => window.__session.role === 'guest' && window.__session.online, null, 10000);
+    if ((await p.ev((el) => document.querySelector(`.lobby-el[data-el="${el}"]`).getAttribute('aria-checked'), el)) !== 'true') await p.tapSel(`.lobby-el[data-el="${el}"]`);
+    await p.until((el) => window.__session.lobby.players.find((x) => x.id === window.__session.id)?.element === el, el, 4000);
+  }
+  check('salon à trois (Feu, Eau, Vent)', await X.until(() => window.__session.lobby.players.map((p) => p.element).join() === 'fire,water,wind'), JSON.stringify((await lobby(X)).players));
+  await X.ev(() => window.__startLevel('1-1'));
+  check('les deux invités entrent dans la partie', (await Y.until(() => window.__state.screen === 'game' && window.__coop.isGuest)) && (await Z.until(() => window.__state.screen === 'game' && window.__coop.isGuest)));
+
+  // Y quitte le salon en pleine partie ; « Recommencer pour tous » repart sans lui
+  await Y.tapSel('#btn-pause');
+  await Y.page.locator('.modal-card .actions .btn', { hasText: 'Quitter le salon' }).click();
+  check('X voit Y absent', await X.until(() => window.__session.lobby.players.find((p) => p.element === 'water')?.online === false, null, 6000));
+  const gidX = await X.ev(() => window.__state.gid);
+  await Z.ev(() => {
+    window.__sawEnd = false;
+    new MutationObserver(() => {
+      if (/Partie terminée/.test(document.querySelector('.modal-card')?.textContent || '') && !document.querySelector('#modal').classList.contains('hidden')) window.__sawEnd = true;
+    }).observe(document.querySelector('#modal'), { attributes: true, childList: true, subtree: true });
+  });
+  await X.tapSel('#btn-pause');
+  await X.page.locator('.modal-card .actions .btn', { hasText: 'Recommencer' }).click();
+  check('« Recommencer pour tous » : partie à 2, sans l’absent', await X.until((g0) => window.__state.game && window.__state.gid !== g0 && window.__state.game.players.length === 2 && window.__session.lobby.players.length === 2, gidX, 6000), JSON.stringify(await X.ev(() => [window.__state.game?.players.length, window.__session.lobby.players.map((p) => [p.element, p.online])])));
+  check('… l’hôte retrouve l’Eau de l’absent (palette)', await X.ev(() => window.__state.game.ownsElement(0, 'water') && window.__state.game.availableTowers.some((t) => window.__state.game.defs.towers[t].element === 'water')));
+  check('… Z entre dans la nouvelle partie (sans « Partie terminée »)', (await Z.until((g0) => window.__state.screen === 'game' && window.__coop.isGuest && window.__state.gid !== g0 && window.__state.game.players.length === 2, gidX, 8000)) && !(await Z.ev(() => window.__sawEnd)));
+
+  console.log('Fin de partie manquée pendant une coupure');
+  // le message de fin n'arrive pas chez Z (socle gelée, relais qui coupe) : en revenant,
+  // il voit au salon que l'hôte n'est plus en partie et conclut
+  await Z.ev(() => {
+    const s = window.__session;
+    const on = s.onGuestMessage;
+    s.onGuestMessage = (m) => m.type !== 'end' && on.call(s, m);
+    window.__unmute = () => (s.onGuestMessage = on);
+  });
+  await X.tapSel('#btn-pause');
+  await X.page.locator('.modal-card .actions .btn', { hasText: 'Carte' }).click();
+  check('invité sans le message de fin : « Partie terminée » (pas d’attente sans fin)', await Z.until(() => /Partie terminée/.test(document.querySelector('.modal-card')?.textContent || '') && !document.querySelector('#modal').classList.contains('hidden'), null, 8000), await Z.ev(() => document.querySelector('#coop-wait').textContent));
+  await Z.tapSel('.modal-card .actions .btn.primary');
+  await Z.until(() => window.__state.screen === 'title');
+  await Z.ev(() => window.__unmute());
+
+  // le dernier invité part : la relance redevient une partie seul
+  await X.tapSel('#btn-map-back');
+  await X.until(() => window.__state.screen === 'title');
+  await X.ev(() => window.__startLevel('1-1'));
+  await Z.until(() => window.__state.screen === 'game' && window.__coop.isGuest);
+  // un tiers du relais forge une fin de partie (avec du HTML) : sans la partie qu'elle
+  // termine, elle est ignorée ; avec, le résultat n'affiche que des nombres
+  const spy = new MqttClient(BROKER);
+  await spy.connect();
+  const fake = (gid) => JSON.stringify({ type: 'end', ...(gid != null ? { gid } : {}), result: { won: true, stars: 3, challenge: true, level: '1-1', kills: '<img src=x onerror="window.__pwned=1">', towers: '<b id="inj">7</b>', lives: '<i id="inj2">' } });
+  spy.publish(`jde/v1/${codeX}/h`, fake(null));
+  await wait(800);
+  check('fin forgée sans sa partie : ignorée (l’invité joue toujours)', (await Z.ev(() => window.__state.screen === 'game' && !window.__state.resultPending && !window.__state.resultShown && document.querySelector('#modal').classList.contains('hidden'))));
+  spy.publish(`jde/v1/${codeX}/h`, fake(await Z.ev(() => window.__state.gid)));
+  await Z.until(() => window.__state.resultShown, null, 4000);
+  const inj = await Z.ev(() => ({ shown: window.__state.resultShown, pwned: window.__pwned ?? null, tags: !!document.querySelector('#inj, #inj2, .result-stats img'), text: document.querySelector('.result-stats')?.textContent || '' }));
+  check('fin forgée : aucun HTML injecté dans le résultat', inj.shown && inj.pwned === null && !inj.tags, JSON.stringify(inj));
+  spy.close();
+  await Z.tapSel('.modal-card .actions .btn.primary'); // Retour au salon
+  await Z.until(() => window.__state.screen === 'title' && window.__session.role === 'guest');
+
+  await Z.tapSel('.lobby-leave'); // Quitter ce salon (depuis l'accueil)
+  await X.until(() => window.__session.lobby.players[1]?.online === false, null, 6000);
+  await X.tapSel('#btn-pause');
+  await X.page.locator('.modal-card .actions .btn', { hasText: 'Recommencer' }).click();
+  check('seul après les départs : « Recommencer » relance une partie seul', await X.until(() => window.__state.game && !window.__state.coopRole && window.__state.game.players.length === 1 && !window.__session.inGame && window.__session.lobby.players.length === 1, null, 6000));
+  for (const p of [X, Y, Z]) await p.close();
+
+  console.log('Recherche de salon annulée');
+  // deux relais (le jeu en a trois) : la recherche d'un code faux passe au suivant ;
+  // l'annuler ne doit ni fermer son propre salon ni dire « Vous avez rejoint »
+  const W = await new Player('W').open(`${BASE}?broker=${encodeURIComponent(`${BROKER},${BROKER}`)}`);
+  await W.until(() => window.__session?.online);
+  await W.ev(() => {
+    window.__toasts = [];
+    const el = document.querySelector('#app-toast');
+    new MutationObserver(() => window.__toasts.push(el.textContent)).observe(el, { childList: true, characterData: true, subtree: true });
+  });
+  await W.tapSel('.lobby-join-btn');
+  await W.page.fill('.lobby-join-input', 'ZZZZ');
+  await W.tapSel('.lobby-join-form .btn.primary');
+  await W.until(() => /Recherche du salon/.test(document.querySelector('.lobby-error')?.textContent || ''));
+  check('pendant la recherche : « Annuler la recherche »', /Annuler la recherche/.test(await W.ev(() => document.querySelector('.lobby-leave')?.textContent || '')));
+  await W.tapSel('.lobby-leave');
+  await W.page.waitForTimeout(7500);
+  const wl = await W.ev(() => ({ role: window.__session.role, state: window.__session.state, client: !!window.__session.client?.connected, toasts: window.__toasts }));
+  check('recherche annulée : son salon reste ouvert et en ligne', wl.role === 'host' && wl.state === 'online' && wl.client, JSON.stringify(wl));
+  check('… sans faux « Vous avez rejoint »', !wl.toasts.some((t) => /Vous avez rejoint/.test(t)), JSON.stringify(wl.toasts));
+  await W.close();
 } catch (e) {
   failures++;
   console.log(`  ✗ exception : ${e.message}`);

@@ -14,24 +14,27 @@
 // parties finiraient par diverger.
 
 import { computeZones } from '../core/combos.js';
-import { STEP } from '../core/game.js';
+import { STEP, PRIORITIES } from '../core/game.js';
 
 export const SNAPSHOT_HZ = 8;
 const KEYFRAME_EVERY = 16; // état complet (lanternes, pierres) au moins toutes les 2 s
 
-// Commandes qu'un invité peut demander à l'hôte (méthodes de Game, `pid` ajouté en dernier).
+// Commandes qu'un invité peut demander à l'hôte (méthodes de Game, `pid` ajouté en
+// dernier) et forme de leurs arguments, vérifiée par l'hôte (le message vient du
+// réseau) : 'int' entier (case, identifiant de lanterne), 'type' lanterne connue,
+// 'priority' priorité de ciblage, 'wave' numéro de vague (entier) ou rien.
 export const COMMANDS = {
-  placeTower: 3,
-  sellTower: 1,
-  undoPlace: 2,
-  fuse: 2,
-  setPriority: 2,
-  cyclePriority: 1,
-  placeStone: 2,
-  removeStone: 2,
-  startNextWave: 1, // [vague demandée] : une demande déjà servie (deux joueurs, double toucher) est ignorée
-  rewind: 0,
-  setRally: 3,
+  placeTower: ['type', 'int', 'int'],
+  sellTower: ['int'],
+  undoPlace: ['int'],
+  fuse: ['int', 'int'],
+  setPriority: ['int', 'priority'],
+  cyclePriority: ['int'],
+  placeStone: ['int', 'int'],
+  removeStone: ['int', 'int'],
+  startNextWave: ['wave'], // [vague demandée] : une demande déjà servie (deux joueurs, double toucher) est ignorée
+  rewind: [],
+  setRally: ['int', 'int', 'int'],
 };
 
 // Événements relayés aux invités (effets visuels et sonores).
@@ -101,6 +104,28 @@ function towerSig(list) {
 
 // Horloge en millisecondes (navigateur et Node).
 const clock = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+
+// Forme d'un état de l'hôte. Il arrive par un relais public : un message absurde ou
+// forgé (n'importe quel client peut publier sur le sujet du salon) ne doit ni figer le
+// miroir (numéro de séquence énorme) ni planter la boucle de l'invité (champ manquant).
+const STATES = ['build', 'wave', 'won', 'lost'];
+const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
+const isRows = (v) => Array.isArray(v) && v.every((row) => Array.isArray(row));
+const isInts = (v) => Array.isArray(v) && v.every((x) => Number.isSafeInteger(x));
+export function validSnap(s, gid = null) {
+  if (!s || typeof s !== 'object' || !Number.isSafeInteger(s.seq) || s.seq < 1) return false;
+  if (gid != null && s.gid !== gid) return false; // état d'une autre partie, ou sans partie
+  if (s.rt != null && !isNum(s.rt)) return false;
+  if (!['t', 'ct', 'lv', 'ml', 'wi', 'rc', 'ra', 'lc', 'ru', 'sp'].every((k) => isNum(s[k]))) return false;
+  if (s.nw != null && !isNum(s.nw)) return false;
+  if (!STATES.includes(s.st) || !Array.isArray(s.gold) || !s.gold.every(isNum)) return false;
+  if (!isRows(s.en) || (s.em != null && !isRows(s.em)) || !isRows(s.ba) || !isRows(s.to)) return false;
+  if (!Array.isArray(s.ev) || !s.ev.every((ev) => ev && typeof ev === 'object' && typeof ev.type === 'string')) return false;
+  for (const k of ['tw', 'ec', 'su', 'zt']) if (s[k] != null && !isRows(s[k])) return false;
+  for (const k of ['sn', 'so', 'cw', 'fl']) if (s[k] != null && !isInts(s[k])) return false;
+  if (s.rw != null && (typeof s.rw !== 'object' || !isNum(s.rw.t) || !isNum(s.rw.d) || (s.rw.gh != null && !isInts(s.rw.gh)))) return false;
+  return true;
+}
 
 // Une pose (ou une commande qui l'attend) reste provisoire chez l'invité au plus
 // PENDING_MS de temps réel (pas de temps de jeu : à ×2, 2 s de jeu ne laissaient
@@ -184,10 +209,13 @@ export class HostSync {
     }
     const stones = [];
     for (let i = 0; i < g.grid.size; i++) if (g.grid.stone[i]) stones.push(i);
-    const ss = stones.join(',');
+    // propriétaire de chaque pierre (seul celui qui l'a payée la retire, en coopération)
+    const owners = stones.map((i) => g.stoneOwner?.[i] ?? -1);
+    const ss = `${stones.join(',')}|${owners.join(',')}`;
     if (key || ss !== this.sig.stones) {
       this.sig.stones = ss;
       s.sn = stones;
+      s.so = owners;
     }
     // lanternes étourdies (piétinement d'un boss) : liste courte, tant qu'il y en a
     const su = [];
@@ -202,6 +230,16 @@ export class HostSync {
       s.cw = [...g.chargedWaves];
     }
     if (g.rewindAnim) s.rw = { t: r2(g.rewindAnim.t), d: g.rewindAnim.dur, gh: g.rewindAnim.ghosts };
+    // minuteries des combos périodiques (Givre, Tornade) : arc de recharge des invités
+    const zt = [];
+    for (const z of g.zones) {
+      const kind = z.def.effect?.kind;
+      if (kind === 'pulse' || kind === 'tornado') zt.push([z.key, r2(z.timer)]);
+    }
+    if (zt.length) s.zt = zt;
+    // portails d'où sortiront encore des volants pendant la vague (leurs trajectoires)
+    const fl = g.flyerPortals();
+    if (fl.length) s.fl = fl;
     return s;
   }
 
@@ -260,12 +298,22 @@ export class HostSync {
   }
 }
 
-// Applique une commande reçue d'un invité. Renvoie le résultat de la méthode.
+// Un argument de commande a-t-il la forme attendue ? Une chaîne à la place d'un
+// entier (« '4' ») donnait un indice de case faux qui contournait les contrôles.
+const ARG_OK = {
+  int: (v) => Number.isSafeInteger(v),
+  type: (v, game) => typeof v === 'string' && Object.hasOwn(game.defs.towers, v),
+  priority: (v) => PRIORITIES.includes(v),
+  wave: (v) => v == null || Number.isSafeInteger(v),
+};
+
+// Applique une commande reçue d'un invité. Renvoie le résultat de la méthode (null :
+// commande inconnue ou mal formée, ignorée).
 export function applyCommand(game, pid, op, args = []) {
-  const n = COMMANDS[op];
-  if (n == null || !Array.isArray(args)) return null;
-  const a = args.slice(0, n).map((v) => (typeof v === 'number' || typeof v === 'string' ? v : null));
-  while (a.length < n) a.push(undefined);
+  if (typeof op !== 'string' || !Object.hasOwn(COMMANDS, op) || !Array.isArray(args)) return null;
+  const spec = COMMANDS[op];
+  const a = spec.map((kind, k) => args[k]);
+  if (!spec.every((kind, k) => ARG_OK[kind](a[k], game))) return null;
   if (op === 'startNextWave') {
     if (typeof a[0] === 'number' && a[0] !== game.waveIndex + 1) return false; // vague déjà appelée
     return game.startNextWave(pid, true);
@@ -298,6 +346,8 @@ export class ClientSync {
     this.rewindAvail = 0;
     this.speed = 1;
     this.gid = null;
+    this.flyers = []; // portails d'où sortiront encore des volants (envoyés par l'hôte)
+    this.behind = null; // états valides refusés comme « en retard » à la suite (séquence faussée ?)
     // Lecture régulière des états : ils arrivent par à-coups (relais, réseau mobile) ;
     // on les rejoue à la cadence de l'hôte avec un léger retard (tampon de gigue),
     // et les yokai glissent d'un état au suivant sans arrêt ni saut.
@@ -321,6 +371,7 @@ export class ClientSync {
     const self = this;
     g.update = () => {};
     g.rewindAvailable = () => self.rewindAvail;
+    g.flyerPortals = () => self.flyers;
     const real = (id) => (id < 0 ? self.realIds.get(id) ?? id : id);
     // Une pose provisoire garde son id pour l'interface (sélection, « Annuler ») :
     // une fois confirmée, cet id désigne la lanterne attribuée par l'hôte.
@@ -344,7 +395,7 @@ export class ClientSync {
       if (op === 'placeTower') continue;
       const local = g[op].bind(g);
       g[op] = (...args) => {
-        const n = COMMANDS[op];
+        const n = COMMANDS[op].length;
         // appel de vague : la réponse de l'hôte met un instant à revenir ; un second
         // toucher pendant ce temps (bouton encore inchangé) n'appelle pas une vague de plus
         if (op === 'startNextWave') {
@@ -396,6 +447,11 @@ export class ClientSync {
       if (t.shotT > 0) t.shotT -= dt;
       if (t.stunT > 0) t.stunT = Math.max(0, t.stunT - dt);
       t.ttl = Math.max(0, t.ttl - dt);
+    }
+    // recharge des combos périodiques : elle avance entre deux états (l'hôte la recale)
+    for (const z of g.zones) {
+      const fx = z.def.effect;
+      if ((fx?.kind === 'pulse' || fx?.kind === 'tornado') && z.timer < fx.interval) z.timer = Math.min(fx.interval, z.timer + dt);
     }
     // tornades : elles glissent d'un état à l'autre, comme les yokai
     for (const t of g.tornadoes) {
@@ -449,15 +505,24 @@ export class ClientSync {
   }
 
   // État reçu de l'hôte : mis en file, appliqué à son tour par play() (chaque image).
+  // Renvoie false si l'état est ignoré (mal formé, d'une autre partie, en retard).
   apply(s) {
-    if (this.gid != null && s.gid != null && s.gid !== this.gid) return; // état d'une autre partie
-    if (s.seq <= this.lastSeq) return; // message en retard
+    if (!validSnap(s, this.gid)) return false;
+    if (s.seq <= this.lastSeq) {
+      // message en retard… ou séquence faussée par un état forgé (numéro énorme) : si
+      // les états continuent d'arriver « en retard » mais dans l'ordre, ce sont ceux de
+      // l'hôte, et la lecture repart d'eux (sans quoi le miroir resterait figé)
+      this.behind = this.behind && s.seq > this.behind.seq ? { seq: s.seq, n: this.behind.n + 1 } : { seq: s.seq, n: 1 };
+      if (this.behind.n < 12) return false;
+      this.queue = this.queue.filter((q) => q.seq < s.seq);
+    }
+    this.behind = null;
     this.lastSeq = s.seq;
     this.received++;
     if (s.rt == null) {
-      this.applyNow(s); // hôte sans heure d'envoi : application immédiate
+      this.applySafe(s); // hôte sans heure d'envoi : application immédiate
       this.alpha = 1;
-      return;
+      return true;
     }
     const now = clock();
     const off = now - s.rt;
@@ -479,7 +544,18 @@ export class ClientSync {
     }
     this.queue.push(s);
     // lecture arrêtée (onglet caché) : on ne garde pas des minutes d'états en attente
-    while (this.queue.length > 24) this.applyNow(this.queue.shift(), true);
+    while (this.queue.length > 24) this.applySafe(this.queue.shift(), true);
+    return true;
+  }
+
+  // Un état qui échoue à s'appliquer (contenu inattendu) est écarté sans arrêter la
+  // lecture : play() tourne dans la boucle d'affichage de l'invité.
+  applySafe(s, quiet = false) {
+    try {
+      this.applyNow(s, quiet);
+    } catch (e) {
+      console.warn('État de l’hôte ignoré :', e);
+    }
   }
 
   // Lecture : applique les états dont l'heure est venue, calcule l'interpolation.
@@ -501,7 +577,7 @@ export class ClientSync {
     for (let k = 0; k < due; k++) {
       const s = this.queue.shift();
       // gros retard rattrapé d'un coup : les effets décoratifs des plus anciens sont sautés
-      this.applyNow(s, due - k > 3);
+      this.applySafe(s, due - k > 3);
       this.prevRt = this.curRt ?? s.rt;
       this.curRt = s.rt;
     }
@@ -519,7 +595,7 @@ export class ClientSync {
   drain() {
     while (this.queue.length) {
       const s = this.queue.shift();
-      this.applyNow(s, this.queue.length > 0);
+      this.applySafe(s, this.queue.length > 0);
       this.prevRt = this.curRt ?? s.rt;
       this.curRt = s.rt;
     }
@@ -556,6 +632,7 @@ export class ClientSync {
     const list = [];
     for (const row of s.en) {
       const [id, ti, x, y, hp, maxHp, bits, ab, spawnT, slowF, wave, timers] = row;
+      if (!Number.isSafeInteger(id) || !this.types[ti] || ![x, y, hp, maxHp, bits].every(isNum)) continue; // ligne inattendue
       let e = this.byId.get(id);
       if (!e) {
         e = g.createEnemy(this.types[ti], { wave });
@@ -574,7 +651,7 @@ export class ClientSync {
     // lignes courtes : yokai déjà connus (un inconnu attend l'état complet suivant)
     for (const [id, x, y, hp, bits, ab = -1, spawnT = 0, slowF = 1] of s.em || []) {
       const e = this.byId.get(id);
-      if (!e) continue;
+      if (!e || ![x, y, hp, bits].every(isNum)) continue;
       this.setEnemy(e, x, y, hp, bits, ab, spawnT, slowF, rewound);
       seen.add(id);
       list.push(e);
@@ -610,7 +687,7 @@ export class ClientSync {
       const old = new Map(g.towers.filter((t) => !t.pending).map((t) => [t.id, t]));
       // une pose encore en route vers l'hôte reste affichée (PENDING_MS au plus)
       const waiting = g.towers.filter((t) => t.pending && !t.confirmed && fresh(t));
-      g.towers = s.tw.map((row) => this.unpackTower(row, old.get(row[0])));
+      g.towers = s.tw.filter((row) => this.towerRowOk(row)).map((row) => this.unpackTower(row, old.get(row[0])));
       for (const p of waiting) if (!g.towerAt(p.c, p.r)) g.towers.push(p);
       computeZones(g);
     } else if (g.towers.some((t) => t.pending && (t.confirmed || !fresh(t)))) {
@@ -618,7 +695,7 @@ export class ClientSync {
     }
     if (s.ec) {
       const old = new Map(g.echoes.map((t) => [t.id, t]));
-      g.echoes = s.ec.map((row) => {
+      g.echoes = s.ec.filter((row) => this.towerRowOk(row)).map((row) => {
         const t = this.unpackTower(row, old.get(row[0]));
         t.echo = true;
         t.ttl = row[10];
@@ -666,7 +743,19 @@ export class ClientSync {
       }
       if (changed) g.flow.compute();
       g.stonesPlaced = s.sn.length;
+      if (s.so && g.stoneOwner) {
+        g.stoneOwner.fill(-1);
+        s.sn.forEach((i, k) => {
+          if (i >= 0 && i < st.length) g.stoneOwner[i] = s.so[k] ?? -1;
+        });
+      }
     }
+    // minuteries des combos périodiques (après un éventuel recalcul des zones)
+    if (s.zt) {
+      const timers = new Map(s.zt);
+      for (const z of g.zones) if (isNum(timers.get(z.key))) z.timer = timers.get(z.key);
+    }
+    this.flyers = s.fl || [];
     // Rembobinage : l'animation est rejouée avec l'historique reçu.
     if (s.rw && !g.rewindAnim) {
       const frames = [{ enemies: list.map((e) => ({ ...e })) }, ...this.history.slice().reverse()];
@@ -678,7 +767,11 @@ export class ClientSync {
     for (const ev of s.ev) {
       // retard rattrapé, ou file d'effets qui n'est plus lue (onglet caché) : on saute le décor
       if ((quiet || g.events.length > 300) && COSMETIC.has(ev.type)) continue;
-      this.event(ev);
+      try {
+        this.event(ev);
+      } catch (e) {
+        console.warn('Événement de l’hôte ignoré :', ev.type, e);
+      }
     }
     // Or du joueur local : les poses encore en route vers l'hôte restent décomptées
     // (sans quoi le compteur remonterait puis redescendrait).
@@ -722,6 +815,12 @@ export class ClientSync {
 
   tornadoColor() {
     return this.game.defs.combos.find((c) => c.effect?.kind === 'tornado')?.color ?? '#ff8a3c';
+  }
+
+  // Ligne de lanterne exploitable (type connu, case entière) ?
+  towerRowOk(row) {
+    const [id, ti, c, r, level] = row;
+    return Number.isSafeInteger(id) && !!this.towerTypes[ti] && this.game.grid.inBounds(c, r) && Number.isInteger(level);
   }
 
   unpackTower(row, prev) {
@@ -770,6 +869,14 @@ export class ClientSync {
       }
     } else if (ev.type === 'beam' && ev.beam) {
       g.beams.push({ ...ev.beam });
+      // le Torrent tire (recul, gerbe) : comme updateTower chez l'hôte
+      if (ev.tower) {
+        ev.tower.shotT = 0.18;
+        ev.tower.angle = Math.atan2(ev.beam.y1 - ev.tower.y, ev.beam.x1 - ev.tower.x);
+      }
+    } else if ((ev.type === 'aura' || ev.type === 'barrierHeal') && ev.tower) {
+      // Feux follets, Source sacrée : activité de la lanterne (orbite, anneau d'eau)
+      ev.tower.shotT = ev.type === 'aura' ? 0.25 : 0.6;
     } else if (ev.type === 'reject' && ev.pid !== g.localPlayer) {
       return; // refus adressé à un autre joueur
     } else if (ev.type === 'combo') {

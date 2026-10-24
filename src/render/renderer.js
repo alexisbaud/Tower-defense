@@ -622,7 +622,7 @@ export class Renderer {
     const game = this.game;
     if (this.routeVersion !== game.flow.version) {
       this.routeVersion = game.flow.version;
-      this.routes = game.grid.spawns.map((s) => game.flow.route(s));
+      this.routes = game.grid.spawns.map((s) => game.flow.route(s, 0, 1)); // départ vers le bas, comme les yokai
       // segments uniques (les tracés se rejoignent) et distance restante au sanctuaire
       const g = game.grid;
       const seen = new Set();
@@ -1106,7 +1106,8 @@ export class Renderer {
       const wave = game.waves?.[game.waveIndex + 1];
       for (const gr of wave?.groups || []) if (fly(gr.enemy)) spawns.add(gr.spawn ?? 0);
     } else if (game.state === 'wave') {
-      for (const sp of game.spawners || []) if (sp.spawned < sp.count && fly(sp.enemy)) spawns.add(sp.spawn ?? 0);
+      // (invité : le miroir ne simule pas les apparitions, l'hôte envoie ces portails)
+      for (const k of game.flyerPortals?.() || []) spawns.add(k);
       // appel anticipé possible : la vague suivante compte aussi
       if (typeof game.canCallNextWave === 'function' && game.canCallNextWave()) {
         const wave = game.waves?.[game.waveIndex + 1];
@@ -1394,7 +1395,8 @@ export class Renderer {
     const sy = b.y + ts * 0.3;
     const tx = this.ox + t.x * ts;
     const ty = this.oy + t.y * ts;
-    drawTower(ctx, sx + (tx - sx) * e, sy + (ty - sy) * e, ts * (1.1 - 0.1 * e), this.game.defs.towers[t.type], t.level, time, { alpha: 0.85 });
+    // taille de case fixe (corps en cache), grossissement 1,1 → 1 par opts.scale
+    drawTower(ctx, sx + (tx - sx) * e, sy + (ty - sy) * e, ts, this.game.defs.towers[t.type], t.level, time, { alpha: 0.85, scale: 1.1 - 0.1 * e });
   }
 
   // Message éphémère près du geste (« annulé », raison d'un refus).
