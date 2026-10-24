@@ -104,7 +104,8 @@ export class HostSync {
 
   snapshot() {
     const g = this.game;
-    const key = this.seq++ % KEYFRAME_EVERY === 0;
+    const key = this.seq++ % KEYFRAME_EVERY === 0 || this.forceKey;
+    this.forceKey = false;
     const s = {
       type: 'snap',
       seq: this.seq,
