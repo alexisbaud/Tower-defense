@@ -1,33 +1,59 @@
-// Contrôles tactiles : tap pour poser, glisser pour fusionner, appui long pour infos.
+// Contrôles tactiles du plateau.
+//
+//   Lanterne choisie   le fantôme flotte LIFT px au-dessus du doigt (case visée = case
+//                      sous le fantôme) ; la pose se valide au RELÂCHEMENT, relâcher hors
+//                      socle annule. Un simple toucher sur un socle pose sur ce socle :
+//                      doigt immobile, le fantôme ne se soulève qu'après LIFT_MS, en une
+//                      montée visible de RISE_MS ; tant qu'elle n'est pas finie, relâcher
+//                      reste un toucher (pas de pose une rangée trop haut sur un toucher lent).
+//   Outil pierre       même geste : le nouveau chemin s'affiche avant de relâcher.
+//   Lanterne           toucher : sélection (barre d'actions) ; appui long : fiche ;
+//                      glisser : fusion (la lanterne portée flotte au-dessus du doigt).
+//   Yokai              appui long sur le yokai le plus proche du doigt : sa fiche.
+//   En pause           étude seulement : toucher et appui long, ni pose ni fusion.
 import { T } from '../core/grid.js';
 
-const LONG_PRESS_MS = 430;
+export const LONG_PRESS_MS = 430;
+const HOLD_DELAY_MS = 110; // l'anneau d'appui long n'apparaît qu'après ce délai (pas sur un toucher)
 const DRAG_THRESHOLD = 9;
-// La lanterne portée (fusion) est dessinée au-dessus du doigt pour rester visible.
+const LIFT_MS = 260; // doigt immobile plus longtemps : le fantôme commence à se soulever
+const RISE_MS = 170; // durée de la montée du fantôme (doigt immobile)
+// Le fantôme (pose, pierre, fusion) est dessiné au-dessus du doigt pour rester visible.
 export const LIFT = 60;
+const ENEMY_RADIUS = 0.6; // rayon de prise d'un yokai, en cases
 
 export class Input {
   /**
    * @param {HTMLCanvasElement} canvas
    * @param {import('../render/renderer.js').Renderer} renderer
-   * @param {object} h  callbacks : game(), onInfo(target), onFeedback(kind, data), onAction(kind)
+   * @param {object} h  game(), onInfo(target), onFeedback(kind, data), onAction(kind, data),
+   *                    onHold(state, pagePoint, ms), onBoardTouch()
    */
   constructor(canvas, renderer, h) {
     this.canvas = canvas;
     this.renderer = renderer;
     this.h = h;
-    this.ui = { tool: null, press: null, selectedTower: null, drag: null };
+    // État lu par le rendu : outil, aperçu de pose, sélection, lanterne portée,
+    // retour animé d'un dépôt raté, message éphémère, yokai visé.
+    this.ui = { tool: null, press: null, selectedTower: null, drag: null, dragBack: null, flash: null, focusEnemy: null };
     this.down = null;
     this.enabled = true;
+    this.inspect = false; // pause : étude du plateau seulement
+    this.stoneKey = null;
     canvas.addEventListener('pointerdown', (e) => this.onDown(e));
     canvas.addEventListener('pointermove', (e) => this.onMove(e));
     canvas.addEventListener('pointerup', (e) => this.onUp(e));
-    canvas.addEventListener('pointercancel', () => this.cancel());
+    canvas.addEventListener('pointercancel', (e) => (!this.down || this.down.id === e.pointerId) && this.cancel());
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
   }
 
   get game() {
     return this.h.game();
+  }
+
+  // Un doigt est posé sur le plateau (le tutoriel s'efface).
+  get pressing() {
+    return !!this.down;
   }
 
   setTool(tool) {
@@ -41,9 +67,91 @@ export class Input {
     return { x: e.clientX - rect.left, y: e.clientY - rect.top };
   }
 
+  // Point du canvas -> coordonnées page (anneau d'appui long, bulles).
+  page(p) {
+    const rect = this.canvas.getBoundingClientRect();
+    return { x: rect.left + p.x, y: rect.top + p.y };
+  }
+
   tileOf(p) {
     return this.renderer.toTile(p.x, p.y);
   }
+
+  // Point visé : LIFT px au-dessus du doigt. Près du haut du plateau, le décalage
+  // diminue pour que le fantôme ne dépasse pas le centre de la rangée 0.
+  aim(p, lifted = true) {
+    if (!lifted) return { x: p.x, y: p.y };
+    const top = this.renderer.oy + this.renderer.ts * 0.5;
+    const k = Math.max(0, Math.min(LIFT, p.y - top));
+    return { x: p.x, y: p.y - k };
+  }
+
+  // ───────────────────────── cibles sous le doigt ─────────────────────────
+
+  // Lanterne sous le doigt, ou la plus proche dans un rayon d'au moins 22 px (B21).
+  towerNear(p) {
+    const game = this.game;
+    const tile = this.tileOf(p);
+    if (game.grid.inBounds(tile.c, tile.r)) {
+      const t = game.towerAt(tile.c, tile.r);
+      if (t) return t;
+    }
+    const ts = this.renderer.ts;
+    let best = null;
+    let bd = Math.max(22, ts * 0.5);
+    for (const t of game.towers) {
+      const s = this.renderer.toScreen(t.x, t.y - 0.3);
+      const d = Math.hypot(s.x - p.x, s.y - p.y);
+      if (d < bd) {
+        bd = d;
+        best = t;
+      }
+    }
+    return best;
+  }
+
+  // Yokai le plus proche du doigt, dans ~0,6 case (au moins 22 px).
+  enemyNear(p, radius = ENEMY_RADIUS) {
+    const game = this.game;
+    const ts = this.renderer.ts;
+    let best = null;
+    let bd = Math.max(22, ts * radius);
+    for (const e of game.enemies) {
+      if (!e.alive) continue;
+      // centre visuel : le corps est au-dessus du point au sol, plus haut pour un volant
+      const s = this.renderer.toScreen(e.x, e.y - (e.flying ? 0.55 : 0.22));
+      const d = Math.hypot(s.x - p.x, s.y - p.y);
+      if (d < bd) {
+        bd = d;
+        best = e;
+      }
+    }
+    return best;
+  }
+
+  // Socle libre le plus proche du point visé (aimantation), dans `radius` cases.
+  nearestFreeSlot(a, radius) {
+    const game = this.game;
+    const g = game.grid;
+    const ts = this.renderer.ts;
+    let best = null;
+    let bd = radius * ts;
+    for (let i = 0; i < g.size; i++) {
+      if (g.type(i) !== T.SLOT) continue;
+      const c = g.col(i);
+      const r = g.row(i);
+      if (game.towerAt(c, r) || game.echoes?.some((t) => t.c === c && t.r === r)) continue;
+      const s = this.renderer.toScreen(c + 0.5, r + 0.5);
+      const d = Math.hypot(s.x - a.x, s.y - a.y);
+      if (d < bd) {
+        bd = d;
+        best = { c, r };
+      }
+    }
+    return best;
+  }
+
+  // ───────────────────────── gestes ─────────────────────────
 
   onDown(e) {
     if (!this.enabled || this.down) return;
@@ -54,71 +162,125 @@ export class Input {
     this.h.onAction?.('pointer');
     const p = this.pos(e);
     const tile = this.tileOf(p);
-    const tower = game.grid.inBounds(tile.c, tile.r) ? game.towerAt(tile.c, tile.r) : null;
-    this.down = { id: e.pointerId, x0: p.x, y0: p.y, t0: performance.now(), tile, tower, moved: false, long: false };
+    const g = game.grid;
+    const inB = g.inBounds(tile.c, tile.r);
+    const d = { id: e.pointerId, x0: p.x, y0: p.y, x: p.x, y: p.y, t0: performance.now(), tile, moved: false, long: false, lifted: false, mode: 'empty' };
+    this.down = d;
     try {
       this.canvas.setPointerCapture(e.pointerId);
     } catch {
       /* certains navigateurs refusent la capture */
     }
-    if (tower) {
-      this.down.timer = setTimeout(() => {
-        if (!this.down || this.down.moved) return;
-        this.down.long = true;
+    // Un toucher sur le plateau ferme la fiche ouverte.
+    this.h.onBoardTouch?.();
+    const tool = this.inspect ? null : this.ui.tool;
+    if (tool) {
+      d.mode = tool === 'stone' ? 'stone' : 'place';
+      d.tower = inB ? game.towerAt(tile.c, tile.r) : null;
+      d.stoneHere = inB && !!g.stone[g.idx(tile.c, tile.r)];
+      // Doigt immobile : après un court instant, le fantôme monte au-dessus du doigt
+      // (animation suivie par tick) ; la case visée ne change qu'une fois la montée finie.
+      d.liftTimer = setTimeout(() => {
+        if (this.down !== d || d.lifted) return;
+        d.rise0 = performance.now();
+        this.updateAim();
+      }, LIFT_MS);
+      this.stoneKey = null;
+      this.updateAim();
+      return;
+    }
+    const tower = this.towerNear(p);
+    // Un yokai nettement visé l'emporte sur la lanterne du socle (volant au-dessus d'un socle).
+    const enemy = this.enemyNear(p, tower ? 0.32 : ENEMY_RADIUS);
+    if (enemy) {
+      d.mode = 'enemy';
+      d.enemy = enemy;
+      d.tower = tower; // un simple toucher garde la lanterne sous le doigt (un volant qui passe)
+      this.ui.focusEnemy = enemy.id;
+      this.startHold(d, p, () => this.h.onInfo?.({ kind: 'enemy', enemy }));
+    } else if (tower) {
+      d.mode = 'tower';
+      d.tower = tower;
+      this.startHold(d, p, () => {
         this.ui.drag = null;
         this.ui.selectedTower = tower.id;
         this.h.onInfo?.({ kind: 'tower', tower });
-      }, LONG_PRESS_MS);
-    } else if (this.ui.tool && this.ui.tool !== 'stone') {
-      // Pose : l'aperçu suit le doigt pendant tout le geste, même s'il passe
-      // (ou commence) hors d'un socle — relâcher hors socle annule.
-      this.down.placing = true;
-      this.updatePress(tile);
-    } else if (game.grid.inBounds(tile.c, tile.r) && game.grid.stone[game.grid.idx(tile.c, tile.r)]) {
-      this.down.timer = setTimeout(() => {
-        if (!this.down || this.down.moved) return;
-        this.down.long = true;
-        this.h.onInfo?.({ kind: 'stone', c: tile.c, r: tile.r });
-      }, LONG_PRESS_MS);
+      });
+    } else if (inB && g.stone[g.idx(tile.c, tile.r)]) {
+      d.mode = 'stoneInfo';
+      this.startHold(d, p, () => this.h.onInfo?.({ kind: 'stone', c: tile.c, r: tile.r }));
     }
   }
 
-  updatePress(tile) {
-    const game = this.game;
-    const type = this.ui.tool;
-    const g = game.grid;
-    if (!g.inBounds(tile.c, tile.r) || g.type(g.idx(tile.c, tile.r)) !== T.SLOT || game.towerAt(tile.c, tile.r)) {
-      this.ui.press = null;
-      return;
-    }
-    const check = game.canPlaceTower(type, tile.c, tile.r);
-    this.ui.press = { kind: 'tower', type, c: tile.c, r: tile.r, valid: check.ok, reason: check.reason };
+  // Appui long : l'anneau (ensō) se remplit sous le doigt, puis `fire`.
+  startHold(d, p, fire) {
+    d.holdTimer = setTimeout(() => {
+      if (this.down === d && !d.moved) this.h.onHold?.('start', this.page(p), LONG_PRESS_MS - HOLD_DELAY_MS);
+    }, HOLD_DELAY_MS);
+    d.timer = setTimeout(() => {
+      if (this.down !== d || d.moved) return;
+      d.long = true;
+      this.h.onHold?.('end');
+      fire();
+    }, LONG_PRESS_MS);
+  }
+
+  stopHold(d) {
+    if (!d) return;
+    clearTimeout(d.timer);
+    clearTimeout(d.holdTimer);
+    clearTimeout(d.liftTimer);
+    this.h.onHold?.('end');
   }
 
   onMove(e) {
     const d = this.down;
     if (!d || d.id !== e.pointerId) return;
     const p = this.pos(e);
-    const dist = Math.hypot(p.x - d.x0, p.y - d.y0);
-    if (!d.moved && dist > DRAG_THRESHOLD) {
+    d.x = p.x;
+    d.y = p.y;
+    const game = this.game;
+    if (!game) return;
+    if (!d.moved && Math.hypot(p.x - d.x0, p.y - d.y0) > DRAG_THRESHOLD) {
       d.moved = true;
-      clearTimeout(d.timer);
-      if (d.tower && !d.long && this.game.fuse) {
-        this.ui.drag = { towerId: d.tower.id, x: p.x, y: p.y, gx: p.x, gy: p.y - LIFT, hover: null };
-        this.ui.selectedTower = null;
-        this.h.onAction?.('dragStart');
+      if (d.mode === 'place' || d.mode === 'stone') {
+        d.lifted = true;
+      } else {
+        this.stopHold(d);
+        if (d.mode === 'enemy') this.ui.focusEnemy = null;
+        if (d.mode === 'tower' && !d.long && !this.inspect && game.fuse) {
+          const a = this.aim(p);
+          this.ui.drag = { towerId: d.tower.id, x: p.x, y: p.y, gx: a.x, gy: a.y, hover: null, preview: null };
+          this.ui.selectedTower = null;
+          this.h.onAction?.('dragStart');
+        }
       }
     }
-    if (this.ui.drag) {
-      this.ui.drag.x = p.x;
-      this.ui.drag.y = p.y;
-      // La lanterne portée flotte LIFT px au-dessus du doigt ; la cible est la
-      // lanterne compatible la plus proche de la lanterne portée (aimantation).
-      this.ui.drag.gx = p.x;
-      this.ui.drag.gy = p.y - LIFT;
-      this.ui.drag.hover = this.fuseTarget(d.tower, this.ui.drag.gx, this.ui.drag.gy);
-    } else if (d.placing) {
-      this.updatePress(this.tileOf(p));
+    if (this.ui.drag) this.updateDrag(p);
+    else if (d.mode === 'place' || d.mode === 'stone') this.updateAim();
+  }
+
+  // Lanterne portée (fusion) : elle flotte au-dessus du doigt ; la cible est la
+  // lanterne compatible la plus proche (aimantation), avec l'aperçu du résultat.
+  updateDrag(p) {
+    const drag = this.ui.drag;
+    const src = this.game.towerById(drag.towerId);
+    if (!src) {
+      this.ui.drag = null;
+      return;
+    }
+    const a = this.aim(p);
+    drag.x = p.x;
+    drag.y = p.y;
+    drag.gx = a.x;
+    drag.gy = a.y;
+    const hover = this.fuseTarget(src, a.x, a.y);
+    const key = hover ? `${hover.c},${hover.r},${hover.valid}` : '';
+    if (key !== drag.key) {
+      drag.key = key;
+      drag.hover = hover;
+      drag.preview = hover?.valid && this.game.previewFuse ? this.game.previewFuse(src.id, hover.id) : null;
+      if (hover?.valid) this.h.onAction?.('fuseHover', { tower: src });
     }
   }
 
@@ -144,114 +306,273 @@ export class Input {
     return { c: tile.c, r: tile.r, valid: false };
   }
 
+  // Montée du fantôme (doigt immobile) : avancement 0..1 et hauteur visée en px.
+  riseOf(d, p) {
+    const rise = d.lifted ? 1 : d.rise0 != null ? Math.min(1, (performance.now() - d.rise0) / RISE_MS) : 0;
+    return { rise, liftPx: p.y - this.aim(p, true).y };
+  }
+
+  // Recalcule l'aperçu de pose (lanterne ou pierre) depuis la position du doigt.
+  updateAim() {
+    const d = this.down;
+    if (!d) return;
+    const p = { x: d.x, y: d.y };
+    const a = this.aim(p, d.lifted);
+    if (d.mode === 'place') this.updatePlace(d, a, p);
+    else if (d.mode === 'stone') this.updateStone(d, a, p);
+  }
+
+  updatePlace(d, a, p) {
+    const game = this.game;
+    const g = game.grid;
+    const type = this.ui.tool;
+    const def = game.defs.towers[type];
+    if (!def) return;
+    const t = this.tileOf(a);
+    let target = null;
+    if (g.inBounds(t.c, t.r) && g.type(g.idx(t.c, t.r)) === T.SLOT) target = { c: t.c, r: t.r };
+    else target = this.nearestFreeSlot(a, d.lifted ? 0.75 : 0.5);
+    const press = { kind: 'tower', type, gx: a.x, gy: a.y, fx: p.x, fy: p.y, lifted: d.lifted, ...this.riseOf(d, p), c: null, r: null, valid: false, reason: null, combos: [] };
+    if (target) {
+      const chk = game.canPlaceTower(type, target.c, target.r);
+      press.c = target.c;
+      press.r = target.r;
+      press.valid = chk.ok;
+      press.reason = chk.reason;
+      if (chk.reason === 'gold') press.missing = Math.max(1, Math.ceil(def.cost - game.gold));
+      const free = !game.towerAt(target.c, target.r) && !game.echoes?.some((e) => e.c === target.c && e.r === target.r);
+      // Combos qui naîtraient (échos compris), affichés même si la pose est refusée.
+      if (free) press.combos = game.previewCombos ? game.previewCombos(type, target.c, target.r) : [];
+    }
+    this.ui.press = press;
+  }
+
+  updateStone(d, a, p) {
+    const game = this.game;
+    const g = game.grid;
+    const t = this.tileOf(a);
+    const press = { kind: 'stone', gx: a.x, gy: a.y, fx: p.x, fy: p.y, lifted: d.lifted, ...this.riseOf(d, p), c: null, r: null, valid: false, reason: null, delta: 0, routes: null };
+    if (g.inBounds(t.c, t.r)) {
+      const i = g.idx(t.c, t.r);
+      if (g.type(i) === T.OPEN && !g.stone[i]) {
+        const key = `${t.c},${t.r}`;
+        if (key !== this.stoneKey || !this.stonePreview) {
+          this.stoneKey = key;
+          this.stonePreview = game.previewStone ? game.previewStone(t.c, t.r) : { ...game.canPlaceStone(t.c, t.r), delta: 0, routes: [] };
+          // refus sonore et visuel à l'entrée sur une case qui couperait le chemin (une fois par case)
+          const blocked = !this.stonePreview.ok && this.stonePreview.reason === 'blocked';
+          if (blocked && this.blockedKey !== key) this.h.onFeedback?.('stoneBlocked', { c: t.c, r: t.r });
+          this.blockedKey = blocked ? key : null;
+        }
+        const pv = this.stonePreview;
+        Object.assign(press, { c: t.c, r: t.r, valid: pv.ok, reason: pv.reason, delta: pv.delta, routes: pv.routes });
+        if (pv.reason === 'gold') press.missing = Math.max(1, Math.ceil(game.stoneCost() - game.gold));
+      } else if (g.stone[i]) {
+        press.c = t.c;
+        press.r = t.r;
+        press.reason = 'occupied';
+        this.stoneKey = null;
+        this.blockedKey = null;
+      } else {
+        this.stoneKey = null;
+        this.blockedKey = null;
+      }
+    }
+    this.ui.press = press;
+  }
+
   onUp(e) {
     const d = this.down;
     if (!d || d.id !== e.pointerId) return;
-    clearTimeout(d.timer);
+    this.stopHold(d);
     this.down = null;
     const game = this.game;
-    if (this.ui.drag) {
-      const hover = this.ui.drag.hover;
-      const src = d.tower;
-      this.ui.drag = null;
-      if (hover && game.grid.inBounds(hover.c, hover.r)) {
-        const dst = game.towerAt(hover.c, hover.r);
-        if (dst && dst.id !== src.id) {
-          const res = game.canFuse(src.id, dst.id);
-          if (res.ok) {
-            game.fuse(src.id, dst.id);
-            this.ui.selectedTower = null;
-          } else {
-            this.h.onFeedback?.('reject', { reason: res.reason, c: hover.c, r: hover.r });
-          }
-        } else {
-          this.h.onFeedback?.('dropCancel', { c: src.c, r: src.r });
-        }
-      }
-      return;
-    }
+    if (!game) return;
+    if (this.ui.drag) return this.dropDrag();
     if (d.long) return;
-    if (this.ui.press) {
-      const { type, c, r } = this.ui.press;
-      this.ui.press = null;
-      const res = game.canPlaceTower(type, c, r);
-      if (res.ok) {
-        const t = game.placeTower(type, c, r);
-        // L'outil se désélectionne après chaque pose : plus d'achat involontaire.
-        this.ui.tool = null;
-        this.h.onAction?.('placed', { type, tower: t });
-      } else {
-        game.emit('reject', { c, r, reason: res.reason });
-        this.h.onFeedback?.('reject', { reason: res.reason, c, r });
-      }
-      return;
+    switch (d.mode) {
+      case 'place':
+        return this.releasePlace(d);
+      case 'stone':
+        return this.releaseStone(d);
+      case 'tower':
+        if (!d.moved) this.tapTower(d.tower);
+        return;
+      case 'enemy':
+        // simple toucher sur un yokai : rien (l'appui long ouvre sa fiche), sauf s'il
+        // passait au-dessus d'une lanterne : c'est elle qu'on visait.
+        this.ui.focusEnemy = null;
+        if (!d.moved && d.tower && this.game.towerById(d.tower.id)) this.tapTower(d.tower);
+        else if (!d.moved && this.ui.selectedTower != null) this.ui.selectedTower = null;
+        return;
+      case 'stoneInfo':
+        if (!d.moved) this.h.onInfo?.({ kind: 'stone', c: d.tile.c, r: d.tile.r });
+        return;
+      default:
+        if (!d.moved) this.tapEmpty();
     }
-    if (d.moved) return;
-    this.tap(d.tile, d.tower);
   }
 
-  tap(tile, tower) {
+  releasePlace(d) {
     const game = this.game;
-    const g = game.grid;
-    if (tower) {
-      // Toucher une lanterne la sélectionne et range l'outil en main.
-      if (this.ui.tool) {
-        this.ui.tool = null;
-        this.h.onAction?.('toolCleared');
+    const press = this.ui.press;
+    this.ui.press = null;
+    if (!d.lifted) {
+      // Simple toucher sur une lanterne : on range l'outil et on la sélectionne.
+      if (d.tower) {
+        this.clearTool();
+        this.tapTower(d.tower);
+        return;
       }
-      this.ui.selectedTower = this.ui.selectedTower === tower.id ? null : tower.id;
-      this.h.onAction?.('selectTower', { tower });
+      // Toucher hors socle : on range l'outil, sans message.
+      if (!press || press.c == null) {
+        this.clearTool();
+        return;
+      }
+    } else if (!press || press.c == null) {
+      // Glisser relâché hors socle : la pose est annulée.
+      this.h.onFeedback?.('cancel', { x: press?.gx ?? d.x, y: press?.gy ?? d.y });
+      if (d.external) this.clearTool();
       return;
     }
+    const { type, c, r } = press;
+    const res = game.canPlaceTower(type, c, r);
+    if (res.ok) {
+      const t = game.placeTower(type, c, r);
+      // L'outil se désélectionne après chaque pose : plus d'achat involontaire.
+      this.ui.tool = null;
+      this.h.onAction?.('placed', { type, tower: t });
+    } else {
+      game.emit('reject', { c, r, reason: res.reason });
+      this.h.onFeedback?.('reject', { reason: res.reason, c, r, x: press.gx, y: press.gy, missing: press.missing });
+    }
+  }
+
+  releaseStone(d) {
+    const game = this.game;
+    const press = this.ui.press;
+    this.ui.press = null;
+    this.stoneKey = null;
+    this.stonePreview = null;
+    if (!d.lifted && d.stoneHere) {
+      this.h.onInfo?.({ kind: 'stone', c: d.tile.c, r: d.tile.r });
+      return;
+    }
+    if (!press || press.c == null || press.reason === 'occupied') {
+      if (!d.lifted) this.clearTool();
+      else this.h.onFeedback?.('cancel', { x: press?.gx ?? d.x, y: press?.gy ?? d.y });
+      if (d.external) this.clearTool();
+      return;
+    }
+    const { c, r } = press;
+    const res = game.canPlaceStone(c, r);
+    if (res.ok) {
+      game.placeStone(c, r);
+      this.h.onAction?.('stone', { c, r });
+      if (d.external || (game.stonesLeft && game.stonesLeft() <= 0)) this.clearTool();
+    } else {
+      game.emit('reject', { c, r, reason: res.reason });
+      this.h.onFeedback?.('reject', { reason: res.reason, c, r, x: press.gx, y: press.gy, missing: press.missing, stone: true });
+    }
+  }
+
+  dropDrag() {
+    const game = this.game;
+    const drag = this.ui.drag;
+    this.ui.drag = null;
+    const src = game.towerById(drag.towerId);
+    if (!src) return;
+    const hover = drag.hover;
+    if (hover?.valid) {
+      const dst = game.towerById(hover.id) || game.towerAt(hover.c, hover.r);
+      if (dst && game.canFuse(src.id, dst.id).ok) {
+        game.fuse(src.id, dst.id);
+        this.ui.selectedTower = null;
+        this.h.onAction?.('fused', { tower: dst });
+        return;
+      }
+    }
+    let reason = null;
+    if (hover && game.grid.inBounds(hover.c, hover.r)) {
+      const other = game.towerAt(hover.c, hover.r);
+      if (other && other.id !== src.id) reason = game.canFuse(src.id, other.id).reason;
+      if (reason) game.emit('reject', { c: hover.c, r: hover.r, reason });
+    }
+    // Dépôt raté : la lanterne revient à sa place (animation), avec un retour discret.
+    this.ui.dragBack = { towerId: src.id, x: drag.gx, y: drag.gy, t0: performance.now() };
+    if (reason) this.h.onFeedback?.('reject', { reason, c: hover.c, r: hover.r, x: drag.gx, y: drag.gy });
+    else this.h.onFeedback?.('dropCancel', { x: drag.gx, y: drag.gy });
+  }
+
+  tapTower(tower) {
+    if (this.ui.tool) this.clearTool();
+    this.ui.selectedTower = this.ui.selectedTower === tower.id ? null : tower.id;
+    this.h.onAction?.('selectTower', { tower });
+  }
+
+  tapEmpty() {
     // Avec une lanterne sélectionnée, un toucher ailleurs ne fait que désélectionner.
     if (this.ui.selectedTower != null) {
       this.ui.selectedTower = null;
-      return;
-    }
-    if (!g.inBounds(tile.c, tile.r)) {
-      if (this.ui.tool) {
-        this.ui.tool = null;
-        this.h.onAction?.('toolCleared');
-      }
-      return;
-    }
-    const i = g.idx(tile.c, tile.r);
-    if (this.ui.tool === 'stone') {
-      if (g.stone[i]) {
-        this.h.onInfo?.({ kind: 'stone', c: tile.c, r: tile.r });
-        return;
-      }
-      const res = game.canPlaceStone(tile.c, tile.r);
-      if (res.ok) {
-        game.placeStone(tile.c, tile.r);
-        this.h.onAction?.('stone');
-      } else {
-        game.emit('reject', { c: tile.c, r: tile.r, reason: res.reason });
-        this.h.onFeedback?.('reject', { reason: res.reason, c: tile.c, r: tile.r });
-      }
-      return;
-    }
-    if (g.stone[i]) {
-      this.h.onInfo?.({ kind: 'stone', c: tile.c, r: tile.r });
-      return;
-    }
-    // Toucher hors socle avec une lanterne en main : on range l'outil, sans message.
-    if (this.ui.tool && g.type(i) !== T.SLOT) {
-      this.ui.tool = null;
-      this.h.onAction?.('toolCleared');
+      this.h.onAction?.('deselect');
     }
   }
 
+  clearTool() {
+    if (!this.ui.tool) return;
+    this.ui.tool = null;
+    this.h.onAction?.('toolCleared');
+  }
+
+  // Pose glissée depuis un bouton de la palette : le geste continue ici
+  // (la palette relaie pointermove / pointerup).
+  startFromPalette(tool, e) {
+    const game = this.game;
+    if (!this.enabled || this.inspect || this.down || !game || game.rewindAnim) return false;
+    if (game.state === 'won' || game.state === 'lost') return false;
+    this.ui.tool = tool;
+    this.ui.selectedTower = null;
+    const p = this.pos(e);
+    this.down = { id: e.pointerId, x0: p.x, y0: p.y, x: p.x, y: p.y, t0: performance.now(), tile: this.tileOf(p), moved: true, long: false, lifted: true, external: true, mode: tool === 'stone' ? 'stone' : 'place' };
+    this.stoneKey = null;
+    this.h.onBoardTouch?.();
+    this.updateAim();
+    return true;
+  }
+
+  // Message éphémère dessiné près du geste (refus, « annulé »).
+  flash(text, x, y, bad = false) {
+    this.ui.flash = { text, x, y, bad, t0: performance.now() };
+  }
+
+  // Chaque frame : l'aperçu suit l'or disponible même si le doigt ne bouge pas, et
+  // le fantôme achève sa montée (doigt immobile).
+  tick() {
+    const d = this.down;
+    if (d && (d.mode === 'place' || d.mode === 'stone') && this.ui.press) {
+      if (!d.lifted && d.rise0 != null && performance.now() - d.rise0 >= RISE_MS) d.lifted = true;
+      if (d.mode === 'stone') this.stoneKey = null; // l'or ou les yokai ont pu changer
+      this.updateAim();
+    }
+    if (this.ui.drag && !this.game?.towerById(this.ui.drag.towerId)) this.ui.drag = null;
+  }
+
   cancel() {
-    if (this.down) clearTimeout(this.down.timer);
+    if (this.down) this.stopHold(this.down);
     this.down = null;
     this.ui.press = null;
     this.ui.drag = null;
+    this.stoneKey = null;
+    this.stonePreview = null;
+    this.blockedKey = null;
   }
 
   reset() {
     this.cancel();
     this.ui.tool = null;
     this.ui.selectedTower = null;
+    this.ui.dragBack = null;
+    this.ui.flash = null;
+    this.ui.focusEnemy = null;
   }
 }

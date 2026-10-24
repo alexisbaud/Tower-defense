@@ -7,7 +7,11 @@ import { drawEnemy } from './enemies.js';
 import { Fx, ELEMENT_COLORS, drawPortal, drawEnso, drawInkCross, drawRouteMarks } from './fx.js';
 import { INK, PALETTE, withAlpha, wash, brushStroke, mix, makeCanvas } from './brush.js';
 import { T } from '../core/grid.js';
-import { drawZones, drawComboLinks, drawTornado, drawStone, drawComboPreview, drawSeal } from './combos.js';
+import { drawZones, drawComboLinks, drawTornado, drawStone, drawComboPreview, drawLinkPreview, drawSeal } from './combos.js';
+
+const TAU = Math.PI * 2;
+const UI_FONT = '"Zen Kaku Gothic New", -apple-system, "Helvetica Neue", sans-serif';
+const GREY = '#7d7a70';
 
 export class Renderer {
   constructor(canvas) {
@@ -26,6 +30,8 @@ export class Renderer {
     this.routes = [];
     this.routeVersion = -1;
     this.maxDpr = 3; // abaissé automatiquement si l'appareil peine (voir main.js)
+    // Libellé d'un aperçu de pose (fourni par main.js) : { text, tone: 'ok'|'bad'|'muted' } | null
+    this.pressLabel = null;
   }
 
   resize(w, h) {
@@ -138,6 +144,7 @@ export class Renderer {
     this.drawRoutes(ctx, ts, time);
     this.drawGoalGlow(ctx, ts, time);
     drawZones(ctx, game, ts, time);
+    this.drawFlyerPaths(ctx, ts, time, ui);
     if (this.drawUnderlay) this.drawUnderlay(ctx, ts, time, ui);
 
     // Aperçus de pose / portée sous les entités.
@@ -174,7 +181,7 @@ export class Renderer {
     for (const it of items) {
       if (it.k === 0) {
         const t = it.o;
-        if (ui.drag && ui.drag.towerId === t.id) {
+        if ((ui.drag && ui.drag.towerId === t.id) || (ui.dragBack && ui.dragBack.towerId === t.id)) {
           drawTower(ctx, t.x * ts, t.y * ts, ts, game.defs.towers[t.type], t.level, time, { alpha: 0.35 });
           continue;
         }
@@ -215,7 +222,38 @@ export class Renderer {
       ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
     }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    if (ui.drag) this.drawDragGhost(ctx, ui.drag, time);
+    if (ui.drag) {
+      this.drawDragGhost(ctx, ui.drag, time);
+      // aperçu de fusion par-dessus la lanterne portée (liens, N+1, case libérée)
+      const h = ui.drag.hover;
+      if (h?.valid) {
+        ctx.save();
+        ctx.translate(this.ox, this.oy);
+        this.drawFusePreview(ctx, this.ts, time, ui.drag, game.towerAt(h.c, h.r));
+        ctx.restore();
+      }
+    }
+    if (ui.dragBack) this.drawDragBack(ctx, ui, time);
+    if (ui.press) {
+      this.drawPressGhost(ctx, ui.press, time);
+      this.drawPressCombos(ctx, ui.press, time);
+    }
+    if (ui.flash) this.drawFlash(ctx, ui);
+  }
+
+  // Pose en cours : combos qui naîtraient avec les voisines (échos compris), liens
+  // d'encre lumineux et nom, par-dessus le fantôme ; en grisé si la pose est refusée.
+  drawPressCombos(ctx, press, time) {
+    if (press.kind !== 'tower' || press.c == null || !press.combos?.length) return;
+    const a = { x: press.c + 0.5, y: press.r + 0.5 };
+    ctx.save();
+    ctx.translate(this.ox, this.oy);
+    for (const { def, other } of press.combos) {
+      // rayon réel de la zone : il grandit avec le niveau moyen des deux lanternes (cf. core/combos.js)
+      const radius = (def.radius ?? 1.5) + 0.2 * ((1 + (other.level ?? 1)) / 2 - 1);
+      drawComboPreview(ctx, a, other, def, this.ts, time, { dim: !press.valid, radius });
+    }
+    ctx.restore();
   }
 
   // Rembobinage : voile indigo et sépia, traits de temps qui filent à rebours,
@@ -556,38 +594,233 @@ export class Renderer {
         drawEnso(ctx, x, y, ts * 0.34, PALETTE.gold, a, i * 1.7, 0.8);
       }
     }
-    if (ui.press && ui.press.kind === 'tower') {
-      const { c, r, valid, type } = ui.press;
-      const def = game.defs.towers[type];
-      const x = (c + 0.5) * ts;
-      const y = (r + 0.5) * ts;
-      const col = valid ? ELEMENT_COLORS[type]?.main || def.color || PALETTE.gold : PALETTE.vermillion;
-      this.drawRange(ctx, x, y, def.levels[0].range, ts, col, time);
-      wash(ctx, x, y + ts * 0.3, ts * 0.45, col, 0.35);
-      drawTower(ctx, x, y, ts, def, 1, time, { alpha: valid ? 0.65 : 0.35 });
-      if (!valid) drawInkCross(ctx, x, y - ts * 0.1, ts * 0.2, withAlpha(PALETTE.vermillion, 0.9), c * 31 + r);
+    // Aperçu de pose : portée et réticule sur la case visée (sous les entités).
+    const press = ui.press;
+    if (press && press.kind === 'tower' && press.c != null) {
+      const def = game.defs.towers[press.type];
+      const x = (press.c + 0.5) * ts;
+      const y = (press.r + 0.5) * ts;
+      const range = def?.levels?.[0]?.range ?? 2;
+      if (press.valid) {
+        const col = this.colorOf(press.type);
+        this.drawRange(ctx, x, y, range, ts, col, time);
+        wash(ctx, x, y + ts * 0.3, ts * 0.45, col, 0.35);
+      } else {
+        // refus : portée grise en tirets et case hachurée (jamais la teinte seule)
+        this.drawDashedRing(ctx, x, y, range * ts, GREY, 0.75, ts);
+        this.drawHatch(ctx, press.c, press.r, ts);
+      }
+      this.drawReticle(ctx, press.c, press.r, ts, press.valid ? PALETTE.gold : GREY);
     }
+    if (press && press.kind === 'stone') this.drawStonePreview(ctx, ts, time, press);
+  }
+
+  colorOf(type) {
+    return ELEMENT_COLORS[type]?.main || this.game.defs.towers[type]?.color || PALETTE.gold;
+  }
+
+  // Cercle en tirets (portée refusée, case libérée).
+  drawDashedRing(ctx, x, y, r, color, alpha, ts) {
+    ctx.save();
+    ctx.strokeStyle = withAlpha(color, alpha);
+    ctx.lineWidth = Math.max(1.5, ts * 0.045);
+    ctx.setLineDash([ts * 0.16, ts * 0.12]);
+    ctx.beginPath();
+    ctx.arc(x, y, Math.max(1, r), 0, TAU);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // Hachures d'encre sur une case (aperçu refusé).
+  drawHatch(ctx, c, r, ts) {
+    const x0 = c * ts + ts * 0.1;
+    const y0 = r * ts + ts * 0.1;
+    const s = ts * 0.8;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x0, y0, s, s);
+    ctx.clip();
+    ctx.strokeStyle = withAlpha(INK, 0.35);
+    ctx.lineWidth = Math.max(1, ts * 0.03);
+    ctx.beginPath();
+    for (let k = -s; k < s; k += ts * 0.16) {
+      ctx.moveTo(x0 + k, y0 + s);
+      ctx.lineTo(x0 + k + s, y0);
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // Réticule : quatre équerres d'encre autour de la case visée.
+  drawReticle(ctx, c, r, ts, color) {
+    const x0 = c * ts + ts * 0.06;
+    const y0 = r * ts + ts * 0.06;
+    const x1 = x0 + ts * 0.88;
+    const y1 = y0 + ts * 0.88;
+    const q = ts * 0.22;
+    const path = () => {
+      ctx.beginPath();
+      ctx.moveTo(x0, y0 + q);
+      ctx.lineTo(x0, y0);
+      ctx.lineTo(x0 + q, y0);
+      ctx.moveTo(x1 - q, y0);
+      ctx.lineTo(x1, y0);
+      ctx.lineTo(x1, y0 + q);
+      ctx.moveTo(x1, y1 - q);
+      ctx.lineTo(x1, y1);
+      ctx.lineTo(x1 - q, y1);
+      ctx.moveTo(x0 + q, y1);
+      ctx.lineTo(x0, y1);
+      ctx.lineTo(x0, y1 - q);
+    };
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    path();
+    ctx.strokeStyle = withAlpha(INK, 0.55);
+    ctx.lineWidth = Math.max(3, ts * 0.09);
+    ctx.stroke();
+    path();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = Math.max(1.6, ts * 0.05);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // Pierre glissée : nouveau tracé en pointillés (sous les entités).
+  drawStonePreview(ctx, ts, time, press) {
+    if (press.c == null) return;
+    const g = this.game.grid;
+    const blocked = press.reason === 'blocked';
+    if (!blocked && press.routes && press.reason !== 'occupied') {
+      const col = press.valid ? PALETTE.indigo : GREY;
+      ctx.save();
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      for (const route of press.routes) {
+        if (!route || route.length < 2) continue;
+        const pathOf = () => {
+          ctx.beginPath();
+          ctx.moveTo(g.cx(route[0]) * ts, g.cy(route[0]) * ts);
+          for (let k = 1; k < route.length; k++) ctx.lineTo(g.cx(route[k]) * ts, g.cy(route[k]) * ts);
+        };
+        // liseré crème sous les points : lisible sur le gravier comme sur l'herbe
+        ctx.setLineDash([]);
+        pathOf();
+        ctx.strokeStyle = withAlpha(PALETTE.cream, 0.55);
+        ctx.lineWidth = Math.max(4, ts * 0.13);
+        ctx.stroke();
+        ctx.setLineDash([0.01, ts * 0.2]);
+        ctx.lineDashOffset = -time * ts * 0.8;
+        pathOf();
+        ctx.strokeStyle = withAlpha(col, 0.95);
+        ctx.lineWidth = Math.max(3, ts * 0.1);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+    const tone = press.valid ? PALETTE.indigoLight : blocked ? PALETTE.vermillion : GREY;
+    this.drawReticle(ctx, press.c, press.r, ts, tone);
+    if (blocked) drawInkCross(ctx, (press.c + 0.5) * ts, (press.r + 0.5) * ts, ts * 0.22, withAlpha(PALETTE.vermillion, 0.9), press.c * 31 + press.r);
+  }
+
+  // Trajectoires des volants (ligne droite portail → sanctuaire) : affichées quand
+  // des volants sont annoncés ou en route, plus marquées avec l'outil pierre.
+  drawFlyerPaths(ctx, ts, time, ui) {
+    const game = this.game;
+    const lines = this.flyerLines(game);
+    if (!lines.length) return;
+    const strong = ui.tool === 'stone' || ui.press?.kind === 'stone';
+    ctx.save();
+    ctx.lineCap = 'round';
+    for (const [x0, y0, x1, y1] of lines) {
+      const ax = x0 * ts;
+      const ay = y0 * ts;
+      const bx = x1 * ts;
+      const by = y1 * ts;
+      ctx.setLineDash([ts * 0.05, ts * 0.17]);
+      ctx.lineDashOffset = -time * ts * 0.6;
+      ctx.strokeStyle = withAlpha(PALETTE.indigo, strong ? 0.75 : 0.42);
+      ctx.lineWidth = Math.max(2, ts * (strong ? 0.07 : 0.05));
+      ctx.beginPath();
+      ctx.moveTo(ax, ay);
+      ctx.lineTo(bx, by);
+      ctx.stroke();
+      // ailes (chevrons) régulièrement espacées, pointées vers le sanctuaire
+      ctx.setLineDash([]);
+      const len = Math.hypot(bx - ax, by - ay);
+      if (len < 1) continue;
+      const ux = (bx - ax) / len;
+      const uy = (by - ay) / len;
+      const step = ts * 1.4;
+      const off = (time * ts * 0.6) % step;
+      ctx.lineWidth = Math.max(1.6, ts * 0.045);
+      ctx.beginPath();
+      for (let d = step * 0.6 + off; d < len - ts * 0.4; d += step) {
+        const px = ax + ux * d;
+        const py = ay + uy * d;
+        const w = ts * 0.13;
+        ctx.moveTo(px - ux * w - uy * w, py - uy * w + ux * w);
+        ctx.lineTo(px, py);
+        ctx.lineTo(px - ux * w + uy * w, py - uy * w - ux * w);
+      }
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // Portails d'où partiront (ou partent encore) des volants : prochaine vague en
+  // construction, apparitions restantes pendant la vague.
+  flyerLines(game) {
+    const fly = (type) => !!game.defs.enemies[type]?.abilities?.flying;
+    const spawns = new Set();
+    if (game.state === 'build') {
+      const wave = game.waves?.[game.waveIndex + 1];
+      for (const gr of wave?.groups || []) if (fly(gr.enemy)) spawns.add(gr.spawn ?? 0);
+    } else if (game.state === 'wave') {
+      for (const sp of game.spawners || []) if (sp.spawned < sp.count && fly(sp.enemy)) spawns.add(sp.spawn ?? 0);
+      // appel anticipé possible : la vague suivante compte aussi
+      if (typeof game.canCallNextWave === 'function' && game.canCallNextWave()) {
+        const wave = game.waves?.[game.waveIndex + 1];
+        for (const gr of wave?.groups || []) if (fly(gr.enemy)) spawns.add(gr.spawn ?? 0);
+      }
+    }
+    if (!spawns.size) return [];
+    const g = game.grid;
+    const out = [];
+    for (const k of spawns) {
+      const s = g.spawns[k % g.spawns.length];
+      if (s == null) continue;
+      const x = g.cx(s);
+      const y = g.cy(s);
+      const goal = game.nearestGoal ? game.nearestGoal(x, y) : g.goals[0];
+      out.push([x, y, g.cx(goal), g.cy(goal)]);
+    }
+    return out;
   }
 
   drawSelection(ctx, ts, time, ui) {
     const game = this.game;
-    // Pose en cours : combos qui naîtraient (au-dessus des lanternes voisines).
-    if (ui.press && ui.press.kind === 'tower' && ui.press.valid) {
-      const { c, r, type } = ui.press;
-      for (const t of game.towers) {
-        if (t.type === type || Math.max(Math.abs(t.c - c), Math.abs(t.r - r)) !== 1) continue;
-        const cd = game.comboFor(type, t.type);
-        if (cd) drawComboPreview(ctx, { x: c + 0.5, y: r + 0.5 }, t, cd, ts, time);
-      }
-    }
+    // Pose en cours : combos qui naîtraient avec les voisines (échos compris),
+    // liens d'encre lumineux et nom ; en grisé si la pose est refusée.
     if (ui.selectedTower != null) {
       const t = game.towerById(ui.selectedTower);
       if (t) {
         const st = game.towerStats(t);
-        const col = ELEMENT_COLORS[t.type]?.main || PALETTE.gold;
+        const col = this.colorOf(t.type);
+        // zones des combos de la lanterne : anneau plus marqué
+        for (const z of game.zones) {
+          if (z.a !== t.id && z.b !== t.id) continue;
+          this.drawDashedRing(ctx, z.x * ts, z.y * ts, z.radius * ts, mix(z.def.color || PALETTE.gold, INK, 0.35), 0.8, ts);
+        }
         this.drawRange(ctx, t.x * ts, t.y * ts, st.range, ts, col, time);
         drawEnso(ctx, t.x * ts, t.y * ts + ts * 0.3, ts * 0.5, PALETTE.gold, 0.9, time * 0.6, 0.45);
       }
+    }
+    // Yokai visé (appui long, fiche ouverte) : ensō doré à ses pieds.
+    if (ui.focusEnemy != null) {
+      const e = game.enemies.find((x) => x.id === ui.focusEnemy);
+      if (e) drawEnso(ctx, e.x * ts, e.y * ts + ts * 0.12, ts * (e.size ?? 0.3) * 1.7, PALETTE.gold, 0.95, time * 1.5, 0.5);
     }
     if (ui.drag) {
       const g = game.grid;
@@ -615,6 +848,241 @@ export class Renderer {
     }
   }
 
+  // Fusion : résultat (N+1), case libérée, combos perdus (rouge, barrés) et
+  // conservés (or), d'après game.previewFuse.
+  drawFusePreview(ctx, ts, time, drag, dst) {
+    const pv = drag.preview;
+    const game = this.game;
+    if (!pv || !pv.ok || !dst) return;
+    const find = (id) => game.towerById(id) || game.echoes?.find((e) => e.id === id) || null;
+    const tags = []; // étiquettes déjà posées : « → N+1 » les évite
+    for (const z of pv.kept || []) {
+      const a = find(z.a);
+      const b = find(z.b);
+      if (a && b) tags.push(drawLinkPreview(ctx, a, b, z.def, ts, time, 'kept'));
+    }
+    for (const z of pv.lost || []) {
+      const a = find(z.a);
+      const b = find(z.b);
+      if (a && b) tags.push(drawLinkPreview(ctx, a, b, z.def, ts, time, 'lost'));
+    }
+    if (pv.freed) {
+      const fx = (pv.freed.c + 0.5) * ts;
+      const fy = (pv.freed.r + 0.5) * ts;
+      ctx.save();
+      ctx.strokeStyle = withAlpha(PALETTE.cream, 0.95);
+      ctx.lineWidth = Math.max(2, ts * 0.06);
+      ctx.setLineDash([ts * 0.12, ts * 0.09]);
+      ctx.lineDashOffset = -time * ts * 0.4;
+      ctx.strokeRect(fx - ts * 0.42, fy - ts * 0.42, ts * 0.84, ts * 0.84);
+      ctx.restore();
+      // dans la case libérée (la lanterne y est déjà effacée), sinon juste dessous ou
+      // dessus : jamais sur le nom d'un combo
+      ctx.save();
+      ctx.font = `700 12px ${UI_FONT}`;
+      const lw = ctx.measureText('libéré').width + 14;
+      ctx.restore();
+      const ys = [fy + ts * 0.12, fy + ts * 0.66, fy - ts * 0.62];
+      const box = (y) => ({ x: fx - lw / 2, y: y - 11, w: lw, h: 22 });
+      const y = ys.find((yy) => !tags.some((t) => t && overlap(box(yy), t))) ?? ys[0];
+      tags.push(this.drawTag(ctx, 'libéré', fx, y, { tone: 'muted', align: 'center', size: 12 }));
+    }
+    // résultat : « → N3 » doré à côté de la cible, dans le plateau, sans recouvrir
+    // le nom d'un combo ni « libéré »
+    const lvl = pv.level ?? dst.level + 1;
+    const W = game.grid.cols * ts;
+    const text = `→ N${lvl}`;
+    ctx.save();
+    ctx.font = `700 14px ${UI_FONT}`;
+    const tw = ctx.measureText(text).width + 14;
+    ctx.restore();
+    const th = 24;
+    const spots = [
+      [dst.x + 0.55, dst.y - 0.75, 'left'],
+      [dst.x - 0.55, dst.y - 0.75, 'right'],
+      [dst.x + 0.55, dst.y + 0.2, 'left'],
+      [dst.x - 0.55, dst.y + 0.2, 'right'],
+      [dst.x, dst.y - 1.35, 'center'],
+      [dst.x, dst.y + 0.95, 'center'],
+    ];
+    const boxOf = ([x, y, align]) => {
+      let x0 = align === 'center' ? x * ts - tw / 2 : align === 'right' ? x * ts - tw : x * ts;
+      x0 = Math.max(4, Math.min(W - tw - 4, x0));
+      return { x: x0, y: y * ts - th / 2, w: tw, h: th };
+    };
+    const spot = spots.find((sp) => !tags.some((t) => t && overlap(boxOf(sp), t))) || spots[0];
+    this.drawTag(ctx, text, spot[0] * ts, spot[1] * ts, { tone: 'gold', align: spot[2], size: 14, bounds: [0, W] });
+  }
+
+  // Étiquette au pinceau : pastille crème cernée d'encre, texte lisible (≥ 12 px).
+  // tone : 'ok' (indigo), 'bad' (vermillon), 'muted' (gris), 'gold' (or).
+  drawTag(ctx, text, x, y, opts = {}) {
+    const size = Math.max(12, opts.size ?? 13);
+    ctx.save();
+    ctx.font = `700 ${size}px ${UI_FONT}`;
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'left';
+    const w = ctx.measureText(text).width + 14;
+    const h = size + 10;
+    let x0 = opts.align === 'center' ? x - w / 2 : opts.align === 'right' ? x - w : x;
+    // reste dans le plateau (repère courant : celui du plateau ou de l'écran)
+    const bounds = opts.bounds;
+    if (bounds) x0 = Math.max(bounds[0] + 4, Math.min(bounds[1] - w - 4, x0));
+    const y0 = y - h / 2;
+    const tone = opts.tone || 'ok';
+    const bg = tone === 'bad' ? '#a8321f' : tone === 'gold' ? PALETTE.goldLight : PALETTE.cream;
+    const fg = tone === 'bad' ? PALETTE.cream : tone === 'muted' ? '#4a463e' : tone === 'gold' ? INK : PALETTE.indigo;
+    ctx.fillStyle = withAlpha(INK, 0.3);
+    roundRect(ctx, x0 + 1.5, y0 + 2.5, w, h, h / 2);
+    ctx.fill();
+    ctx.fillStyle = bg;
+    roundRect(ctx, x0, y0, w, h, h / 2);
+    ctx.fill();
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = INK;
+    ctx.stroke();
+    ctx.fillStyle = fg;
+    ctx.fillText(text, x0 + 7, y + 0.5);
+    ctx.restore();
+    return { x: x0, y: y0, w, h };
+  }
+
+  // Fantôme de pose (lanterne ou pierre), au-dessus du doigt, relié au doigt par
+  // un fil d'or ; raison du refus écrite à côté (repère écran).
+  drawPressGhost(ctx, press, time) {
+    const game = this.game;
+    const ts = this.ts;
+    const snapped = press.c != null;
+    const gx = snapped ? this.ox + (press.c + 0.5) * ts : press.gx;
+    let gy = snapped ? this.oy + (press.r + 0.5) * ts : press.gy;
+    // doigt immobile : le fantôme monte au-dessus du doigt (la case visée reste
+    // celle du doigt tant que la montée n'est pas finie)
+    const rising = !press.lifted && press.rise > 0;
+    if (rising) {
+      const e = 1 - Math.pow(1 - press.rise, 3);
+      gy -= (press.liftPx || 0) * e;
+    }
+    if (press.lifted || (rising && press.rise > 0.25)) {
+      // fil d'or du doigt au pied du fantôme, petit cercle sous le doigt
+      ctx.save();
+      ctx.lineCap = 'round';
+      ctx.setLineDash([ts * 0.03, ts * 0.12]);
+      ctx.lineDashOffset = -time * ts * 0.5;
+      ctx.strokeStyle = withAlpha(PALETTE.gold, 0.85);
+      ctx.lineWidth = Math.max(1.8, ts * 0.045);
+      ctx.beginPath();
+      ctx.moveTo(press.fx, press.fy - ts * 0.3);
+      ctx.lineTo(gx, gy + ts * 0.32);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.strokeStyle = withAlpha(PALETTE.gold, 0.7);
+      ctx.lineWidth = Math.max(1.5, ts * 0.04);
+      ctx.beginPath();
+      ctx.arc(press.fx, press.fy, ts * 0.3, 0, TAU);
+      ctx.stroke();
+      ctx.restore();
+    }
+    const bad = snapped && !press.valid;
+    if (press.kind === 'tower') {
+      const def = game.defs.towers[press.type];
+      if (!def) return;
+      const occupied = snapped && game.towerAt(press.c, press.r);
+      if (!occupied) {
+        wash(ctx, gx, gy + ts * 0.32, ts * 0.42, INK, snapped ? 0.3 : 0.15);
+        if (bad) {
+          // lanterne grise pré-rendue (ctx.filter par frame coûte des centaines de ms)
+          const g = this.greyGhost(def, ts);
+          ctx.save();
+          ctx.globalAlpha *= 0.62;
+          ctx.drawImage(g.c, gx - g.ax, gy - g.ay, g.w, g.h);
+          ctx.restore();
+        } else {
+          drawTower(ctx, gx, gy, ts, def, 1, time, { alpha: snapped ? 0.88 : 0.45 });
+        }
+      }
+      if (bad) drawInkCross(ctx, gx, gy - ts * 0.35, ts * 0.2, withAlpha(PALETTE.vermillion, 0.95), press.c * 31 + press.r);
+    } else {
+      // pierre : vibre quand elle couperait le chemin
+      const blocked = press.reason === 'blocked';
+      const shake = blocked ? Math.sin(performance.now() * 0.06) * ts * 0.06 : 0;
+      ctx.save();
+      ctx.globalAlpha = snapped ? 0.9 : 0.5;
+      drawStone(ctx, gx + shake, gy, ts, 11, !!this.theme?.snowCaps);
+      ctx.restore();
+    }
+    const label = this.pressLabel?.(press);
+    if (label?.text) {
+      // à droite du fantôme, ou à gauche près du bord droit
+      const right = gx + ts * 0.5 + 120 < this.w;
+      this.drawTag(ctx, label.text, gx + (right ? ts * 0.5 : -ts * 0.5), gy - ts * 0.75, { tone: label.tone, align: right ? 'left' : 'right', bounds: [0, this.w] });
+    }
+  }
+
+  // Fantôme d'une pose refusée : la lanterne en niveaux de gris, dessinée une fois
+  // par type et par taille de case (puis copiée), lisible sans la couleur (B16).
+  greyGhost(def, ts) {
+    const dpr = this.dpr || 1;
+    const key = `${def.name}|${def.color}|${ts}|${dpr}`;
+    this.greyCache = this.greyCache || new Map();
+    let g = this.greyCache.get(key);
+    if (g) return g;
+    const w = ts * 2;
+    const h = ts * 2.6;
+    const ax = ts;
+    const ay = ts * 1.9;
+    const c = makeCanvas(w * dpr, h * dpr);
+    const cx = c.getContext('2d', { willReadFrequently: true });
+    cx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    drawTower(cx, ax, ay, ts, def, 1, 0, {});
+    try {
+      const img = cx.getImageData(0, 0, c.width, c.height);
+      const d = img.data;
+      for (let i = 0; i < d.length; i += 4) {
+        const l = Math.min(255, (d[i] * 0.3 + d[i + 1] * 0.59 + d[i + 2] * 0.11) * 1.08);
+        d[i] = d[i + 1] = d[i + 2] = l;
+      }
+      cx.putImageData(img, 0, 0);
+    } catch {
+      /* lecture refusée : fantôme en couleur, la croix et la raison restent */
+    }
+    if (this.greyCache.size > 24) this.greyCache.clear();
+    g = { c, w, h, ax, ay };
+    this.greyCache.set(key, g);
+    return g;
+  }
+
+  // Dépôt raté : la lanterne revient à sa place en ~170 ms.
+  drawDragBack(ctx, ui, time) {
+    const b = ui.dragBack;
+    const t = this.game.towerById(b.towerId);
+    const k = (performance.now() - b.t0) / 170;
+    if (!t || k >= 1) {
+      ui.dragBack = null;
+      return;
+    }
+    const ts = this.ts;
+    const e = 1 - Math.pow(1 - k, 3);
+    const sx = b.x;
+    const sy = b.y + ts * 0.3;
+    const tx = this.ox + t.x * ts;
+    const ty = this.oy + t.y * ts;
+    drawTower(ctx, sx + (tx - sx) * e, sy + (ty - sy) * e, ts * (1.1 - 0.1 * e), this.game.defs.towers[t.type], t.level, time, { alpha: 0.85 });
+  }
+
+  // Message éphémère près du geste (« annulé », raison d'un refus).
+  drawFlash(ctx, ui) {
+    const f = ui.flash;
+    const k = (performance.now() - f.t0) / 1100;
+    if (k >= 1) {
+      ui.flash = null;
+      return;
+    }
+    ctx.save();
+    ctx.globalAlpha = k < 0.75 ? 1 : 1 - (k - 0.75) / 0.25;
+    this.drawTag(ctx, f.text, f.x, f.y - this.ts * 0.6 - k * 14, { tone: f.bad ? 'bad' : 'muted', align: 'center', bounds: [0, this.w] });
+    ctx.restore();
+  }
+
   // Lanterne saisie : fil d'or vers son socle, ombre portée sous le doigt.
   drawDragGhost(ctx, drag, time) {
     const t = this.game.towerById(drag.towerId);
@@ -638,6 +1106,21 @@ export class Renderer {
     wash(ctx, gx, gy + ts * 0.45, ts * 0.45, INK, 0.35);
     drawTower(ctx, gx, gy, ts * 1.1, this.game.defs.towers[t.type], t.level, time, { alpha: 0.85 });
   }
+}
+
+// Deux rectangles { x, y, w, h } se chevauchent-ils ?
+function overlap(a, b) {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
 }
 
 function easeInOut(k) {

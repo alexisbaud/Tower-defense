@@ -1,14 +1,19 @@
 // Point d'entrée : navigation entre écrans, boucle à pas de temps fixe,
 // liaison moteur / rendu / interface / audio / sauvegarde.
 import { Game, STEP } from './core/game.js';
+import { T } from './core/grid.js';
 import { defs, loadLevel, worldById, worlds, levelOrder } from './data.js';
 import { Renderer } from './render/renderer.js';
-import { drawEnemy, enemyFrame } from './render/enemies.js';
+import { PALETTE } from './render/brush.js';
 import { Input } from './ui/input.js';
 import { Hud } from './ui/hud.js';
 import { RewindGauge } from './ui/rewind.js';
 import { Tutorial } from './ui/tutorial.js';
 import { TitleScreen, MapScreen } from './ui/screens.js';
+import { Sheets, comboTable, comboDetail } from './ui/sheets.js';
+import { TowerBar, cyclePriority, priorityInfo } from './ui/towerbar.js';
+import { enemyPortrait } from './ui/portraits.js';
+import { elementBadge } from './ui/elements.js';
 import { sound } from './audio/sound.js';
 import { save } from './save.js';
 
@@ -28,6 +33,8 @@ const state = {
   acc: 0,
   last: performance.now(),
   introduced: new Set(),
+  combosSeen: new Set(),
+  zones: null, // zones de combo de la frame précédente (combos perdus)
   introTimer: 0,
   resultShown: false,
   loopRunning: false,
@@ -50,7 +57,7 @@ document.addEventListener(
 function setMuted(m) {
   save.set('muted', m);
   sound.setMuted(m);
-  for (const id of ['btn-mute', 'btn-title-sound']) $(id).classList.toggle('off', m);
+  for (const id of ['btn-mute', 'btn-title-sound']) $(id)?.classList.toggle('off', m);
 }
 setMuted(save.data.muted);
 
@@ -130,15 +137,21 @@ async function openLevelCard(entry, unlocked) {
 // ───────────────────────── Fenêtre modale ─────────────────────────
 
 const modal = $('modal');
+// opts.sheet : feuille du bas sans voile (pause) — le plateau reste visible et touchable.
 function showModal(html, buttons, opts = {}) {
   const card = modal.firstElementChild;
-  card.className = `modal-card${opts.cls ? ' ' + opts.cls : ''}`;
-  card.innerHTML = html + `<div class="actions${opts.column ? ' col' : ''}"></div>`;
+  modal.classList.toggle('as-sheet', !!opts.sheet);
+  modal.classList.remove('peek');
+  // « scroll » : la carte défile au doigt si elle dépasse l'écran (B28).
+  card.className = `modal-card scroll${opts.cls ? ' ' + opts.cls : ''}`;
+  card.onclick = null; // gestionnaire propre à une vue (table des combos)
+  card.innerHTML = html + `<div class="actions${opts.column ? ' col' : ''}${opts.actionsCls ? ' ' + opts.actionsCls : ''}"></div>`;
   const box = card.querySelector('.actions');
   for (const b of buttons) {
     const el = document.createElement('button');
     el.className = 'btn ' + (b.cls || '');
     el.textContent = b.label;
+    if (b.aria) el.setAttribute('aria-label', b.aria);
     el.addEventListener('click', () => {
       if (b.keep !== true) modal.classList.add('hidden');
       b.run?.(el);
@@ -149,26 +162,80 @@ function showModal(html, buttons, opts = {}) {
   return card;
 }
 const modalOpen = () => !modal.classList.contains('hidden');
+const pauseSheetOpen = () => modalOpen() && modal.classList.contains('as-sheet');
 
 // ───────────────────────── Partie ─────────────────────────
 
 const input = new Input(canvas, renderer, {
   game: () => state.game,
   onInfo: (target) => showInfo(target),
-  onFeedback: (kind, data) => {
-    if (kind === 'reject' || kind === 'hint') {
-      const msg = hud.reason(data.reason);
-      if (msg) hud.toast(msg, kind === 'reject');
-      if (kind === 'reject') sound.play('reject');
-    } else if (kind === 'dropCancel') {
-      sound.play('tap');
-    }
-  },
-  onAction: (kind) => {
+  onFeedback: (kind, data) => feedback(kind, data),
+  onAction: (kind, data) => {
     if (kind === 'selectTower' || kind === 'dragStart') sound.play('select');
-    if (kind === 'placed' || kind === 'toolCleared' || kind === 'selectTower') hud.refreshTools();
+    if (kind === 'placed') {
+      hud.showUndo(data.tower);
+      placeUndo();
+      hud.popTool(data.type);
+    }
+    if (kind === 'stone') hud.popTool('stone');
+    if (kind === 'placed' || kind === 'toolCleared' || kind === 'selectTower' || kind === 'stone') hud.refreshTools();
   },
+  onHold: (st, p, ms) => holdRing(st, p, ms),
+  // Un toucher sur le plateau ferme la fiche ouverte.
+  onBoardTouch: () => sheets.close(),
 });
+
+// Retours d'un geste : refus écrit près du fantôme (plus de toast sur les portails),
+// « Annulé » discret, son de refus.
+function feedback(kind, data = {}) {
+  if (kind === 'reject') {
+    const short = data.reason === 'gold' && data.missing ? `Il manque ${data.missing} or` : hud.shortReason(data.reason);
+    if (data.x != null && short) input.flash(short, data.x, data.y, true);
+    else if (hud.reason(data.reason)) hud.toast(hud.reason(data.reason), true);
+    sound.play('reject');
+  } else if (kind === 'cancel' || kind === 'dropCancel') {
+    if (data.x != null) input.flash('Annulé', data.x, data.y);
+    sound.play('tap');
+  } else if (kind === 'stoneBlocked') {
+    sound.play('reject');
+  } else if (kind === 'hint') {
+    const msg = hud.reason(data.reason);
+    if (msg) hud.toast(msg);
+  }
+}
+
+// Libellé écrit à côté du fantôme de pose (raison du refus, gain de chemin).
+renderer.pressLabel = (press) => {
+  if (press.c == null) return null;
+  if (press.kind === 'tower') {
+    if (press.valid) return null;
+    if (press.reason === 'gold') return { text: `Il manque ${press.missing} or`, tone: 'bad' };
+    return { text: hud.shortReason(press.reason) || 'Impossible', tone: 'bad' };
+  }
+  if (press.reason === 'blocked') return { text: 'Bloqué !', tone: 'bad' };
+  if (press.reason === 'occupied') return { text: 'Déjà une pierre', tone: 'muted' };
+  const gain = press.delta > 0 ? `+${press.delta} case${press.delta > 1 ? 's' : ''}` : 'Sans effet';
+  if (press.valid) return { text: gain, tone: press.delta > 0 ? 'ok' : 'muted' };
+  if (press.reason === 'gold') return { text: `${gain} · il manque ${press.missing} or`, tone: 'bad' };
+  return { text: hud.shortReason(press.reason) || 'Impossible', tone: 'bad' };
+};
+
+// Anneau (ensō) qui se remplit sous le doigt pendant un appui long.
+const holdEl = $('hold');
+function holdRing(st, p, ms) {
+  if (st === 'start' && p) {
+    const r = screenGame.getBoundingClientRect();
+    holdEl.style.left = `${p.x - r.left}px`;
+    holdEl.style.top = `${p.y - r.top}px`;
+    holdEl.style.setProperty('--hold-ms', `${Math.max(60, ms || 300)}ms`);
+    holdEl.classList.remove('hidden', 'run');
+    void holdEl.offsetWidth;
+    holdEl.classList.add('run');
+  } else {
+    holdEl.classList.add('hidden');
+    holdEl.classList.remove('run');
+  }
+}
 
 // Préférence « réduire les animations » : pas de tremblement d'écran.
 const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
@@ -176,11 +243,138 @@ input.ui.reducedMotion = reduceMotion.matches;
 reduceMotion.addEventListener?.('change', () => (input.ui.reducedMotion = reduceMotion.matches));
 
 const hud = new Hud(screenGame, {
-  onWave: () => state.game?.startNextWave(),
-  onPause: () => openPauseMenu(),
-  onSpeed: () => setSpeed(state.speed === 1 ? 2 : 1),
-  onMute: () => setMuted(!save.data.muted),
+  onWave: () => callWave(),
+  onPause: () => (pauseSheetOpen() && state.paused && !state.resultShown ? resumeFromPause() : openPauseMenu()),
+  onSpeed: () => {
+    setSpeed(state.speed === 1 ? 2 : 1);
+    sound.play('select');
+  },
   onTool: () => sound.play('select'),
+  onToolInfo: (id) => (id === 'stone' ? sheets.open('stoneTool') : sheets.open('type', id)),
+  onUndo: (id) => undoPlace(id),
+  onHold: (st, p, ms) => holdRing(st, p, ms),
+  onEnemyInfo: (type, absorb) => sheets.open('enemy', { type, absorb }),
+  onWaveInfo: () => sheets.open('wave'),
+});
+
+// Bouton de vague : lancer (construction) ou appeler en avance (si le moteur le permet).
+function callWave() {
+  const g = state.game;
+  if (!g || g.rewindAnim) return;
+  let ok = false;
+  if (g.state === 'build') ok = g.startNextWave();
+  else if (typeof g.canCallNextWave === 'function' && g.canCallNextWave()) ok = (g.callNextWave || g.startNextWave).call(g);
+  if (ok !== false) hud.popWave();
+}
+
+// « Annuler » : en bas à gauche du plateau, ou à droite s'il y cacherait un socle
+// libre ou le sanctuaire (petits écrans : le plateau descend jusqu'à la palette).
+function placeUndo() {
+  const el = $('btn-undo');
+  const g = state.game;
+  el.classList.remove('right');
+  if (!g || el.classList.contains('hidden')) return;
+  const cv = canvas.getBoundingClientRect();
+  const ts = renderer.ts;
+  const cost = () => {
+    const u = el.getBoundingClientRect();
+    let n = 0;
+    for (let i = 0; i < g.grid.size; i++) {
+      const ty = g.grid.type(i);
+      const c = g.grid.col(i);
+      const r = g.grid.row(i);
+      if (ty !== T.GOAL && !(ty === T.SLOT && !g.towerAt(c, r))) continue;
+      const p = renderer.toScreen(c, r);
+      const ix = Math.min(u.right, cv.left + p.x + ts) - Math.max(u.left, cv.left + p.x);
+      const iy = Math.min(u.bottom, cv.top + p.y + ts) - Math.max(u.top, cv.top + p.y);
+      if (ix > 0 && iy > 0) n += ix * iy;
+    }
+    return n;
+  };
+  const left = cost();
+  if (left <= 0) return;
+  el.classList.add('right');
+  if (cost() >= left) el.classList.remove('right');
+}
+
+function undoPlace(id) {
+  const g = state.game;
+  if (!g) return;
+  const t = g.towerById(id);
+  if (t && g.undoPlace && g.undoPlace(id)) {
+    hud.hideUndo();
+    hud.refreshTools();
+    if (input.ui.selectedTower === id) input.ui.selectedTower = null;
+  } else {
+    hud.hideUndo();
+    hud.toast('Trop tard pour annuler');
+  }
+}
+
+// Barre d'actions de la lanterne sélectionnée.
+const towerBar = new TowerBar($('tower-bar'), {
+  game: () => state.game,
+  input,
+  renderer,
+  sheetOpen: () => sheets.isOpen,
+  onPriority: (t) => changePriority(t),
+  onSheet: (t) => {
+    sound.play('select');
+    sheets.open('tower', t.id);
+  },
+  onSell: (t) => sellTower(t),
+});
+
+function changePriority(t) {
+  const g = state.game;
+  const p = cyclePriority(g, t);
+  sound.play('select');
+  renderer.fx.ring(t.x, t.y + 0.3, 0.1, 0.62, PALETTE.gold, 0.45, 0.06, 0.45);
+  const s = renderer.toScreen(t.x, t.y - 0.6);
+  input.flash(`Cible : ${priorityInfo(p).label}`, s.x, s.y);
+}
+
+function sellTower(t) {
+  const g = state.game;
+  if (!g.towerById(t.id)) hud.toast('Cette lanterne n’existe plus', true);
+  else g.sellTower(t.id);
+  if (input.ui.selectedTower === t.id) input.ui.selectedTower = null;
+}
+
+// Fiches compactes (remplacent la barre du bas).
+const sheets = new Sheets($('info'), {
+  game: () => state.game,
+  input,
+  // ordonnée (page) de la lanterne ou du yokai décrit : la fiche ne doit pas le cacher
+  anchor: (kind, data) => {
+    const g = state.game;
+    if (!g) return null;
+    let y = null;
+    if (kind === 'tower') y = g.towerById(data)?.y;
+    else if (kind === 'enemy' && data?.enemy?.alive) y = data.enemy.y;
+    if (y == null) return null;
+    return canvas.getBoundingClientRect().top + renderer.toScreen(0, y - 0.3).y;
+  },
+  onOpen: (kind, data) => {
+    input.ui.focusEnemy = kind === 'enemy' ? data?.enemy?.id ?? null : input.ui.focusEnemy;
+    // En pause, la feuille de pause s'efface le temps de la fiche.
+    if (pauseSheetOpen()) modal.classList.add('peek');
+  },
+  onClose: () => {
+    input.ui.focusEnemy = null;
+    modal.classList.remove('peek');
+  },
+  onSell: (t) => sellTower(t),
+  onPriority: (t) => changePriority(t),
+  onSelectTool: (type) => {
+    if (input.ui.tool !== type) input.setTool(type);
+    hud.refreshTools();
+    hud.popTool(type);
+    sound.play('select');
+  },
+  onRemoveStone: (c, r) => state.game?.removeStone(c, r),
+  onCallWave: () => callWave(),
+  onEnemy: (type, absorb) => sheets.open('enemy', { type, absorb }),
 });
 
 function setSpeed(s) {
@@ -193,14 +387,15 @@ function setSpeed(s) {
 const gauge = new RewindGauge($('rewind'), {
   game: () => state.game,
   onRewind: () => state.game?.rewind(),
+  // Simple indication (pas d'erreur rouge ni de son de refus) : la jauge réduite
+  // dit quand elle servira.
   onRefuse: (why) => {
     const msg = {
-      used: 'Rembobinage déjà utilisé pour cette vague',
-      wave: 'Le Rembobinage s’utilise pendant une vague',
-      short: 'Le passé s’accumule encore…',
+      used: '巻 Déjà utilisé pour cette vague',
+      wave: '巻 Pendant une vague : glissez ◀◀ pour remonter le temps',
+      short: '巻 Le passé s’accumule encore…',
     }[why];
-    if (msg) hud.toast(msg, true);
-    sound.play('reject');
+    if (msg) hud.toast(msg);
   },
 });
 
@@ -221,9 +416,17 @@ const tutorial = new Tutorial($('hint'), {
 function setPaused(p) {
   state.paused = p;
   $('btn-pause').classList.toggle('on', p);
-  input.enabled = !p;
+  // En pause, le plateau reste consultable (toucher, appui long), sans pose ni fusion.
+  input.inspect = p;
+  input.enabled = true;
   if (p) input.cancel();
   holdMusic(p);
+}
+
+function resumeFromPause() {
+  modal.classList.add('hidden');
+  sheets.close();
+  setPaused(false);
 }
 
 // En pause, la musique retombe au calme (plus de tambours de vague), puis
@@ -242,15 +445,22 @@ function holdMusic(p) {
   }
 }
 
+// Pause : feuille du bas compacte, sans voile ; le plateau reste visible et on peut
+// y toucher les lanternes et les yokai pour étudier la carte.
 function openPauseMenu() {
   if (!state.game || state.resultShown) return;
   setPaused(true);
+  sheets.close();
+  const g = state.game;
   const musicLabel = () => `Musique : ${save.data.music ? 'oui' : 'non'}`;
-  const soundLabel = () => `Son : ${save.data.muted ? 'coupé' : 'actif'}`;
+  const soundLabel = () => `Son : ${save.data.muted ? 'non' : 'oui'}`;
   showModal(
-    `<div class="modal-kanji">休</div><h2>Pause</h2><p>${state.game.level.name} — vague ${Math.max(0, state.game.waveIndex + 1)}/${state.game.totalWaves}</p>`,
+    `<div class="pause-head"><span class="modal-kanji">休</span><div><h2>Pause</h2><p>${g.level.name} · vague ${Math.max(0, g.waveIndex + 1)}/${g.totalWaves}</p></div></div>
+     <p class="pause-hint">Touchez une lanterne, ou appuyez longuement sur un yokai, pour l’étudier.</p>`,
     [
-      { label: 'Reprendre', cls: 'primary', run: () => setPaused(false) },
+      { label: 'Reprendre', cls: 'primary', run: () => resumeFromPause() },
+      { label: 'Combos', keep: true, aria: 'Table des combos', run: () => openComboTable() },
+      { label: 'Carte', cls: 'dark', aria: 'Carte du jardin', run: () => showScreen('map') },
       {
         label: soundLabel(),
         keep: true,
@@ -269,108 +479,119 @@ function openPauseMenu() {
         },
       },
       { label: 'Recommencer', run: () => startLevel(state.levelId) },
-      { label: 'Carte du jardin', cls: 'dark', run: () => showScreen('map') },
     ],
-    { column: true },
+    { sheet: true, cls: 'pause-card', actionsCls: 'pause-grid' },
   );
 }
 
-let infoTarget = null; // { kind, id } de la fiche ouverte, pour la tenir à jour
+// Table des combos : matrice des éléments (forme + kanji + libellé), nom de chaque
+// combo ; la case touchée détaille son effet et contre quoi il sert.
+function openComboTable() {
+  const g = state.game;
+  if (!g) return;
+  const card = modal.firstElementChild;
+  card.className = 'modal-card scroll pause-card combos-card';
+  card.innerHTML = `<div class="pause-head"><span class="modal-kanji">合</span><div><h2>Combos</h2><p>Deux éléments différents côte à côte</p></div></div>${comboTable(g.defs, g.availableTowers)}<div class="actions"><button class="btn" data-act="back">Retour</button></div>`;
+  const detail = card.querySelector('.ct-detail');
+  const select = (id) => {
+    detail.innerHTML = comboDetail(g.defs, id);
+    for (const c of card.querySelectorAll('.ct-cell[data-combo]')) c.classList.toggle('on', c.dataset.combo === id);
+  };
+  card.onclick = (e) => {
+    const cell = e.target.closest('.ct-cell[data-combo]');
+    if (cell) {
+      select(cell.dataset.combo);
+      sound.play('select');
+    }
+    if (e.target.closest('[data-act="back"]')) openPauseMenu();
+  };
+  const first = card.querySelector('.ct-cell[data-combo]');
+  if (first) select(first.dataset.combo);
+}
 
 function showInfo(target, silent = false) {
-  const g = state.game;
   if (!silent) sound.play('select');
   if (target.kind === 'tower') {
-    const t = g.towerById(target.tower.id) || target.tower;
-    infoTarget = { kind: 'tower', id: t.id };
-    const def = g.defs.towers[t.type];
-    const st = g.towerStats(t);
-    const combos = g.zones
-      .filter((z) => z.a === t.id || z.b === t.id)
-      .map((z) => `<span>${z.def.kanji} ${z.def.name}</span>`)
-      .join(', ');
-    const extra = [];
-    if (st.burn) extra.push(`Brûlure ${st.burn.dps}/s`);
-    if (st.slow) extra.push(`Ralentit ${Math.round((1 - st.slow.factor) * 100)} %`);
-    if (st.knockback) extra.push(`Recul ${st.knockback}`);
-    if (st.splash) extra.push(`Zone ${st.splash}`);
-    if (st.pierce) extra.push('Perce l’armure');
-    if (st.stun) extra.push(`Étourdit ${st.stun} s`);
-    const next = t.level < g.rules.maxTowerLevel ? 'Glissez-la sur une lanterne identique pour la fusionner.' : 'Niveau maximum atteint.';
-    hud.showInfo(
-      `<h3>${def.kanji} ${def.name} · N${t.level}</h3>
-       <div class="sub">${def.role} — ${def.desc}</div>
-       <div class="rows">
-         <span>Dégâts <b>${st.damage}</b></span><span>Cadence <b>${st.rate}/s</b></span>
-         <span>Portée <b>${st.range}</b></span><span>Investi <b>${t.invested}</b></span>
-         ${extra.length ? `<span style="grid-column:1/-1">${extra.join(' · ')}</span>` : ''}
-         ${combos ? `<span style="grid-column:1/-1">Combos : ${combos}</span>` : ''}
-         <span style="grid-column:1/-1;opacity:.7">${next}</span>
-       </div>`,
-      [
-        {
-          label: `Vendre +${g.sellValue(t)}`,
-          cls: 'primary',
-          run: () => {
-            if (!g.towerById(t.id)) hud.toast('Cette lanterne n’existe plus', true);
-            else g.sellTower(t.id);
-            infoTarget = null;
-          },
-        },
-        {
-          label: 'Fermer',
-          run: () => {
-            input.ui.selectedTower = null;
-            infoTarget = null;
-          },
-        },
-      ],
-    );
+    input.ui.selectedTower = target.tower.id;
+    sheets.open('tower', target.tower.id);
+  } else if (target.kind === 'enemy') {
+    sheets.open('enemy', { type: target.enemy.type, enemy: target.enemy, absorb: target.enemy.absorb });
   } else if (target.kind === 'stone') {
-    infoTarget = null;
-    const refund = Math.floor(g.stoneCost() * g.rules.stoneRefund);
-    hud.showInfo(
-      `<h3>石 Pierre</h3>
-       <div class="sub">Elle détourne les yokai terrestres. Pierres restantes : ${g.stonesLeft()}</div>`,
-      [
-        { label: `Retirer +${refund}`, cls: 'primary', run: () => g.removeStone(target.c, target.r) },
-        { label: 'Fermer' },
-      ],
-    );
+    sheets.open('stone', { c: target.c, r: target.r });
   }
 }
 
-// Carte de présentation d'un yokai à sa première apparition.
+// Carte de présentation d'un yokai à sa première apparition : compacte, placée
+// loin des portails, du sanctuaire et de la barre de boss ; un toucher ouvre sa fiche.
 const introEl = $('intro');
 function showIntro(type) {
   const def = defs.enemies[type];
-  introEl.innerHTML = `<canvas width="192" height="192"></canvas><div class="intro-text"><div class="intro-tag">${def.boss ? 'Boss' : 'Nouveau yokai'}</div><h4>${def.name}</h4><p>${def.desc}</p></div>`;
-  const ctx = introEl.querySelector('canvas').getContext('2d');
-  const fake = {
-    type,
-    seed: 0.3,
-    size: def.size,
-    dirX: 1,
-    hp: 1,
-    maxHp: 1,
-    spawnT: 0,
-    hitT: 0,
-    slowT: 0,
-    burnT: 0,
-    flying: !!def.abilities?.flying,
-    absorb: def.abilities?.absorb ?? def.abilities?.cycleAbsorb?.elements[0] ?? null,
-  };
-  // cadrage sur la boîte du dessin : ~90 % de la largeur ou ~80 % de la hauteur de la vignette
-  const { box, lift } = enemyFrame(def);
-  const r = Math.min(172 / (box[2] - box[0]), 154 / (box[3] - box[1]));
-  const cx = 96 - ((box[0] + box[2]) / 2) * r;
-  const cy = 96 - ((box[1] + box[3]) / 2) * r + lift * r;
-  drawEnemy(ctx, fake, def, cx, cy, r / (def.size ?? 0.3), 0.5);
+  const absorb = def.abilities?.absorb ?? null;
+  introEl.dataset.enemy = type;
+  introEl.innerHTML = `<img alt="" src="${enemyPortrait(defs, type, absorb, 46)}"><div class="intro-text"><div class="intro-tag">${def.boss ? 'Boss' : 'Nouveau yokai'}${absorb ? ` ${elementBadge(absorb, defs, { size: 14, kanji: false })}` : ''}</div><h4>${def.name}</h4><p>${def.strength || def.desc}</p></div><span class="intro-more" aria-hidden="true">›</span>`;
   introEl.classList.remove('hidden');
+  placeIntro();
   clearTimeout(state.introTimer);
   state.introTimer = setTimeout(() => introEl.classList.add('hidden'), 5500);
 }
-introEl.addEventListener('click', () => introEl.classList.add('hidden'));
+
+function placeIntro() {
+  const g = state.game;
+  if (!g) return;
+  const W = stage.clientWidth;
+  const sr = stage.getBoundingClientRect();
+  let H = stage.clientHeight;
+  // fiche ouverte : elle couvre le bas du plateau
+  if (sheets.isOpen) H = Math.min(H, $('info').getBoundingClientRect().top - sr.top);
+  const w = introEl.offsetWidth;
+  const h = introEl.offsetHeight;
+  const ts = renderer.ts;
+  const rel = (r) => ({ l: r.left - sr.left, t: r.top - sr.top, r: r.right - sr.left, b: r.bottom - sr.top });
+  // Interdit : portails, sanctuaire, barre de boss, « Annuler ».
+  const forbid = [{ l: W * 0.12, t: 0, r: W * 0.88, b: 34 }];
+  if (!$('btn-undo').classList.contains('hidden')) forbid.push(rel($('btn-undo').getBoundingClientRect()));
+  if (hud.bannerShown) forbid.push(rel($('banner').getBoundingClientRect())); // « Vague N », nom du niveau
+  // À éviter (pondéré) : socles et lanternes, chemin et gravier où passent les yokai,
+  // surtout à la sortie des portails (là où marche le yokai présenté).
+  const soft = [];
+  const grid = g.grid;
+  const nearSpawn = (c, r) => grid.spawns.some((sp) => Math.max(Math.abs(grid.col(sp) - c), Math.abs(grid.row(sp) - r)) <= 3);
+  for (let i = 0; i < grid.size; i++) {
+    const ty = grid.type(i);
+    const c = grid.col(i);
+    const rr = grid.row(i);
+    const p = renderer.toScreen(c, rr);
+    const r = { l: p.x, t: p.y, r: p.x + ts, b: p.y + ts };
+    if (ty === T.SPAWN || ty === T.GOAL) forbid.push({ l: r.l - 6, t: r.t - 6, r: r.r + 6, b: r.b + 6 });
+    else if (ty === T.SLOT) soft.push([r, 4]);
+    else if (ty === T.PATH || ty === T.OPEN) soft.push([r, nearSpawn(c, rr) ? 8 : 1]);
+  }
+  const area = (a, b) => Math.max(0, Math.min(a.r, b.r) - Math.max(a.l, b.l)) * Math.max(0, Math.min(a.b, b.b) - Math.max(a.t, b.t));
+  const m = 8;
+  const top = 40;
+  let best = null;
+  for (const x of [m, W - w - m, (W - w) / 2]) {
+    for (let y = H - h - m; y >= top; y -= Math.max(8, ts / 3)) {
+      const box = { l: x, t: y, r: x + w, b: y + h };
+      if (forbid.some((f) => area(f, box) > 0)) continue;
+      let score = 0;
+      for (const [r, k] of soft) score += (area(r, box) / (ts * ts)) * k;
+      score += (x === (W - w) / 2 ? 0.6 : 0) + (1 - y / H) * 0.3; // préfère les bords, puis le bas
+      if (!best || score < best.score) best = { x, y, score };
+    }
+  }
+  const pos = best || { x: m, y: H - h - m };
+  introEl.style.left = `${Math.round(pos.x)}px`;
+  introEl.style.top = `${Math.round(pos.y)}px`;
+}
+introEl.addEventListener('click', () => {
+  introEl.classList.add('hidden');
+  const type = introEl.dataset.enemy;
+  if (type && state.game) {
+    const e = state.game.enemies.find((x) => x.type === type && x.alive);
+    sheets.open('enemy', { type, enemy: e || null, absorb: e?.absorb });
+  }
+});
 
 const bossbar = $('bossbar');
 const bossFill = bossbar.querySelector('.boss-fill');
@@ -407,9 +628,14 @@ async function startLevel(id) {
   resize();
   renderer.setGame(state.game, world.theme);
   hud.setup(state.game, input);
+  sheets.close();
+  towerBar.hide();
+  holdRing('end');
   const idx = order.findIndex((o) => o.id === id);
   hud.banner(level.name, `${world.name} · ${idx + 1}/${order.length}`);
   state.introduced = new Set();
+  state.combosSeen = new Set();
+  state.zones = null;
   introEl.classList.add('hidden');
   bossbar.classList.add('hidden');
   bossShown = null;
@@ -432,6 +658,8 @@ function showResult(won, record = false) {
   const g = state.game;
   state.resultShown = true;
   setPaused(true);
+  sheets.close();
+  input.ui.selectedTower = null;
   const idx = order.findIndex((o) => o.id === state.levelId);
   if (won) {
     const stars = g.stars();
@@ -480,6 +708,7 @@ function handleEvents(game) {
   for (const ev of evs) {
     sound.onEvent(ev);
     tutorial.onEvent(ev);
+    sheets.onEvent(ev);
     switch (ev.type) {
       case 'spawn':
       case 'spawnChild': {
@@ -491,24 +720,35 @@ function handleEvents(game) {
         break;
       }
       case 'waveStart':
-        hud.banner(`Vague ${ev.index + 1}`, ev.index === ev.total - 1 ? 'Dernière vague' : '');
+        hud.banner(`Vague ${ev.index + 1}`, ev.index === ev.total - 1 ? 'Dernière vague' : game.waves?.[ev.index]?.climax ? 'Climax' : '');
+        hud.popWave();
         break;
       case 'fuse':
-        // La lanterne fusionnée change d'identité : sélection et fiche la suivent.
+        // La lanterne fusionnée change d'identité : la sélection la suit (la fiche aussi, cf. Sheets).
         if (input.ui.selectedTower === ev.oldId || input.ui.selectedTower === ev.srcId) input.ui.selectedTower = ev.tower.id;
-        if (infoTarget?.id === ev.oldId || infoTarget?.id === ev.srcId) {
-          if (hud.infoOpen) showInfo({ kind: 'tower', tower: ev.tower }, true);
-        }
         break;
       case 'sell':
       case 'rewindEnd':
-        if (infoTarget && hud.infoOpen && !game.towerById(infoTarget.id)) {
-          hud.hideInfo();
-          infoTarget = null;
+      case 'undo':
+        if (input.ui.selectedTower != null && !game.towerById(input.ui.selectedTower)) input.ui.selectedTower = null;
+        if (ev.type === 'undo' && ev.tower) {
+          // la lanterne retourne dans la palette : fumée d'encre et or rendu
+          const t = ev.tower;
+          renderer.fx.burst(t.x, t.y - 0.2, 6, 'smoke', '#f4f7f8', 0.6, 0.8, 0.14, { g: -0.5, drag: 0.95 });
+          renderer.fx.ring(t.x, t.y + 0.3, 0.6, 0.1, PALETTE.gold, 0.4, 0.05, 0.45);
+          renderer.fx.goldText(t.x, t.y - 0.5, ev.value);
+          sound.play('sell', ev);
         }
         break;
       case 'earlyBonus':
         hud.toast(`Appel anticipé +${ev.gold} or`);
+        break;
+      case 'combo':
+        // Premier combo de chaque sorte dans le niveau : son effet est expliqué (D5).
+        if (ev.def && !state.combosSeen.has(ev.def.id)) {
+          state.combosSeen.add(ev.def.id);
+          hud.toast(`${ev.def.kanji || ''} ${ev.def.name} : ${ev.def.desc}`, false, 3200);
+        }
         break;
       case 'stomp':
         renderer.fx.addShake(0.35);
@@ -532,6 +772,21 @@ function handleEvents(game) {
     }
   }
   evs.length = 0;
+}
+
+// Un combo qui disparaît (vente, fusion, annulation, rembobinage) ne s'efface plus
+// en silence : son anneau se resserre et son nom s'affiche, barré (D16).
+function watchZones(g) {
+  if (g.zones === state.zones) return;
+  const prev = state.zones;
+  state.zones = g.zones;
+  if (!prev) return;
+  const now = new Set(g.zones.map((z) => z.key));
+  for (const z of prev) {
+    if (now.has(z.key)) continue;
+    renderer.fx.ring(z.x, z.y, z.radius * 0.85, 0.1, z.def.color || PALETTE.gold, 0.55, 0.06, 0.85);
+    renderer.fx.text(z.x, z.y - 0.45, `${z.def.name} perdu`, '#4a463e', Math.max(0.3, 12.5 / renderer.ts));
+  }
 }
 
 function resize() {
@@ -572,7 +827,9 @@ function frame(now) {
   state.last = now;
   const g = state.game;
   if (g && state.screen === 'game') {
-    if (!state.paused) {
+    // Pause douce : entre deux vagues, le compte à rebours attend qu'on ait lu la fiche (B12).
+    const reading = sheets.isOpen && g.state === 'build' && g.countdown != null;
+    if (!state.paused && !reading) {
       state.acc += dt * state.speed;
       let steps = 0;
       while (state.acc >= STEP && steps < 8) {
@@ -583,9 +840,13 @@ function frame(now) {
       if (steps >= 8) state.acc = 0;
     }
     handleEvents(g);
+    watchZones(g);
+    input.tick();
     hud.update();
     gauge.update();
     updateBossBar(g);
+    towerBar.update();
+    sheets.update();
     tutorial.update(state.paused || modalOpen());
     renderer.render(state.paused ? 0 : dt, state.paused ? 1 : state.acc / STEP, input.ui);
     if (raw < 0.25) adaptQuality(raw, (performance.now() - t0) / 1000);
@@ -598,7 +859,8 @@ function frame(now) {
 // Empêche le zoom par pincement / double-tap et le défilement.
 for (const ev of ['gesturestart', 'gesturechange', 'gestureend']) document.addEventListener(ev, (e) => e.preventDefault());
 document.addEventListener('dblclick', (e) => e.preventDefault(), { passive: false });
-document.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
+// Les conteneurs défilants (fiches, palette chargée) gardent leur défilement.
+document.addEventListener('touchmove', (e) => !e.target.closest?.('.scroll') && e.preventDefault(), { passive: false });
 let lastTouchEnd = 0;
 document.addEventListener(
   'touchend',
@@ -657,6 +919,8 @@ window.__state = state;
 window.__tutorial = tutorial;
 window.__startLevel = startLevel;
 window.__hud = hud;
+window.__input = input;
+window.__sheets = sheets;
 
 // Démarrage : ?level=<id> lance directement un niveau (tests), sinon l'écran titre.
 const direct = new URLSearchParams(location.search).get('level');

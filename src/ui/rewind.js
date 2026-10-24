@@ -1,5 +1,7 @@
 // Jauge de Rembobinage : on fait glisser la poignée vers la gauche pour
-// remonter le temps (une fois par vague).
+// remonter le temps (une fois par vague). Hors d'usage (construction, déjà
+// utilisée, passé encore trop court), elle se réduit à un disque : un toucher
+// donne une simple indication, sans message d'erreur.
 
 const TRIGGER = 0.55; // part de la piste à parcourir pour déclencher
 
@@ -27,7 +29,7 @@ export class RewindGauge {
     const g = this.game;
     if (!g) return;
     this.h.onAction?.('pointer');
-    if (!g.canRewind()) {
+    if (!this.usable(g)) {
       this.h.onRefuse?.(g.rewindUsed ? 'used' : g.state !== 'wave' ? 'wave' : 'short');
       return;
     }
@@ -56,6 +58,11 @@ export class RewindGauge {
     this.release(-this.drag.dx / w >= TRIGGER);
   }
 
+  // Utilisable maintenant (méthode du moteur, défensif si elle évolue).
+  usable(g) {
+    return !!(g && typeof g.canRewind === 'function' && g.canRewind());
+  }
+
   release(fire) {
     this.drag = null;
     this.root.classList.remove('armed');
@@ -80,13 +87,20 @@ export class RewindGauge {
       this.fill.style.width = `${pct}%`;
       this.last.pct = pct;
     }
-    const ready = g.canRewind();
+    const ready = this.usable(g);
     let text;
     if (g.rewindAnim) text = 'Le temps recule…';
     else if (g.rewindUsed) text = 'Déjà utilisé';
     else if (g.state !== 'wave') text = 'Pendant la vague';
     else if (!ready) text = 'Le passé s’accumule…';
     else text = `◀◀ glisser · −${avail.toFixed(0)} s`;
+    // Compacte tant qu'elle n'est pas utilisable (et pas pendant un glisser).
+    const compact = !ready && !this.drag && !g.rewindAnim;
+    if (compact !== this.last.compact) {
+      this.root.classList.toggle('compact', compact);
+      this.root.setAttribute('aria-label', compact ? `Rembobinage : ${text}` : 'Rembobinage : glissez vers la gauche');
+      this.last.compact = compact;
+    }
     if (text !== this.last.text) {
       this.label.textContent = text;
       this.last.text = text;
