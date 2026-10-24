@@ -12,6 +12,7 @@ export function drawTower(ctx, x, y, ts, def, level, time, opts = {}) {
   const glow = def.glow;
   const col = def.color;
   const flick = 0.85 + Math.sin(time * 9 + x) * 0.08 + Math.sin(time * 23 + y) * 0.05;
+  if (opts.echo != null) return drawEcho(ctx, x, y, ts, def, level, time, opts);
   ctx.save();
   if (opts.alpha != null) ctx.globalAlpha *= opts.alpha;
   const baseY = y + ts * 0.32;
@@ -164,6 +165,34 @@ export function drawTower(ctx, x, y, ts, def, level, time, opts = {}) {
   }
   ctx.restore();
   return { top: roofY - s * 0.14, boxY: boxY + boxH / 2 };
+}
+
+// Écho fantôme (Rembobinage) : lanterne translucide indigo, vacillante, avec
+// un anneau de durée restante. opts.echo = fraction de vie restante (0..1).
+function drawEcho(ctx, x, y, ts, def, level, time, opts) {
+  const k = Math.max(0, Math.min(1, opts.echo));
+  const flicker = 0.75 + Math.sin(time * 13 + x) * 0.12 + Math.sin(time * 5.3) * 0.08;
+  ctx.save();
+  if (opts.alpha != null) ctx.globalAlpha *= opts.alpha;
+  wash(ctx, x, y - ts * 0.1, ts * 0.8, '#8fb4ff', 0.35 * flicker);
+  ctx.globalAlpha *= 0.5 * flicker * (0.4 + 0.6 * Math.min(1, k * 3));
+  ctx.translate(Math.sin(time * 3) * ts * 0.02, -ts * 0.05);
+  drawTower(ctx, x, y, ts, def, level, time, { shot: opts.shot });
+  ctx.restore();
+  ctx.save();
+  if (opts.alpha != null) ctx.globalAlpha *= opts.alpha;
+  ctx.strokeStyle = withAlpha('#9db8ff', 0.85);
+  ctx.lineWidth = Math.max(1.5, ts * 0.045);
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.arc(x, y + ts * 0.3, ts * 0.32, -Math.PI / 2, -Math.PI / 2 + k * Math.PI * 2);
+  ctx.stroke();
+  ctx.fillStyle = withAlpha('#dce7ff', 0.9);
+  ctx.font = `800 ${Math.round(ts * 0.22)}px "Shippori Mincho", serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('影', x + ts * 0.32, y - ts * 0.42);
+  ctx.restore();
 }
 
 function drawRoof(ctx, x, y, w, h, trim, lw) {

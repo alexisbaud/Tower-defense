@@ -14,6 +14,12 @@ export default {
   stoneRefund: 0.5,
   // Combos : bonus de puissance par niveau moyen au-delà de 1
   comboLevelBonus: 0.4,
+  // Rembobinage (niveaux avec `rewind: true`)
+  rewindSeconds: 6,       // remonte le temps de 6 s, une fois par vague
+  echoSeconds: 10,        // durée de vie des échos fantômes
+  echoPower: 0.5,         // puissance des échos
+  snapshotInterval: 0.1,  // fréquence des instantanés (s)
+  rewindAnimDuration: 1.1,
   // Seuils d'étoiles (ratio de vies restantes) : >= stars3 -> 3★, >= stars2 -> 2★, sinon 1★
   stars3: 0.85,
   stars2: 0.5,

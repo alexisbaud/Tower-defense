@@ -90,15 +90,32 @@ export function inkCircle(ctx, x, y, r, rnd, wobble = 0.08, steps = 18) {
   ctx.closePath();
 }
 
-// Tache d'encre diluée (lavis) : dégradé radial doux.
+// Tache d'encre diluée (lavis) : dégradé radial doux. Le dégradé est
+// pré-rendu une fois par couleur dans un petit sprite, puis simplement étiré :
+// beaucoup plus rapide que createRadialGradient à chaque appel.
+const washSprites = new Map();
+function washSprite(color) {
+  let c = washSprites.get(color);
+  if (c) return c;
+  c = makeCanvas(64, 64);
+  const g = c.getContext('2d');
+  const grad = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grad.addColorStop(0, withAlpha(color, 1));
+  grad.addColorStop(0.5, withAlpha(color, 0.5));
+  grad.addColorStop(1, withAlpha(color, 0));
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 64, 64);
+  if (washSprites.size > 200) washSprites.clear();
+  washSprites.set(color, c);
+  return c;
+}
+
 export function wash(ctx, x, y, r, color, alpha = 0.25) {
-  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
-  g.addColorStop(0, withAlpha(color, alpha));
-  g.addColorStop(1, withAlpha(color, 0));
-  ctx.fillStyle = g;
-  ctx.beginPath();
-  ctx.arc(x, y, r, 0, Math.PI * 2);
-  ctx.fill();
+  if (alpha <= 0.004 || r <= 0) return;
+  const prev = ctx.globalAlpha;
+  ctx.globalAlpha = prev * Math.min(1, alpha);
+  ctx.drawImage(washSprite(color), x - r, y - r, r * 2, r * 2);
+  ctx.globalAlpha = prev;
 }
 
 const alphaCache = new Map();

@@ -40,6 +40,12 @@ export class Game {
     this.tornadoes = [];
     this.comboIndex = buildComboIndex(defs.combos);
     this.stonesPlaced = 0;
+    // Rembobinage
+    this.echoes = []; // lanternes fantômes (50 % de puissance, durée limitée)
+    this.history = []; // instantanés de la vague en cours
+    this.historyT = 0;
+    this.rewindUsed = false;
+    this.rewindAnim = null;
 
     this.waves = level.waves;
     this.waveIndex = -1; // index de la dernière vague lancée
@@ -275,6 +281,9 @@ export class Game {
     this.waveIndex = idx;
     this.state = 'wave';
     this.waveTime = 0;
+    this.history = [];
+    this.historyT = 0;
+    this.rewindUsed = false;
     const wave = this.waves[idx];
     this.spawners = wave.groups.map((g) => ({
       enemy: g.enemy,
@@ -294,9 +303,15 @@ export class Game {
 
   update(dt) {
     if (this.state === 'won' || this.state === 'lost') return;
+    if (this.rewindAnim) {
+      this.rewindAnim.t += dt;
+      if (this.rewindAnim.t >= this.rewindAnim.dur) this.finishRewind();
+      return;
+    }
     this.time += dt;
     if (this.state === 'wave') {
       this.waveTime += dt;
+      this.recordHistory(dt);
       this.updateSpawners(dt);
     } else if (this.countdown != null) {
       this.countdown -= dt;
@@ -363,7 +378,8 @@ export class Game {
       size: def.size ?? 0.3,
       armor: def.abilities?.armor ?? 0,
       flying: !!def.abilities?.flying,
-      absorb: opts.absorb ?? def.abilities?.absorb ?? null,
+      absorb: opts.absorb ?? def.abilities?.absorb ?? def.abilities?.cycleAbsorb?.elements[0] ?? null,
+      boss: !!def.boss,
       alive: true,
       cur: -1,
       target: -1,
@@ -473,8 +489,96 @@ export class Game {
     }
   }
 
-  // Capacités spéciales (étendues dans les étapes suivantes).
-  updateAbilities() {}
+  // Capacités spéciales des yokai (paramétrées par les données).
+  updateAbilities(e, dt) {
+    const ab = this.defs.enemies[e.type].abilities;
+    if (!ab) return;
+    const tm = e.timers;
+    if (ab.enrage && !e.enraged && e.hp < e.maxHp * ab.enrage.below) {
+      e.enraged = true;
+      e.speed *= ab.enrage.speed;
+      this.emit('enrage', { enemy: e });
+    }
+    if (e.blindT > 0) return; // aveuglé (Vapeur) : pouvoirs suspendus
+    if (ab.healAura) {
+      tm.heal = (tm.heal ?? ab.healAura.interval * 0.5) - dt;
+      if (tm.heal <= 0) {
+        tm.heal += ab.healAura.interval;
+        let healed = false;
+        for (const o of this.enemies) {
+          if (o === e || !o.alive || o.hp >= o.maxHp) continue;
+          if (Math.hypot(o.x - e.x, o.y - e.y) > ab.healAura.radius) continue;
+          o.hp = Math.min(o.maxHp, o.hp + o.maxHp * ab.healAura.amount);
+          healed = true;
+        }
+        if (healed) this.emit('heal', { enemy: e, radius: ab.healAura.radius });
+      }
+    }
+    if (ab.summon) {
+      tm.summon = (tm.summon ?? ab.summon.interval) - dt;
+      if (tm.summon <= 0) {
+        tm.summon += ab.summon.interval;
+        for (let k = 0; k < ab.summon.count; k++) this.spawnChild(ab.summon.enemy, e, k, ab.summon.count);
+        this.emit('summon', { enemy: e });
+      }
+    }
+    if (ab.cycleAbsorb) {
+      tm.cycle = (tm.cycle ?? ab.cycleAbsorb.interval) - dt;
+      if (tm.cycle <= 0) {
+        tm.cycle += ab.cycleAbsorb.interval;
+        const els = ab.cycleAbsorb.elements;
+        e.absorb = els[(els.indexOf(e.absorb) + 1) % els.length];
+        this.emit('absorbShift', { enemy: e, element: e.absorb });
+      }
+    }
+    if (ab.stomp) {
+      tm.stomp = (tm.stomp ?? ab.stomp.interval) - dt;
+      if (tm.stomp <= 0) {
+        tm.stomp += ab.stomp.interval;
+        const hit = [];
+        for (const t of this.towers) {
+          if (Math.hypot(t.x - e.x, t.y - e.y) <= ab.stomp.radius) {
+            t.stunT = Math.max(t.stunT, ab.stomp.stun);
+            hit.push(t.id);
+          }
+        }
+        this.emit('stomp', { enemy: e, radius: ab.stomp.radius, towers: hit });
+      }
+    }
+  }
+
+  // Fait apparaître un yokai à la position d'un autre (division, invocation).
+  spawnChild(type, parent, k = 0, n = 1) {
+    const e = this.createEnemy(type, { spawnT: 0.25 });
+    e.x = e.px = parent.x;
+    e.y = e.py = parent.y;
+    e.dirX = parent.dirX;
+    if (e.flying || parent.flying) {
+      if (parent.flying) {
+        Object.assign(e, { fx0: parent.fx0, fy0: parent.fy0, fx1: parent.fx1, fy1: parent.fy1, flyLen: parent.flyLen, s: parent.s });
+      } else {
+        const goal = this.nearestGoal(e.x, e.y);
+        Object.assign(e, { fx0: e.x, fy0: e.y, fx1: this.grid.cx(goal), fy1: this.grid.cy(goal), s: 0 });
+        e.flyLen = Math.hypot(e.fx1 - e.fx0, e.fy1 - e.fy0);
+      }
+    } else {
+      e.cur = parent.cur;
+      e.target = parent.target;
+      e.trail = parent.trail.slice();
+      // léger décalage pour ne pas superposer les enfants
+      const off = (k - (n - 1) / 2) * 0.22;
+      const tx = this.grid.cx(e.target) - e.x;
+      const ty = this.grid.cy(e.target) - e.y;
+      const d = Math.hypot(tx, ty) || 1;
+      e.x += (-ty / d) * off * 0.5 - (tx / d) * Math.abs(off);
+      e.y += (tx / d) * off * 0.5 - (ty / d) * Math.abs(off);
+      e.px = e.x;
+      e.py = e.y;
+    }
+    this.enemies.push(e);
+    this.emit('spawnChild', { enemy: e, parent });
+    return e;
+  }
 
   speedOf(e) {
     if (e.stunT > 0) return 0;
@@ -631,8 +735,115 @@ export class Game {
     this.onKill(e, def);
   }
 
-  // Effets à la mort (étendu plus loin : division…).
-  onKill() {}
+  // Effets à la mort.
+  onKill(e, def) {
+    const split = def.abilities?.split;
+    if (split) {
+      for (let k = 0; k < split.count; k++) this.spawnChild(split.into, e, k, split.count);
+      this.emit('split', { enemy: e });
+    }
+  }
+
+  // ───────────────────────── rembobinage ─────────────────────────
+
+  get rewindEnabled() {
+    return !!this.level.rewind;
+  }
+
+  recordHistory(dt) {
+    if (!this.rewindEnabled || this.rewindUsed) return;
+    this.historyT -= dt;
+    if (this.historyT > 0) return;
+    this.historyT += this.rules.snapshotInterval ?? 0.1;
+    this.history.push(this.snapshot());
+    const keep = (this.rules.rewindSeconds ?? 6) + 0.25;
+    while (this.history.length > 2 && this.waveTime - this.history[1].wt >= keep) this.history.shift();
+  }
+
+  // Secondes de passé disponibles (0..rewindSeconds).
+  rewindAvailable() {
+    if (!this.history.length) return 0;
+    return Math.min(this.rules.rewindSeconds ?? 6, this.waveTime - this.history[0].wt);
+  }
+
+  canRewind() {
+    return (
+      this.rewindEnabled &&
+      this.state === 'wave' &&
+      !this.rewindUsed &&
+      !this.rewindAnim &&
+      this.rewindAvailable() >= 1
+    );
+  }
+
+  snapshot() {
+    return {
+      wt: this.waveTime,
+      gold: this.gold,
+      lives: this.lives,
+      stonesPlaced: this.stonesPlaced,
+      stats: { ...this.stats },
+      stones: Uint8Array.from(this.grid.stone),
+      enemies: this.enemies.map(cloneEnemy),
+      towers: this.towers.map((t) => ({ ...t })),
+      spawners: this.spawners.map((sp) => ({ ...sp })),
+    };
+  }
+
+  rewind() {
+    if (!this.canRewind()) return false;
+    const target = this.waveTime - (this.rules.rewindSeconds ?? 6);
+    let idx = this.history.findIndex((h) => h.wt >= target - 1e-6);
+    if (idx < 0) idx = 0;
+    const snap = this.history[idx];
+    const frames = [{ enemies: this.enemies.map(cloneEnemy) }, ...this.history.slice(idx).reverse()];
+    const snapIds = new Set(snap.towers.map((t) => t.id));
+    this.rewindAnim = {
+      t: 0,
+      dur: this.rules.rewindAnimDuration ?? 1.1,
+      frames,
+      snap,
+      idx,
+      seconds: this.waveTime - snap.wt,
+      ghosts: this.towers.filter((t) => !snapIds.has(t.id)).map((t) => t.id),
+    };
+    this.rewindUsed = true;
+    this.projectiles = [];
+    this.emit('rewindStart', { seconds: this.rewindAnim.seconds });
+    return true;
+  }
+
+  finishRewind() {
+    const { snap, idx } = this.rewindAnim;
+    const snapIds = new Set(snap.towers.map((t) => t.id));
+    const echoT = this.rules.echoSeconds ?? 10;
+    for (const t of this.towers) {
+      if (snapIds.has(t.id)) continue;
+      const echo = { ...t, id: this.nextId++, echo: true, ttl: echoT, maxTtl: echoT, cooldown: 0.2, stunT: 0 };
+      this.echoes.push(echo);
+      this.emit('echo', { tower: echo });
+    }
+    this.towers = snap.towers.map((t) => ({ ...t }));
+    this.enemies = snap.enemies.map(cloneEnemy);
+    for (const e of this.enemies) {
+      e.px = e.x;
+      e.py = e.y;
+    }
+    this.spawners = snap.spawners.map((sp) => ({ ...sp }));
+    this.gold = snap.gold;
+    this.lives = snap.lives;
+    this.stats = { ...snap.stats };
+    this.grid.stone.set(snap.stones);
+    this.stonesPlaced = snap.stonesPlaced;
+    this.flow.compute();
+    this.waveTime = snap.wt;
+    this.projectiles = [];
+    this.tornadoes = [];
+    this.history = this.history.slice(0, idx + 1);
+    this.rewindAnim = null;
+    this.onTowersChanged();
+    this.emit('rewindEnd', { echoes: this.echoes.length });
+  }
 
   immuneTo(e, element) {
     return e.absorb === element && e.blindT <= 0;
@@ -660,6 +871,17 @@ export class Game {
 
   updateTowers(dt) {
     for (const t of this.towers) this.updateTower(t, dt, 1);
+    if (this.echoes.length) {
+      const power = this.rules.echoPower ?? 0.5;
+      for (const t of this.echoes) {
+        t.ttl -= dt;
+        if (t.ttl > 0) this.updateTower(t, dt, power);
+      }
+      if (this.echoes.some((t) => t.ttl <= 0)) {
+        for (const t of this.echoes) if (t.ttl <= 0) this.emit('echoFade', { tower: t });
+        this.echoes = this.echoes.filter((t) => t.ttl > 0);
+      }
+    }
   }
 
   canTarget(def, e) {
@@ -807,4 +1029,8 @@ export class Game {
     if (this.enemies.some((e) => !e.alive)) this.enemies = this.enemies.filter((e) => e.alive);
     if (this.projectiles.some((p) => !p.alive)) this.projectiles = this.projectiles.filter((p) => p.alive);
   }
+}
+
+function cloneEnemy(e) {
+  return { ...e, trail: e.trail.slice(), timers: { ...e.timers } };
 }

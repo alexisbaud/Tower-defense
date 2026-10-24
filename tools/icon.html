@@ -1,0 +1,14 @@
+<!doctype html>
+<meta charset="utf-8" />
+<body style="margin:0;background:#888">
+<script type="module">
+  import { drawIcon } from '../src/render/icon.js';
+  window.makeIcon = (size, maskable) => {
+    const c = document.createElement('canvas');
+    c.width = c.height = size;
+    drawIcon(c.getContext('2d'), size, maskable);
+    return c.toDataURL('image/png');
+  };
+  window.ready = true;
+</script>
+</body>

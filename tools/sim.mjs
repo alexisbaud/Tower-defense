@@ -7,6 +7,7 @@ import { bot } from './bot.mjs';
 const args = process.argv.slice(2);
 const verbose = args.includes('--verbose');
 const strategies = (args.find((a) => a.startsWith('--bots=')) || '--bots=smart').slice(7).split(',');
+const seeds = (args.find((a) => a.startsWith('--seeds=')) || '--seeds=1').slice(8).split(',').map(Number);
 const ids = args.filter((a) => !a.startsWith('--'));
 const list = ids.length ? ids : levelOrder().map((l) => l.id);
 
@@ -40,12 +41,12 @@ export async function simulate(id, strategy, seed = 1) {
 if (import.meta.url === `file://${process.argv[1]}`) {
   let failed = false;
   for (const id of list) {
-    for (const s of strategies) {
-      const r = await simulate(id, s);
+    for (const s of strategies) for (const seed of seeds) {
+      const r = await simulate(id, s, seed);
       const ok = r.state === 'won';
       if (!ok && s === 'smart') failed = true;
       console.log(
-        `${id.padEnd(5)} ${s.padEnd(7)} ${r.state.padEnd(4)} vies ${String(r.lives).padStart(2)}/${r.maxLives} ` +
+        `${id.padEnd(5)} ${s.padEnd(7)}${seeds.length > 1 ? ` s${seed}` : ''} ${r.state.padEnd(4)} vies ${String(r.lives).padStart(2)}/${r.maxLives} ` +
           `★${r.stars} vague ${r.wave}/${r.waves} or ${r.gold} t=${r.time}s  [${r.towers}]`,
       );
       if (verbose) console.log(r.log.join('\n'));

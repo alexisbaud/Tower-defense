@@ -38,29 +38,48 @@ export function bot(strategy, game) {
     return n;
   }
 
-  function upcomingHasAir() {
-    for (let w = game.waveIndex; w < game.waves.length && w <= game.waveIndex + 2; w++) {
-      if (w < 0) continue;
-      for (const gr of game.waves[w].groups) if (game.defs.enemies[gr.enemy]?.abilities?.flying) return true;
+  // Analyse des prochaines vagues : volants, carapaces, absorptions, boss.
+  function upcoming() {
+    const info = { air: 0, armor: 0, boss: 0, absorb: {}, total: 0 };
+    const from = Math.max(0, game.state === 'wave' ? game.waveIndex : game.waveIndex + 1);
+    for (let w = from; w < game.waves.length && w <= from + 1; w++) {
+      for (const gr of game.waves[w].groups) {
+        const d = game.defs.enemies[gr.enemy];
+        if (!d) continue;
+        const n = gr.count;
+        info.total += n;
+        if (d.abilities?.flying) info.air += n;
+        if (d.abilities?.armor) info.armor += n;
+        if (d.boss) info.boss += 1;
+        const ab = gr.absorb ?? d.abilities?.absorb;
+        if (ab) info.absorb[ab] = (info.absorb[ab] || 0) + n;
+      }
     }
-    return false;
+    return info;
   }
 
   function pickType() {
     const avail = game.availableTowers.filter((t) => !opt.only || t === opt.only);
     const counts = {};
     for (const t of game.towers) counts[t.type] = (counts[t.type] || 0) + 2 ** (t.level - 1);
-    // Poids souhaités : beaucoup de dégâts, un peu de contrôle.
-    const want = { fire: 3, water: 1.2, wind: 1.2, earth: 2 };
-    if (upcomingHasAir()) {
-      want.fire += 1;
-      want.wind += 1;
+    const info = upcoming();
+    const want = { fire: 3, water: 1.3, wind: 1.1, earth: 2.2 };
+    if (info.total) {
+      want.wind += (3 * info.air) / info.total;
+      want.fire += (2 * info.air) / info.total;
+      want.earth += (3 * info.armor) / info.total;
+      if (info.air / info.total > 0.6) want.earth *= 0.3;
+      for (const [el, n] of Object.entries(info.absorb)) if (want[el]) want[el] *= Math.max(0.15, 1 - (1.5 * n) / info.total);
     }
-    let best = avail[0];
+    if (info.boss) {
+      want.fire += 1;
+      want.earth += 1;
+    }
+    let best = null;
     let bestScore = -Infinity;
     for (const t of avail) {
       const score = (want[t] ?? 1) / (1 + (counts[t] || 0));
-      if (score > bestScore && game.gold >= game.defs.towers[t].cost) {
+      if (score > bestScore) {
         bestScore = score;
         best = t;
       }

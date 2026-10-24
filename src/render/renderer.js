@@ -25,10 +25,11 @@ export class Renderer {
     this.time = 0;
     this.routes = [];
     this.routeVersion = -1;
+    this.maxDpr = 3; // abaissé automatiquement si l'appareil peine (voir main.js)
   }
 
   resize(w, h) {
-    const dpr = Math.min(3, window.devicePixelRatio || 1);
+    const dpr = Math.min(this.maxDpr, window.devicePixelRatio || 1);
     this.w = Math.max(1, w);
     this.h = Math.max(1, h);
     this.dpr = dpr;
@@ -36,15 +37,12 @@ export class Renderer {
     this.canvas.height = Math.round(this.h * dpr);
     this.canvas.style.width = `${this.w}px`;
     this.canvas.style.height = `${this.h}px`;
-    this.paper = makePaper(this.w, this.h, dpr, this.theme?.paper);
-    this.vignette = makeVignette(this.w, this.h, dpr);
     if (this.game) this.layout();
   }
 
   setGame(game, theme) {
     this.game = game;
     this.theme = theme;
-    this.paper = makePaper(this.w, this.h, this.dpr, theme.paper);
     this.fx.reset({ w: game.grid.cols, h: game.grid.rows }, theme.ambient);
     this.routeVersion = -1;
     this.layout();
@@ -57,6 +55,24 @@ export class Renderer {
     this.ox = Math.round((this.w - g.cols * ts) / 2);
     this.oy = Math.round((this.h - g.rows * ts) / 2);
     this.terrain = renderTerrain(g, ts, this.dpr, this.theme);
+    this.composeBackground();
+  }
+
+  // Papier + terrain + vignettage fusionnés en une seule image : un seul
+  // blit plein écran par frame pour toute la partie statique.
+  composeBackground() {
+    const dpr = this.dpr;
+    const paper = makePaper(this.w, this.h, dpr, this.theme?.paper);
+    const ctx = paper.getContext('2d');
+    const pad = this.terrain.pad;
+    ctx.drawImage(this.terrain.canvas, Math.round((this.ox - pad) * dpr), Math.round((this.oy - pad) * dpr));
+    ctx.drawImage(makeVignette(this.w, this.h, dpr), 0, 0);
+    this.background = paper;
+  }
+
+  // À appeler quand le terrain change d'apparence (ex. thème).
+  refreshBackground() {
+    if (this.game) this.layout();
   }
 
   // Coordonnées écran (px CSS relatifs au canvas) -> case.
@@ -82,10 +98,6 @@ export class Renderer {
     const time = this.time;
     const dpr = this.dpr;
 
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.drawImage(this.paper, 0, 0);
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
     // Tremblement d'écran léger.
     let sx = 0;
     let sy = 0;
@@ -94,11 +106,15 @@ export class Renderer {
       sx = (Math.random() - 0.5) * s;
       sy = (Math.random() - 0.5) * s;
     }
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    if (sx || sy) {
+      ctx.fillStyle = this.theme?.paper || '#efe4c8';
+      ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+    }
+    ctx.drawImage(this.background, Math.round(sx * dpr), Math.round(sy * dpr));
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.save();
     ctx.translate(this.ox + sx, this.oy + sy);
-
-    const pad = this.terrain.pad;
-    ctx.drawImage(this.terrain.canvas, -pad, -pad, this.terrain.canvas.width / dpr, this.terrain.canvas.height / dpr);
 
     this.drawSpawns(ctx, ts, time);
     this.drawRoutes(ctx, ts, time);
@@ -110,11 +126,20 @@ export class Renderer {
     this.drawPlacement(ctx, ts, ui);
 
     // Entités triées par profondeur.
+    const anim = game.rewindAnim;
+    const ak = anim ? Math.min(1, anim.t / anim.dur) : 0;
+    let enemies = game.enemies;
+    if (anim) {
+      // Lecture accélérée de l'historique, à l'envers.
+      const f = Math.min(anim.frames.length - 1, Math.floor(easeInOut(ak) * (anim.frames.length - 1)));
+      enemies = anim.frames[f].enemies;
+    }
     const items = [];
     for (const t of game.towers) items.push({ y: t.y, k: 0, o: t });
-    for (const e of game.enemies) {
-      const ex = e.px + (e.x - e.px) * alpha;
-      const ey = e.py + (e.y - e.py) * alpha;
+    for (const t of game.echoes) items.push({ y: t.y + 0.01, k: 3, o: t });
+    for (const e of enemies) {
+      const ex = anim ? e.x : e.px + (e.x - e.px) * alpha;
+      const ey = anim ? e.y : e.py + (e.y - e.py) * alpha;
       items.push({ y: e.flying ? ey + 5 : ey, k: 1, o: e, ex, ey });
     }
     const g = game.grid;
@@ -134,10 +159,19 @@ export class Renderer {
           drawTower(ctx, t.x * ts, t.y * ts, ts, game.defs.towers[t.type], t.level, time, { alpha: 0.35 });
           continue;
         }
+        if (anim && anim.ghosts.includes(t.id)) {
+          // Lanterne posée après l'instant cible : elle se change en écho.
+          drawTower(ctx, t.x * ts, t.y * ts, ts, game.defs.towers[t.type], t.level, time, { alpha: 1 - ak });
+          drawTower(ctx, t.x * ts, t.y * ts, ts, game.defs.towers[t.type], t.level, time, { echo: 1, alpha: ak });
+          continue;
+        }
         drawTower(ctx, t.x * ts, t.y * ts, ts, game.defs.towers[t.type], t.level, time, {
           shot: t.shotT > 0,
           stunned: t.stunT > 0,
         });
+      } else if (it.k === 3) {
+        const t = it.o;
+        drawTower(ctx, t.x * ts, t.y * ts, ts, game.defs.towers[t.type], t.level, time, { echo: t.ttl / t.maxTtl, shot: t.shotT > 0 });
       } else if (it.k === 1) {
         const e = it.o;
         drawEnemy(ctx, e, game.defs.enemies[e.type], it.ex * ts, it.ey * ts, ts, time);
@@ -156,13 +190,59 @@ export class Renderer {
 
     // Vignettage + flash.
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.drawImage(this.vignette, 0, 0);
+    if (anim) this.drawRewindOverlay(ctx, ak, anim, time);
     if (this.fx.flash > 0) {
       ctx.fillStyle = withAlpha(this.fx.flashColor, this.fx.flash * 0.35);
       ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
     }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     if (ui.drag) this.drawDragGhost(ctx, ui.drag, time);
+  }
+
+  // Voile indigo, spirale d'encre qui tourne à rebours et compteur de secondes.
+  drawRewindOverlay(ctx, k, anim, time) {
+    const W = this.canvas.width;
+    const H = this.canvas.height;
+    const env = Math.sin(Math.PI * Math.min(1, k * 1.15));
+    ctx.save();
+    ctx.fillStyle = withAlpha('#1f2f4f', 0.32 * env);
+    ctx.fillRect(0, 0, W, H);
+    // grain sépia
+    ctx.globalCompositeOperation = 'multiply';
+    ctx.fillStyle = withAlpha('#c9b48a', 0.25 * env);
+    ctx.fillRect(0, 0, W, H);
+    ctx.globalCompositeOperation = 'source-over';
+    const cx = W / 2;
+    const cy = H / 2;
+    const R = Math.min(W, H) * 0.32;
+    ctx.translate(cx, cy);
+    ctx.rotate(-time * 5);
+    ctx.strokeStyle = withAlpha('#dce7ff', 0.55 * env);
+    ctx.lineCap = 'round';
+    for (let i = 0; i < 3; i++) {
+      ctx.lineWidth = (6 - i * 1.5) * this.dpr;
+      ctx.beginPath();
+      for (let a = 0; a < Math.PI * 3; a += 0.15) {
+        const r = R * (0.15 + (a / (Math.PI * 3)) * (0.85 - i * 0.12));
+        const px = Math.cos(a + i * 2.1) * r;
+        const py = Math.sin(a + i * 2.1) * r;
+        if (a === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+    }
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    const secs = Math.max(0, anim.seconds * (1 - easeInOut(k)));
+    ctx.fillStyle = withAlpha('#f2e8d0', env);
+    ctx.strokeStyle = withAlpha('#1f2f4f', env);
+    ctx.lineWidth = 4 * this.dpr;
+    ctx.font = `800 ${Math.round(46 * this.dpr)}px "Shippori Mincho", serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const label = `巻 −${secs.toFixed(1)} s`;
+    ctx.strokeText(label, cx, cy);
+    ctx.fillText(label, cx, cy);
+    ctx.restore();
   }
 
   drawSpawns(ctx, ts, time) {
@@ -385,4 +465,8 @@ export class Renderer {
     if (!t) return;
     drawTower(ctx, drag.x, drag.y - this.ts * 0.4, this.ts * 1.1, this.game.defs.towers[t.type], t.level, time, { alpha: 0.85 });
   }
+}
+
+function easeInOut(k) {
+  return k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
 }

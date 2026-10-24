@@ -27,7 +27,30 @@
   </head>
   <body>
     <div id="app">
-      <section id="screen-game" class="screen active" aria-label="Partie">
+      <section id="screen-title" class="screen" aria-label="Titre">
+        <canvas class="bg"></canvas>
+        <div class="title-wrap">
+          <div class="title-kanji">精霊の庭</div>
+          <h1>Jardin<br />des Esprits</h1>
+          <p class="tagline">Allumez les lanternes, protégez le sanctuaire.</p>
+        </div>
+        <div class="title-actions">
+          <button id="btn-play" class="btn primary big">Jouer</button>
+          <button id="btn-title-sound" class="icon-btn light" aria-label="Son"><span>音</span></button>
+        </div>
+        <p class="title-foot" id="title-foot">Partager ▸ « Sur l'écran d'accueil » pour jouer en plein écran</p>
+      </section>
+
+      <section id="screen-map" class="screen" aria-label="Carte des niveaux">
+        <header class="map-head">
+          <button id="btn-map-back" class="icon-btn" aria-label="Retour"><span>戻</span></button>
+          <h2>Le Jardin des Esprits</h2>
+          <div class="map-stars"><span class="seal seal-gold">★</span><b id="map-stars">0</b></div>
+        </header>
+        <div class="map-body"><canvas></canvas><div class="map-nodes"></div></div>
+      </section>
+
+      <section id="screen-game" class="screen" aria-label="Partie">
         <header id="hud-top" class="hud-top">
           <div class="stats">
             <div class="stat stat-lives" aria-label="Vies"><span class="seal seal-red">命</span><b id="hud-lives">20</b></div>
@@ -40,7 +63,11 @@
             <button class="icon-btn" id="btn-pause" aria-label="Pause"><span>❙❙</span></button>
           </div>
         </header>
-        <div id="stage"><canvas id="board"></canvas></div>
+        <div id="stage">
+          <canvas id="board"></canvas>
+          <div id="bossbar" class="bossbar hidden"><span class="boss-name"></span><div class="boss-track"><div class="boss-fill"></div></div></div>
+          <div id="intro" class="intro hidden"></div>
+        </div>
         <footer id="hud-bottom" class="hud-bottom">
           <div class="action-row">
             <div id="rewind" class="rewind hidden" aria-label="Rembobinage : glissez vers la gauche">
@@ -59,6 +86,7 @@
         <div id="info" class="sheet hidden"></div>
         <div id="hint" class="hint hidden"></div>
       </section>
+      <div id="modal" class="modal hidden"><div class="modal-card"></div></div>
     </div>
     <div id="rotate" class="rotate"><div><span>↻</span><p>Tournez votre téléphone en portrait</p></div></div>
     <script type="module" src="src/main.js"></script>
