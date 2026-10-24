@@ -67,7 +67,9 @@ export class Tutorial {
   }
 
   // Affiche un doigt (tap ou glissé) et une bulle à des coordonnées page.
-  show(key, x, y, text, drag = null) {
+  // opts.above : ordonnée page au-dessus de laquelle la bulle doit rester
+  // (ex. haut de la barre du bas, pour ne pas couvrir le bouton de vague).
+  show(key, x, y, text, drag = null, opts = {}) {
     const root = this.el.parentElement.getBoundingClientRect();
     const lx = x - root.left;
     const ly = y - root.top;
@@ -84,7 +86,8 @@ export class Tutorial {
       html += `<div class="finger" style="left:${lx}px;top:${ly}px"></div>`;
     }
     const bx = Math.max(90, Math.min(root.width - 90, lx));
-    const by = ly - 30 < 70 ? ly + 70 : ly - 26;
+    let by = ly - 26; // bas de la bulle, au-dessus du doigt
+    if (opts.above != null) by = Math.min(by, opts.above - root.top - 10);
     html += `<div class="bubble" style="left:${bx}px;top:${by}px">${text}</div>`;
     this.el.innerHTML = html;
     // Garde la bulle entièrement à l'écran.
@@ -92,6 +95,24 @@ export class Tutorial {
     const half = bubble.offsetWidth / 2;
     const clamped = Math.max(half + 8, Math.min(root.width - half - 8, bx));
     bubble.style.left = `${clamped}px`;
+    // La bande sous la barre du haut est réservée aux messages (toast) : si la
+    // bulle y monterait, elle passe sous le doigt.
+    const h = bubble.offsetHeight;
+    const band = this.topBand(root);
+    if (by - h < band) bubble.style.top = `${Math.max(ly + 30 + h, band + h)}px`;
+  }
+
+  // Bas de la zone des toasts (sous la barre du haut), relatif au conteneur.
+  topBand(root) {
+    const top = document.getElementById('hud-top');
+    const r = top ? top.getBoundingClientRect() : null;
+    return r && r.height ? r.bottom - root.top + 54 : 70;
+  }
+
+  // Haut de la barre du bas (bouton de vague, palette), en coordonnées page.
+  footerTop() {
+    const el = document.getElementById('hud-bottom');
+    return el ? el.getBoundingClientRect().top : null;
   }
 
   tileToPage(c, r) {
@@ -135,7 +156,7 @@ export class Tutorial {
           const first = hud.tools.find((t) => t.id !== 'stone');
           if (!first) return false;
           const p = this.elCenter(first.el);
-          this.show('place-tool', p.x, p.y - 6, 'Choisissez une lanterne');
+          this.show('place-tool', p.x, p.y - 6, 'Choisissez une lanterne', null, { above: this.footerTop() });
           return true;
         }
         const slot = this.bestSlot(g, g.defs.towers[tool].levels[0].range);
@@ -181,7 +202,7 @@ export class Tutorial {
           const st = hud.tools.find((t) => t.id === 'stone');
           if (!st || g.gold < g.stoneCost()) return false;
           const p = this.elCenter(st.el);
-          this.show('stone-tool', p.x, p.y - 6, 'Des pierres pour allonger le chemin');
+          this.show('stone-tool', p.x, p.y - 6, 'Des pierres pour allonger le chemin', null, { above: this.footerTop() });
           return true;
         }
         const spot = this.stoneSpot(g);

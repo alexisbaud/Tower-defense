@@ -32,10 +32,10 @@
         <div class="title-wrap">
           <div class="title-kanji">精霊の庭</div>
           <h1>Jardin<br />des Esprits</h1>
-          <p class="tagline">Allumez les lanternes, protégez le sanctuaire.</p>
+          <p class="tagline">Allumez les lanternes,<br />protégez le sanctuaire.</p>
         </div>
         <div class="title-actions">
-          <button id="btn-play" class="btn primary big">Jouer</button>
+          <button id="btn-play" class="btn primary big"><span class="btn-kanji" aria-hidden="true">遊</span>Jouer</button>
           <button id="btn-title-sound" class="icon-btn light" aria-label="Son"><span>音</span></button>
         </div>
         <p class="title-foot" id="title-foot">Partager ▸ « Sur l'écran d'accueil » pour jouer en plein écran</p>
@@ -56,11 +56,11 @@
             <div class="stat stat-lives" aria-label="Vies"><span class="seal seal-red">命</span><b id="hud-lives">20</b></div>
             <div class="stat stat-gold" aria-label="Or"><span class="seal seal-gold">金</span><b id="hud-gold">0</b></div>
           </div>
-          <div class="wave-label" id="hud-wave">Vague 0/0</div>
+          <div class="wave-label" id="hud-wave"><small>Vague</small><b>0<i>/0</i></b></div>
           <div class="hud-buttons">
             <button class="icon-btn" id="btn-mute" aria-label="Son"><span>音</span></button>
             <button class="icon-btn" id="btn-speed" aria-label="Vitesse"><span>×1</span></button>
-            <button class="icon-btn" id="btn-pause" aria-label="Pause"><span>❙❙</span></button>
+            <button class="icon-btn" id="btn-pause" aria-label="Pause"><span class="ico-pause" aria-hidden="true"></span></button>
           </div>
         </header>
         <div id="stage">
@@ -88,7 +88,7 @@
       </section>
       <div id="modal" class="modal hidden"><div class="modal-card"></div></div>
     </div>
-    <div id="rotate" class="rotate"><div><span>↻</span><p>Tournez votre téléphone en portrait</p></div></div>
+    <div id="rotate" class="rotate"><div><span class="rotate-seal">縦</span><p>Tournez votre téléphone<br />en portrait</p></div></div>
     <script type="module" src="src/main.js"></script>
   </body>
 </html>

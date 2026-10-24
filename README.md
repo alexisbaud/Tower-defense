@@ -269,7 +269,9 @@ thunder: {
 
 Effets disponibles par niveau : `damage`, `rate`, `range`, `projectileSpeed`, `burn {dps, duration}`, `slow {factor, duration}`, `knockback`, `splash`, `pierce` (0..1), `airMultiplier`, `stun`.
 
-Rendez-la disponible dans un niveau via `towers: [..., 'thunder']`. Pour lui donner des combos, ajoutez des entrées dans `data/combos.js` (voir plus bas). Pour un projectile au visuel inédit, ajoutez un `case` dans `drawProjectiles` (`src/render/renderer.js`) et dans `Fx.onEvent` (`src/render/fx.js`) pour l'impact.
+Rendez-la disponible dans un niveau via `towers: [..., 'thunder']`. Pour lui donner des combos, ajoutez des entrées dans `data/combos.js` (voir plus bas).
+
+Rendu : une tour inconnue reçoit une lanterne générique teintée par `color` / `glow` et gravée de son `kanji`, avec ses trois évolutions. Le champ facultatif `look: 'fire' | 'water' | 'wind' | 'earth'` réutilise l'une des quatre silhouettes. Les impacts et traînées de projectile se déduisent aussi de `projectile` et des couleurs ; pour un visuel sur mesure, ajoutez un cas dans `drawProjectiles` (`src/render/renderer.js`) ou dans `Fx.impact` (`src/render/fx.js`).
 
 ---
 
@@ -293,7 +295,7 @@ kasaobake: {
 
 Capacités génériques (`abilities`) : `armor` (0..1), `flying`, `split {into, count}`, `absorb` (élément), `healAura {radius, amount, interval}`, `summon {enemy, count, interval}`, `cycleAbsorb {elements, interval}`, `stomp {interval, radius, stun}`, `enrage {below, speed}`. Champs optionnels : `boss: true` (barre de vie dédiée), `knockResist`, `stunResist` (0..1).
 
-Pour un **nouveau dessin**, ajoutez une fonction au dictionnaire `LOOKS` de `src/render/enemies.js` (repère local centré sur le yokai, `r` = rayon en pixels, `t` = temps) puis indiquez son nom dans `look` :
+Pour un **nouveau dessin**, ajoutez une fonction au dictionnaire exporté `LOOKS` de `src/render/enemies.js` (repère local centré sur le yokai, `r` = rayon en pixels, `t` = temps) puis indiquez son nom dans `look`. Un `look` sans entrée dans `META` (même fichier) est dessiné en vectoriel à chaque frame ; y ajouter une entrée active le cache de sprites animés :
 
 ```js
 LOOKS.kasaobake = (ctx, e, r, t) => {
@@ -364,6 +366,8 @@ Tous les outils tournent avec Node ≥ 18 (aucune dépendance npm ; Playwright p
 | `node tools/make-icons.mjs` | Régénère les icônes PNG depuis `src/render/icon.js` |
 
 Les bots n'utilisent que l'API publique du moteur (`placeTower`, `fuse`, `placeStone`, `rewind`…).
+
+Le moteur applique des **rendements décroissants** au recul et aux étourdissements (`knockFatigue*`, `stunFatigue*` dans `data/rules.js`) : un yokai ne peut jamais être bloqué indéfiniment, une vague finit toujours.
 
 ---
 

@@ -37,7 +37,8 @@ const res = await page.evaluate(async () => {
     const b = performance.now();
     r.onEvents(g.events);
     g.events.length = 0;
-    r.render(1 / 60, 0.5, st.game ? {} : {});
+    r.render(1 / 60, 0.5, {});
+    r.ctx.getImageData(0, 0, 1, 1); // force la rastérisation : coût réel de la frame
     const c = performance.now();
     sim.push(b - a);
     ren.push(c - b);

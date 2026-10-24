@@ -3,7 +3,7 @@
 import { Game, STEP } from './core/game.js';
 import { defs, loadLevel, worldById, worlds, levelOrder } from './data.js';
 import { Renderer } from './render/renderer.js';
-import { drawEnemy } from './render/enemies.js';
+import { drawEnemy, enemyFrame } from './render/enemies.js';
 import { Input } from './ui/input.js';
 import { Hud } from './ui/hud.js';
 import { RewindGauge } from './ui/rewind.js';
@@ -37,6 +37,7 @@ const state = {
 
 sound.muted = save.data.muted;
 sound.musicOn = save.data.music;
+let musicHold = null; // état musical mis de côté pendant une pause (voir holdMusic)
 document.addEventListener(
   'pointerdown',
   () => {
@@ -70,6 +71,7 @@ function showScreen(name) {
   }
   if (name !== 'game') {
     state.game = null;
+    musicHold = null;
     sound.intensity = 0;
   }
 }
@@ -115,6 +117,7 @@ async function openLevelCard(entry, unlocked) {
 const modal = $('modal');
 function showModal(html, buttons, opts = {}) {
   const card = modal.firstElementChild;
+  card.className = `modal-card${opts.cls ? ' ' + opts.cls : ''}`;
   card.innerHTML = html + `<div class="actions${opts.column ? ' col' : ''}"></div>`;
   const box = card.querySelector('.actions');
   for (const b of buttons) {
@@ -197,6 +200,23 @@ function setPaused(p) {
   $('btn-pause').classList.toggle('on', p);
   input.enabled = !p;
   if (p) input.cancel();
+  holdMusic(p);
+}
+
+// En pause, la musique retombe au calme (plus de tambours de vague), puis
+// retrouve son état (vague, boss, dernière vague) à la reprise.
+function holdMusic(p) {
+  if (p && !musicHold) {
+    musicHold = { intensity: sound.intensity, boss: sound.bossActive, final: sound.finalWave };
+    sound.intensity = 0;
+  } else if (!p && musicHold) {
+    const h = musicHold;
+    musicHold = null;
+    if (!state.game || state.resultShown) return;
+    sound.intensity = h.intensity;
+    sound.bossActive = h.boss;
+    sound.finalWave = h.final;
+  }
 }
 
 function openPauseMenu() {
@@ -299,7 +319,12 @@ function showIntro(type) {
     flying: !!def.abilities?.flying,
     absorb: def.abilities?.absorb ?? def.abilities?.cycleAbsorb?.elements[0] ?? null,
   };
-  drawEnemy(ctx, fake, def, 96, fake.flying ? 120 : 108, 192 / (def.size * 3.6), 0.5);
+  // cadrage sur la boîte du dessin : ~90 % de la largeur ou ~80 % de la hauteur de la vignette
+  const { box, lift } = enemyFrame(def);
+  const r = Math.min(172 / (box[2] - box[0]), 154 / (box[3] - box[1]));
+  const cx = 96 - ((box[0] + box[2]) / 2) * r;
+  const cy = 96 - ((box[1] + box[3]) / 2) * r + lift * r;
+  drawEnemy(ctx, fake, def, cx, cy, r / (def.size ?? 0.3), 0.5);
   introEl.classList.remove('hidden');
   clearTimeout(state.introTimer);
   state.introTimer = setTimeout(() => introEl.classList.add('hidden'), 5500);
@@ -348,7 +373,9 @@ async function startLevel(id) {
   tutorial.start(state.game);
   if (save.data.rewindTutorialSeen && tutorial.rewindPhase === 1) tutorial.rewindPhase = 2;
   gauge.update();
+  musicHold = null;
   sound.intensity = 0;
+  sound.setWorld?.(world.id);
   if (!state.loopRunning) {
     state.loopRunning = true;
     state.last = performance.now();
@@ -378,6 +405,7 @@ function showResult(won) {
         { label: 'Rejouer', run: () => startLevel(state.levelId) },
         ...(next ? [{ label: 'Suivant', cls: 'primary', run: () => startLevel(next.id) }] : []),
       ],
+      { cls: 'result result-win' },
     );
     const is = card.querySelectorAll('.result-stars i');
     is.forEach((el, k) =>
@@ -394,6 +422,7 @@ function showResult(won) {
         { label: 'Carte', cls: 'dark', run: () => showScreen('map') },
         { label: 'Réessayer', cls: 'primary', run: () => startLevel(state.levelId) },
       ],
+      { cls: 'result result-lose' },
     );
   }
 }
@@ -423,7 +452,7 @@ function handleEvents(game) {
         hud.toast(`Appel anticipé +${ev.gold} or`);
         break;
       case 'stomp':
-        renderer.fx.addShake(0.9);
+        renderer.fx.addShake(0.35);
         break;
       case 'enrage':
         hud.toast(`${defs.enemies[ev.enemy.type].name} entre en rage !`, true);
@@ -535,6 +564,7 @@ window.__renderer = renderer;
 window.__state = state;
 window.__tutorial = tutorial;
 window.__startLevel = startLevel;
+window.__hud = hud;
 
 // Démarrage : ?level=<id> lance directement un niveau (tests), sinon l'écran titre.
 const direct = new URLSearchParams(location.search).get('level');

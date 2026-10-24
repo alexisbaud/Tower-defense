@@ -14,6 +14,9 @@ const REASONS = {
   over: 'La partie est terminée',
 };
 
+const STONE_COLOR = '#7d7a70';
+const ICON = 52; // taille CSS par défaut des icônes de la palette
+
 export class Hud {
   constructor(root, handlers) {
     this.root = root;
@@ -45,15 +48,18 @@ export class Hud {
     this.last = {};
     this.palette.innerHTML = '';
     this.tools = [];
-    const add = (id, label, kanji, cost, draw) => {
+    const dpr = Math.min(3, window.devicePixelRatio || 1);
+    // taille d'icône fixée par la feuille de style (--icon, selon l'écran)
+    const size = parseFloat(getComputedStyle(this.palette).getPropertyValue('--icon')) || ICON;
+    const add = (id, label, kanji, cost, color, draw) => {
       const b = document.createElement('button');
       b.className = 'tool';
       b.dataset.tool = id;
-      b.setAttribute('aria-label', label);
+      b.style.setProperty('--el', color);
+      b.setAttribute('aria-label', `${label}, ${cost} or`);
       const cv = document.createElement('canvas');
-      const dpr = Math.min(3, window.devicePixelRatio || 1);
-      cv.width = 52 * dpr;
-      cv.height = 52 * dpr;
+      cv.width = Math.round(size * dpr);
+      cv.height = Math.round(size * dpr);
       const ctx = cv.getContext('2d');
       ctx.scale(dpr, dpr);
       draw(ctx);
@@ -65,16 +71,17 @@ export class Hud {
         this.refreshTools();
       });
       this.palette.appendChild(b);
-      this.tools.push({ el: b, id, cost });
+      this.tools.push({ el: b, id, cost, costEl: b.querySelector('.cost') });
       return b;
     };
     for (const type of game.availableTowers) {
       const def = game.defs.towers[type];
-      add(type, def.name, def.kanji, def.cost, (ctx) => drawTowerIcon(ctx, 52, 52, def));
+      add(type, def.name, def.kanji, def.cost, def.color, (ctx) => drawTowerIcon(ctx, size, size, def));
     }
     if (game.level.stones && game.stoneCost) {
-      add('stone', 'Pierre', '石', game.stoneCost(), (ctx) => drawStoneIcon(ctx, 52, 52));
+      add('stone', 'Pierre', '石', game.stoneCost(), STONE_COLOR, (ctx) => drawStoneIcon(ctx, size, size));
     }
+    this.palette.style.setProperty('--n', String(this.tools.length));
     this.refreshTools();
     this.hideInfo();
     this.update(true);
@@ -95,27 +102,34 @@ export class Hud {
       for (const t of this.tools) {
         const cost = t.id === 'stone' ? g.stoneCost() : t.cost;
         t.el.classList.toggle('poor', gold < cost);
+        // le coût d'une pierre peut évoluer : on garde l'étiquette à jour
+        if (t.id === 'stone' && String(cost) !== t.costEl.textContent) t.costEl.textContent = cost;
       }
     }
     if (force || g.lives !== this.last.lives) {
       this.lives.textContent = g.lives;
-      if (!force) bump(this.lives);
+      if (!force) bump(this.lives, g.lives < (this.last.lives ?? 0) ? 'hurt' : 'bump');
+      this.lives.parentElement.classList.toggle('low', g.lives <= Math.max(3, g.maxLives * 0.25));
       this.last.lives = g.lives;
     }
     const waveNum = Math.max(0, g.waveIndex + 1);
-    const waveStr = `Vague ${waveNum}/${g.totalWaves}`;
+    const waveStr = `${waveNum}/${g.totalWaves}`;
     if (waveStr !== this.last.wave) {
-      this.wave.textContent = waveStr;
+      this.wave.innerHTML = `<small>Vague</small><b>${waveNum}<i>/${g.totalWaves}</i></b>`;
+      this.wave.setAttribute('aria-label', `Vague ${waveNum} sur ${g.totalWaves}`);
       this.last.wave = waveStr;
     }
     // Bouton de vague : lancer / compte à rebours / en cours.
     let label;
     let enabled;
+    let mode;
     if (g.state === 'build') {
       enabled = true;
+      mode = g.countdown != null ? 'countdown' : 'ready';
       label = g.countdown != null ? `Vague ${g.waveIndex + 2} · ${Math.ceil(g.countdown)}` : g.waveIndex < 0 ? 'Commencer' : 'Vague';
     } else {
       enabled = false;
+      mode = g.state === 'wave' ? 'running' : 'over';
       label = g.state === 'wave' ? 'En cours' : '—';
     }
     if (label !== this.last.label) {
@@ -124,7 +138,12 @@ export class Hud {
     }
     if (enabled !== this.last.enabled) {
       this.waveBtn.classList.toggle('disabled', !enabled);
+      this.waveBtn.setAttribute('aria-disabled', String(!enabled));
       this.last.enabled = enabled;
+    }
+    if (mode !== this.last.mode) {
+      this.waveBtn.dataset.mode = mode;
+      this.last.mode = mode;
     }
     const pulse = g.state === 'build' && g.waveIndex < 0 && g.towers.length > 0;
     if (pulse !== this.last.pulse) {
@@ -134,11 +153,15 @@ export class Hud {
   }
 
   toast(msg, bad = false, ms = 1600) {
-    this.toastEl.textContent = msg;
-    this.toastEl.classList.toggle('bad', bad);
-    this.toastEl.classList.add('show');
+    const el = this.toastEl;
+    el.textContent = msg;
+    el.classList.toggle('bad', bad);
+    // relance l'animation d'entrée même si un message est déjà affiché
+    el.classList.remove('show');
+    void el.offsetWidth;
+    el.classList.add('show');
     clearTimeout(this.toastTimer);
-    this.toastTimer = setTimeout(() => this.toastEl.classList.remove('show'), ms);
+    this.toastTimer = setTimeout(() => el.classList.remove('show'), ms);
   }
 
   reason(code) {
@@ -154,7 +177,8 @@ export class Hud {
   }
 
   showInfo(html, actions) {
-    this.info.innerHTML = html + '<div class="actions"></div>';
+    this.info.innerHTML = '<div class="grip"></div>' + html + '<div class="actions"></div>';
+    sealTitle(this.info.querySelector('h3'), this.game);
     const box = this.info.querySelector('.actions');
     for (const a of actions) {
       const b = document.createElement('button');
@@ -178,50 +202,105 @@ export class Hud {
   }
 }
 
-function bump(el) {
-  el.classList.remove('bump');
-  void el.offsetWidth;
-  el.classList.add('bump');
-  setTimeout(() => el.classList.remove('bump'), 160);
+// Titre de fiche « 火 Lanterne du Feu · N2 » : le kanji devient un sceau
+// à la couleur de l'élément, le niveau une pastille.
+function sealTitle(h3, game) {
+  if (!h3) return;
+  const m = /^\s*(\S)\s+(.*?)(?:\s*·\s*(N\d))?\s*$/.exec(h3.textContent);
+  if (!m || m[1].charCodeAt(0) < 0x2e80) return;
+  const def = game && Object.values(game.defs.towers).find((d) => d.kanji === m[1]);
+  const color = def ? def.color : STONE_COLOR;
+  h3.textContent = '';
+  const seal = document.createElement('span');
+  seal.className = 'seal';
+  seal.style.background = color;
+  seal.textContent = m[1];
+  const name = document.createElement('span');
+  name.className = 'h3-name';
+  name.textContent = m[2];
+  h3.append(seal, name);
+  if (m[3]) {
+    const lvl = document.createElement('span');
+    lvl.className = 'h3-level';
+    lvl.textContent = m[3];
+    h3.append(lvl);
+  }
 }
 
-// Ondulation d'encre sous le doigt sur tous les boutons.
+function bump(el, cls = 'bump') {
+  el.classList.remove('bump', 'hurt');
+  void el.offsetWidth;
+  el.classList.add(cls);
+  setTimeout(() => el.classList.remove(cls), 260);
+}
+
+// Ondulation d'encre sous le doigt sur tous les boutons. Elle vit dans un
+// calque rogné propre au bouton : les pastilles qui débordent (étoiles,
+// numéros de la carte) ne sont jamais coupées.
 export function ripple(e) {
   const btn = e.target.closest?.('button');
-  if (!btn) return;
+  if (!btn || btn.classList.contains('disabled')) return;
   const rect = btn.getBoundingClientRect();
   const size = Math.max(rect.width, rect.height);
+  let box = btn.querySelector(':scope > .ripple-box');
+  if (!box) {
+    box = document.createElement('span');
+    box.className = 'ripple-box';
+    if (getComputedStyle(btn).position === 'static') btn.style.position = 'relative';
+    btn.appendChild(box);
+  }
   const r = document.createElement('span');
   r.className = 'ripple';
   r.style.width = r.style.height = `${size}px`;
   r.style.left = `${e.clientX - rect.left - size / 2}px`;
   r.style.top = `${e.clientY - rect.top - size / 2}px`;
-  if (getComputedStyle(btn).position === 'static') btn.style.position = 'relative';
-  btn.style.overflow = 'hidden';
-  btn.appendChild(r);
-  setTimeout(() => r.remove(), 500);
+  box.appendChild(r);
+  setTimeout(() => r.remove(), 520);
 }
 
+// Icône de la pierre : galet gris cerné d'encre, coussin de mousse, ombre douce.
 export function drawStoneIcon(ctx, w, h) {
   const x = w / 2;
-  const y = h * 0.5;
-  const r = w * 0.26;
-  ctx.fillStyle = 'rgba(29,27,34,0.25)';
+  const y = h * 0.54;
+  const r = w * 0.27;
+  ctx.clearRect(0, 0, w, h);
+  // ombre portée
+  ctx.fillStyle = 'rgba(29,27,34,0.2)';
   ctx.beginPath();
-  ctx.ellipse(x + 2, y + r * 0.6, r * 1.1, r * 0.35, 0, 0, Math.PI * 2);
+  ctx.ellipse(x + r * 0.12, y + r * 0.55, r * 1.15, r * 0.3, 0, 0, Math.PI * 2);
   ctx.fill();
-  ctx.fillStyle = '#8f8b80';
-  ctx.strokeStyle = '#1d1b22';
-  ctx.lineWidth = 2;
+  // galet
   ctx.beginPath();
-  ctx.moveTo(x - r, y + r * 0.5);
-  ctx.quadraticCurveTo(x - r * 1.05, y - r * 0.5, x - r * 0.1, y - r * 0.8);
-  ctx.quadraticCurveTo(x + r * 0.9, y - r * 0.85, x + r, y + r * 0.5);
+  ctx.moveTo(x - r * 1.02, y + r * 0.45);
+  ctx.bezierCurveTo(x - r * 1.15, y - r * 0.35, x - r * 0.45, y - r * 0.95, x + r * 0.05, y - r * 0.88);
+  ctx.bezierCurveTo(x + r * 0.75, y - r * 0.82, x + r * 1.12, y - r * 0.2, x + r * 1.02, y + r * 0.45);
+  ctx.quadraticCurveTo(x, y + r * 0.62, x - r * 1.02, y + r * 0.45);
   ctx.closePath();
+  ctx.fillStyle = '#9a968a';
   ctx.fill();
+  // flanc dans l'ombre
+  ctx.save();
+  ctx.clip();
+  ctx.fillStyle = 'rgba(61,58,52,0.45)';
+  ctx.beginPath();
+  ctx.ellipse(x + r * 0.7, y + r * 0.35, r * 0.75, r * 0.85, -0.4, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = 'rgba(242,232,208,0.45)';
+  ctx.beginPath();
+  ctx.ellipse(x - r * 0.45, y - r * 0.45, r * 0.38, r * 0.16, -0.5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+  ctx.strokeStyle = '#1d1b22';
+  ctx.lineWidth = 1.8;
+  ctx.lineJoin = 'round';
   ctx.stroke();
+  // mousse sur le dessus
   ctx.fillStyle = '#6f7f3c';
   ctx.beginPath();
-  ctx.ellipse(x - r * 0.25, y - r * 0.5, r * 0.4, r * 0.15, -0.3, 0, Math.PI * 2);
+  ctx.ellipse(x - r * 0.12, y - r * 0.72, r * 0.5, r * 0.16, -0.12, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#4a5628';
+  ctx.beginPath();
+  ctx.ellipse(x - r * 0.02, y - r * 0.66, r * 0.28, r * 0.08, -0.12, 0, Math.PI * 2);
   ctx.fill();
 }

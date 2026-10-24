@@ -28,20 +28,43 @@ await page.goto(url, { waitUntil: 'networkidle' });
 await page.waitForTimeout(800);
 await page.screenshot({ path: `${out}/01-start.png` });
 
-// Sélectionner la tour de feu puis poser sur un socle.
-const box = await page.locator('#board').boundingBox();
-await page.locator('.tool[data-tool="fire"]').click();
-const tile = await page.evaluate(() => window.__game ? null : null);
-// case (2,3) en coordonnées de grille
-const pos = await page.evaluate(() => {
-  const r = window.__renderer;
-  return r ? r.toScreen(2.5, 3.5) : null;
-});
-if (pos) {
-  await page.mouse.click(box.x + pos.x, box.y + pos.y);
+// Sans ?level=, on passe par le titre et la carte pour ouvrir le premier niveau.
+if (!(await page.locator('#screen-game.active').count())) {
+  await page.click('#btn-play');
+  await page.waitForTimeout(500);
+  await page.screenshot({ path: `${out}/01b-map.png` });
+  await page.locator('.map-node').first().click();
+  await page.waitForTimeout(400);
+  await page.locator('.modal .btn.primary').click();
+  await page.waitForTimeout(1200);
 }
+
+// Sélectionner la première lanterne puis toucher le socle le plus proche du chemin.
+const box = await page.locator('#board').boundingBox();
+await page.locator('#palette .tool').first().click();
+const pos = await page.evaluate(() => {
+  const g = window.__state.game;
+  const r = window.__renderer;
+  const grid = g.grid;
+  const route = new Set(grid.spawns.flatMap((s) => g.flow.route(s)));
+  let best = null;
+  let bestN = -1;
+  for (let i = 0; i < grid.size; i++) {
+    if (grid.type(i) !== 3 || g.towerAt(grid.col(i), grid.row(i))) continue;
+    let n = 0;
+    for (const p of route) if (Math.hypot(grid.cx(p) - grid.cx(i), grid.cy(p) - grid.cy(i)) <= 2.2) n++;
+    if (n > bestN) {
+      bestN = n;
+      best = i;
+    }
+  }
+  return best == null ? null : r.toScreen(grid.cx(best), grid.cy(best));
+});
+if (pos) await page.mouse.click(box.x + pos.x, box.y + pos.y);
 await page.waitForTimeout(300);
 await page.screenshot({ path: `${out}/02-placed.png` });
+const placed = await page.evaluate(() => window.__state.game.towers.length);
+if (!placed) errors.push('[qa] aucune lanterne posée par le tap');
 await page.locator('#btn-wave').click();
 await page.waitForTimeout(6000);
 await page.screenshot({ path: `${out}/03-wave.png` });
