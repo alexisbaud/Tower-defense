@@ -10,26 +10,32 @@ export function buildComboIndex(combos) {
   return map;
 }
 
-// Recalcule toutes les zones de synergie à partir des lanternes posées.
+// Recalcule toutes les zones de synergie à partir des lanternes posées et des échos.
+// Deux lanternes d'éléments différents adjacentes (diagonale comprise) forment une zone.
 export function computeZones(game) {
   const old = new Map(game.zones.map((z) => [z.key, z]));
   const zones = [];
-  const towers = game.towers;
+  const towers = [...game.towers, ...game.echoes];
   const bonus = game.rules.comboLevelBonus ?? 0.4;
+  const echoPow = game.rules.echoComboPower ?? 0.6;
   for (let i = 0; i < towers.length; i++) {
     for (let j = i + 1; j < towers.length; j++) {
       const a = towers[i];
       const b = towers[j];
-      if (a.type === b.type) continue;
+      if (a.element === b.element) continue;
       if (Math.max(Math.abs(a.c - b.c), Math.abs(a.r - b.r)) !== 1) continue;
-      const def = game.comboIndex.get(comboKey(a.type, b.type));
+      const def = game.comboIndex.get(comboKey(a.element, b.element));
       if (!def) continue;
       // Clé stable (combo + socles) : une fusion ou un rembobinage change les ids des
       // lanternes, mais la zone reste la même (minuterie conservée, pas de nouvelle annonce).
       const [p, q] = a.c * 100 + a.r < b.c * 100 + b.r ? [a, b] : [b, a];
       const key = `${def.id}@${p.c},${p.r}-${q.c},${q.r}`;
-      const avg = (a.level + b.level) / 2;
-      const mult = 1 + bonus * (avg - 1);
+      // Le niveau de la lanterne la plus faible fixe la puissance : il faut fusionner les deux.
+      const lvl = Math.min(a.level, b.level);
+      const echo = !!(a.echo || b.echo);
+      const mult = (1 + bonus * (lvl - 1)) * (echo ? echoPow : 1);
+      // après un rembobinage, un écho peut partager le socle d'une lanterne restaurée
+      if (zones.some((z) => z.key === key)) continue;
       const prev = old.get(key);
       zones.push({
         key,
@@ -38,13 +44,15 @@ export function computeZones(game) {
         b: b.id,
         x: (a.x + b.x) / 2,
         y: (a.y + b.y) / 2,
-        radius: def.radius + 0.2 * (avg - 1),
+        radius: def.radius + 0.2 * (lvl - 1),
+        level: lvl,
         mult,
+        echo,
         timer: prev ? prev.timer : 0,
         born: prev ? prev.born : game.time,
         pulseT: prev ? prev.pulseT : 0,
       });
-      if (!prev) game.emit('combo', { def, x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, a, b });
+      if (!prev) game.emit('combo', { def, x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, a, b, echo });
     }
   }
   game.zones = zones;
@@ -66,6 +74,7 @@ export function applyStatus(game, e, status, mult, groundOnly, duration) {
   if (status.burn) game.applyBurn(e, status.burn.dps * mult, Math.max(duration, status.burn.duration), null);
   if (status.stun) game.applyStun(e, status.stun * Math.sqrt(mult), null);
   if (status.shred) game.applyShred(e, 1 + (status.shred.mult - 1) * mult, Math.max(duration, status.shred.duration));
+  if (status.armorBreak) game.applyArmorBreak(e, Math.max(duration, status.armorBreak));
 }
 
 export function updateZones(game, dt) {
@@ -98,7 +107,7 @@ export function updateZones(game, dt) {
         if (fx.groundOnly && e.flying) continue;
         applyStatus(game, e, fx.status, z.mult, false, 0);
         // dégâts typés par l'élément déclaré du combo (ex. Givre : eau)
-        if (fx.damage) game.damage(e, fx.damage * z.mult, fx.element ?? z.def.elements[0], {});
+        if (fx.damage) game.damage(e, fx.damage * z.mult, fx.element ?? z.def.elements[0], { pierce: fx.pierce ?? 0 });
       }
       game.emit('pulse', { zone: z });
     } else if (fx.kind === 'tornado') {
@@ -144,7 +153,7 @@ export function updateTornadoes(game, dt) {
       if (Math.hypot(e.x - t.x, e.y - t.y) > t.size + e.size * 0.5) continue;
       game.applyBurn(e, t.dps * 0.25, 1, 'fire');
       game.damage(e, t.dps * dt, 'fire', { dot: true });
-      if (t.knockback && e.knock <= 0) game.applyKnockback(e, t.knockback);
+      if (t.knockback && e.knock <= 0) game.applyKnockback(e, t.knockback, null);
     }
   }
   if (game.tornadoes.some((t) => t.life <= 0)) game.tornadoes = game.tornadoes.filter((t) => t.life > 0);

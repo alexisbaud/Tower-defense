@@ -23,6 +23,8 @@ const OPEN_MAP = [
   ',,,,.,,,,',
   ',,,,G,,,,',
 ];
+// Couloir de gravier (colonne 2) bordé de socles : barrières et familles de lanternes.
+const CORRIDOR = [',,S,,,,', ',#o#,,,', ',#o#,,,', ',#o#,,,', ',#o#,,,', ',#o#,,,', ',,.,,,,', ',,G,,,,'];
 const base = (extra = {}) => ({
   id: 'test',
   world: 'moss',
@@ -91,7 +93,8 @@ console.log('Combos');
   g.events.length = 0;
   g.fuse(v2.id, v.id);
   const z1 = g.zones.find((z) => z.def.id === 'frost');
-  check('fusion : zone conservée', z1 && z1.key === z0.key && z1.timer === 3.5 && z1.mult > z0.mult);
+  // la puissance suit la lanterne la plus faible : fusionner une seule des deux ne la change pas
+  check('fusion : zone conservée', z1 && z1.key === z0.key && z1.timer === 3.5 && z1.mult === z0.mult);
   check('fusion : combo non réannoncé', !g.events.some((ev) => ev.type === 'combo'));
 }
 
@@ -127,7 +130,7 @@ console.log('Capacités des yokai');
   const e = g.enemies[0];
   const d1 = g.damage(e, 100, 'fire');
   const d2 = g.damage(e, 100, 'earth', { pierce: 1 });
-  check('armure réduit, Terre perce', d1 < 50 && d2 === 100, `${d1} ${d2}`);
+  check('armure réduit, Terre perce', d1 === 90 && d2 === 100, `${d1} ${d2}`);
 }
 {
   const g = new Game(
@@ -281,7 +284,7 @@ console.log('Correctifs de l’audit (bloc bugs)');
 }
 {
   // A9 / A11 : socle d'un écho occupé ; aucune commande pendant l'animation.
-  const g = new Game(base({ rewind: true, waves: [{ groups: [{ enemy: 'kodama', count: 30, interval: 0.5 }] }] }), defs);
+  const g = new Game(base({ rewind: true, rewindStart: 100, waves: [{ groups: [{ enemy: 'kodama', count: 30, interval: 0.5 }] }] }), defs);
   g.startNextWave();
   run(g, 7);
   g.placeTower('fire', 1, 2);
@@ -378,15 +381,18 @@ console.log('Rembobinage');
   const g = new Game(lvl, defs, { recordEvents: true });
   g.startNextWave();
   run(g, 3);
-  check('pas avant 1 s de vague… puis disponible', g.canRewind());
+  check('jauge vide : pas de rembobinage', !g.canRewind() && g.rewindRatio() === 0);
+  g.rewindCharge = 100;
+  check('jauge pleine : disponible', g.canRewind());
   run(g, 5);
   const avail = g.rewindAvailable();
   check('6 s disponibles', Math.abs(avail - 6) < 0.15, `${avail}`);
   const goldBefore = g.gold;
   const placed = g.placeTower('fire', 1, 2);
   const enemyY = g.enemies.map((e) => e.y).reduce((a, b) => Math.max(a, b), 0);
+  const ct = g.ct;
   check('rembobinage lancé', g.rewind());
-  check('une seule fois par vague', !g.canRewind());
+  check('jauge consommée', !g.canRewind() && g.rewindCharge < 1);
   run(g, 1.3);
   check('animation terminée', !g.rewindAnim);
   check('lanterne posée après -> écho', g.echoes.length === 1 && g.echoes[0].type === 'fire');
@@ -395,9 +401,223 @@ console.log('Rembobinage');
   const enemyY2 = g.enemies.map((e) => e.y).reduce((a, b) => Math.max(a, b), 0);
   check('yokai reculés', enemyY2 < enemyY, `${enemyY2} < ${enemyY}`);
   // 8 s - 6 s = 2 s, puis 0,2 s s'écoulent après l'animation (1,1 s) dans run(1.3).
-  check('temps de vague reculé', Math.abs(g.waveTime - 2.2) < 0.2, `${g.waveTime}`);
+  check('chronologie reculée de 6 s', Math.abs(g.ct - (ct - 6 + 0.2)) < 0.2, `${g.ct} / ${ct}`);
   run(g, 10.5);
   check('écho disparu après 10 s', g.echoes.length === 0);
+}
+{
+  // La jauge se remplit en éliminant des yokai et en appelant une vague en avance.
+  const g = new Game(base({ rewind: true, waves: [{ groups: [{ enemy: 'kodama', count: 1 }] }, { groups: [{ enemy: 'kodama', count: 1 }], pause: 20 }, { groups: [{ enemy: 'kodama', count: 1 }] }] }), defs);
+  g.startNextWave();
+  run(g, 1);
+  g.kill(g.enemies[0], 'fire');
+  const afterKill = g.rewindCharge;
+  check('élimination : jauge chargée', afterKill > 0, `${afterKill}`);
+  run(g, 1);
+  check('vague suivante programmée', g.nextWaveT > 0);
+  const gold = g.gold;
+  g.startNextWave();
+  check('appel anticipé : or et jauge', g.gold > gold && g.rewindCharge > afterKill + 10, `${g.gold - gold} / ${g.rewindCharge}`);
+}
+{
+  // Yokai hors du temps : il ne recule pas, ses dégâts au sanctuaire ne s'effacent pas.
+  const g = new Game(base({ rewind: true, rewindStart: 100, waves: [{ groups: [{ enemy: 'kodama', count: 6, interval: 1 }, { enemy: 'tokihami', count: 1, delay: 0.5 }] }] }), defs);
+  g.startNextWave();
+  run(g, 7);
+  const tk = g.enemies.find((e) => e.type === 'tokihami');
+  const y = tk.my;
+  g.rewind();
+  run(g, 1.2);
+  const tk2 = g.enemies.find((e) => e.type === 'tokihami');
+  check('hors du temps : ni recul ni doublon', tk2 && tk2.my >= y - 0.01 && g.enemies.filter((e) => e.type === 'tokihami').length === 1, `${tk2?.my} vs ${y}`);
+  check('jauge consommée', g.rewindCharge < 1);
+}
+{
+  // Dernière chance : une fuite fatale avec la jauge pleine fige la partie.
+  const g = new Game(base({ rewind: true, rewindStart: 100, lives: 1, waves: [{ groups: [{ enemy: 'kodama', count: 3, interval: 1 }] }] }), defs);
+  g.startNextWave();
+  run(g, 3);
+  g.leak(g.enemies[0]);
+  check('dernière chance ouverte', g.state === 'wave' && g.lastChanceT > 0);
+  check('rembobinage possible', g.rewind());
+  run(g, 1.3);
+  check('vie rendue', g.lives === 1 && g.state === 'wave');
+  const g2 = new Game(base({ rewind: true, lives: 1, waves: [{ groups: [{ enemy: 'kodama', count: 3, interval: 1 }] }] }), defs);
+  g2.startNextWave();
+  run(g2, 3);
+  g2.leak(g2.enemies[0]);
+  check('jauge vide : défaite immédiate', g2.state === 'lost');
+}
+
+console.log('Socles typés et éléments');
+{
+  const map = [',,,,S,,,,', ',1#ooo2#,', ',#ooooo#,', ',#ooooo#,', ',##ooo##,', ',,,,.,,,,', ',,,,G,,,,'];
+  const all = Object.keys(defs.towers);
+  const g = new Game(base({ map, towers: all }), defs);
+  check('socle de Feu refuse l’Eau', g.canPlaceTower('water', 1, 1).reason === 'slotElement');
+  check('socle de Feu accepte le Mortier', g.canPlaceTower('fire_mortar', 1, 1).ok);
+  check('socle universel accepte tout', g.canPlaceTower('earth_guard', 2, 1).ok);
+  const mp = new Game(base({ map, towers: all }), defs, { players: [{ name: 'A', elements: ['fire'] }, { name: 'B', elements: ['water', 'earth'] }] });
+  check('coop : bourses séparées', mp.players.length === 2 && mp.goldOf(0) === mp.goldOf(1) && mp.goldOf(0) < 1000);
+  check('coop : élément d’un autre joueur refusé', mp.canPlaceTower('water', 2, 1, 0).reason === 'element');
+  const t = mp.placeTower('water', 2, 1, 1);
+  check('coop : pose payée par son joueur', t && mp.goldOf(1) < mp.goldOf(0));
+  check('coop : on ne vend pas la lanterne d’un autre', mp.sellTower(t.id, 0) === 0 && mp.towerById(t.id));
+  check('coop : pierres réservées à la Terre', !mp.canUseStones(0) && mp.canUseStones(1));
+  check('coop : yokai plus robustes', mp.hpScale > g.hpScale);
+}
+
+console.log('Armure et résistances');
+{
+  const g = new Game(base({ waves: [{ groups: [{ enemy: 'kappa', count: 1 }] }] }), defs);
+  g.startNextWave();
+  run(g, 1);
+  const e = g.enemies[0];
+  const hp = e.hp;
+  g.damage(e, 6, 'fire');
+  const small = hp - e.hp;
+  check('petit coup réduit au minimum (20 %)', Math.abs(small - 1.2) < 0.01, `${small}`);
+  const hp2 = e.hp;
+  g.damage(e, 30, 'earth', { pierce: 0.5 });
+  check('perce-armure : 30 − 10 × 50 %', Math.abs(hp2 - e.hp - 25) < 0.01, `${hp2 - e.hp}`);
+  const hp3 = e.hp;
+  g.damage(e, 20, 'water');
+  check('résistance à l’Eau 50 % puis armure', Math.abs(hp3 - e.hp - 2) < 0.01, `${hp3 - e.hp}`);
+  const hp4 = e.hp;
+  g.damage(e, 5, 'fire', { dot: true });
+  check('brûlure ignore l’armure', Math.abs(hp4 - e.hp - 5) < 0.01);
+  g.applyArmorBreak(e, 2);
+  const hp5 = e.hp;
+  g.damage(e, 6, 'fire');
+  check('armure brisée', Math.abs(hp5 - e.hp - 6) < 0.01);
+  const y = new Game(base({ waves: [{ groups: [{ enemy: 'yukionna', count: 1 }] }] }), defs);
+  y.startNextWave();
+  run(y, 1);
+  const ye = y.enemies[0];
+  const yh = ye.hp;
+  y.damage(ye, 10, 'fire');
+  check('faiblesse au Feu (+40 %)', Math.abs(yh - ye.hp - 14) < 0.01, `${yh - ye.hp}`);
+  y.applySlow(ye, 0.5, 2, 'water');
+  check('insensible au ralentissement de l’Eau', ye.slowT <= 0);
+}
+
+console.log('Barrières');
+const ALL = Object.keys(defs.towers);
+{
+  const g = new Game(base({ map: CORRIDOR, towers: ALL, waves: [{ groups: [{ enemy: 'kodama', count: 1 }], pause: 60 }, { groups: [{ enemy: 'kodama', count: 1 }] }] }), defs);
+  const t = g.placeTower('earth_guard', 1, 2);
+  const bar = g.barriers[0];
+  check('barrière dressée sur le trajet', bar && bar.alive && bar.tile === g.grid.idx(2, 2), JSON.stringify(bar));
+  check('pas de pierre sur une barrière', g.canPlaceStone(2, 2).reason === 'barrier');
+  g.startNextWave();
+  run(g, 4);
+  const e = g.enemies[0];
+  check('yokai arrêté par la barrière', e && e.blocked === bar.id && bar.hp < bar.maxHp, `${e?.blocked} ${bar.hp}`);
+  bar.hp = 0.5;
+  run(g, 0.5);
+  check('barrière brisée', !bar.alive);
+  run(g, 0.3);
+  check('le yokai repart', e.blocked == null && g.grid.row(e.cur) >= 2, `${e.blocked} ${g.grid.row(e.cur)}`);
+  run(g, 8);
+  check('barrière relevée après le passage', bar.alive);
+  g.sellTower(t.id);
+  check('vendre retire la barrière', g.barriers.length === 0);
+}
+{
+  // Kasa-obake bondit par-dessus ; la Vapeur (aveuglement) l'en empêche.
+  const mk = () => {
+    const g = new Game(base({ map: CORRIDOR, towers: ALL, waves: [{ groups: [{ enemy: 'kasaobake', count: 1 }] }] }), defs);
+    g.placeTower('earth_guard', 1, 2);
+    const bar = g.barriers[0];
+    bar.maxHp = bar.hp = 1e6;
+    g.startNextWave();
+    return [g, bar];
+  };
+  const [g, bar] = mk();
+  run(g, 5);
+  const e = g.enemies[0];
+  check('kasa-obake franchit la barrière', !e || g.grid.row(e.cur) > 2, `${e && g.grid.row(e.cur)}`);
+  const [g2, bar2] = mk();
+  for (let k = 0; k < 5 / STEP; k++) {
+    for (const x of g2.enemies) x.blindT = 1;
+    g2.update(STEP);
+  }
+  check('aveuglé : il reste bloqué', g2.enemies[0]?.blocked === bar2.id);
+}
+{
+  // Source sacrée : soigne une barrière proche.
+  const g = new Game(base({ map: CORRIDOR, towers: ALL }), defs);
+  g.placeTower('earth_guard', 1, 2);
+  g.placeTower('water_spring', 3, 2);
+  const bar = g.barriers[0];
+  bar.hp = bar.maxHp / 2;
+  g.startNextWave();
+  run(g, 1);
+  check('Source sacrée : barrière soignée', bar.hp > bar.maxHp / 2, `${bar.hp}/${bar.maxHp}`);
+}
+
+console.log('Familles de lanternes');
+{
+  const g = new Game(base({ map: CORRIDOR, towers: ALL, waves: [{ groups: [{ enemy: 'kodama', count: 8, interval: 0.4, hp: 50 }] }] }), defs);
+  const chime = g.placeTower('wind_chime', 1, 1);
+  const fire = g.placeTower('fire', 1, 2);
+  check('Carillon : cadence accélérée', fire.rateMult > 1 && chime.rateMult === 1, `${fire.rateMult}`);
+  g.placeTower('fire_wisp', 3, 2);
+  g.placeTower('water_torrent', 3, 3);
+  g.placeTower('earth_quake', 1, 4);
+  g.placeTower('fire_mortar', 3, 5);
+  g.startNextWave();
+  const hits = { aura: 0, beam: 0, quake: 0, shoot: 0 };
+  for (let k = 0; k < 12 / STEP; k++) {
+    g.update(STEP);
+    for (const ev of g.events) if (hits[ev.type] != null) hits[ev.type]++;
+    g.events.length = 0;
+  }
+  check('aura, jet, séisme et tirs en action', hits.aura > 0 && hits.beam > 0 && hits.quake > 0 && hits.shoot > 0, JSON.stringify(hits));
+}
+{
+  // Priorités de ciblage.
+  const g = new Game(base({ waves: [{ groups: [{ enemy: 'kodama', count: 1 }, { enemy: 'kappa', count: 1, delay: 1.5 }] }] }), defs);
+  g.startNextWave();
+  run(g, 3.2);
+  const t = { x: 4.5, y: 3, priority: 'first' };
+  const def = defs.towers.fire;
+  const first = g.findTarget(t, def, 9);
+  t.priority = 'strong';
+  const strong = g.findTarget(t, def, 9);
+  t.priority = 'last';
+  const last = g.findTarget(t, def, 9);
+  check('priorités : premier / plus fort / dernier', first?.type === 'kodama' && strong?.type === 'kappa' && last?.type === 'kappa', `${first?.type} ${strong?.type} ${last?.type}`);
+}
+
+console.log('Vagues qui se chevauchent');
+{
+  const g = new Game(base({ waves: [{ groups: [{ enemy: 'kodama', count: 2, interval: 1, hp: 100 }], pause: 3 }, { groups: [{ enemy: 'kodama', count: 1 }] }, { groups: [{ enemy: 'kodama', count: 1 }] }] }), defs);
+  g.startNextWave();
+  run(g, 4.5);
+  check('vague 2 partie sans attendre la fin de la 1', g.waveIndex === 1 && g.enemies.some((e) => e.wave === 0));
+  check('appel anticipé pendant une vague', g.canCallNextWave() && g.startNextWave() && g.waveIndex === 2);
+  check('plus d’appel après la dernière', !g.canCallNextWave());
+  run(g, 0.1);
+  for (const e of g.enemies) g.kill(e, 'fire');
+  run(g, 1);
+  check('victoire quand tout est fini', g.state === 'won', g.state);
+}
+
+{
+  // Combos avec écho et niveau minimal.
+  const g = new Game(base({ rewind: true, rewindStart: 100, waves: [{ groups: [{ enemy: 'kodama', count: 30, interval: 0.5 }] }] }), defs);
+  const a = g.placeTower('fire', 1, 2);
+  const b = g.placeTower('fire', 2, 1);
+  g.fuse(b.id, a.id);
+  g.placeTower('water', 1, 3);
+  check('combo au niveau de la plus faible', g.zones.length === 1 && g.zones[0].level === 1, JSON.stringify(g.zones.map((z) => z.level)));
+  g.startNextWave();
+  run(g, 7);
+  g.placeTower('wind', 2, 1);
+  g.rewind();
+  run(g, 1.3);
+  check('l’écho forme un combo affaibli', g.zones.some((z) => z.echo && z.mult < 1), JSON.stringify(g.zones.map((z) => [z.def.id, z.echo, z.mult])));
 }
 
 console.log(failures ? `\n${failures} échec(s)` : '\nTous les tests passent');

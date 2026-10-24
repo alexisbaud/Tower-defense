@@ -14,6 +14,9 @@ export const T = {
   GRASS: 10,
 };
 
+// Socles réservés à un élément : '1' Feu, '2' Eau, '3' Vent, '4' Terre ('#' = universel).
+export const SLOT_ELEMENTS = { 1: 'fire', 2: 'water', 3: 'wind', 4: 'earth' };
+
 export const LEGEND = {
   ' ': T.VOID,
   '.': T.PATH,
@@ -26,6 +29,10 @@ export const LEGEND = {
   R: T.ROCK,
   '=': T.BRIDGE,
   ',': T.GRASS,
+  1: T.SLOT,
+  2: T.SLOT,
+  3: T.SLOT,
+  4: T.SLOT,
 };
 
 const WALKABLE = new Set([T.PATH, T.OPEN, T.SPAWN, T.GOAL, T.BRIDGE]);
@@ -37,6 +44,7 @@ export class Grid {
     this.size = this.cols * this.rows;
     this.types = new Uint8Array(this.size);
     this.stone = new Uint8Array(this.size);
+    this.slotElement = new Array(this.size).fill(null); // élément imposé d'un socle, null = universel
     this.spawns = [];
     this.goals = [];
     for (let r = 0; r < this.rows; r++) {
@@ -46,6 +54,7 @@ export class Grid {
         const t = LEGEND[ch] ?? T.VOID;
         const i = r * this.cols + c;
         this.types[i] = t;
+        if (SLOT_ELEMENTS[ch]) this.slotElement[i] = SLOT_ELEMENTS[ch];
         if (t === T.SPAWN) this.spawns.push(i);
         if (t === T.GOAL) this.goals.push(i);
       }
