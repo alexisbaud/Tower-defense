@@ -1,28 +1,41 @@
 // Tutoriel intégré, sans mur de texte : un doigt et une courte bulle montrent
 // le geste suivant, en fonction de l'état de la partie. Les étapes viennent de
-// `level.tutorial` ; le Rembobinage a un mini-tutoriel dédié.
+// `level.tutorial` : place, wave, early (appel anticipé), fuse, combo, stone,
+// barrier (poser un Gardien et déplacer son mur), priority (régler la cible),
+// rewind (mini-tutoriel dédié de la jauge).
 import { T } from '../core/grid.js';
 import { bfs } from '../core/flowfield.js';
+import { rallyTiles, isBarrierTower } from './overlay.js';
+import { rewindRules } from './sheets.js';
+import { aims } from './towerbar.js';
+import { elementWithArticle } from './elements.js';
+import { earlyCharge } from './wavepreview.js';
 
 export class Tutorial {
   constructor(el, ctx) {
     this.el = el; // conteneur #hint
-    this.c = ctx; // { game(), input, renderer, canvas, hud, gauge, pause(bool), modal(html, buttons) }
+    this.c = ctx; // { game(), input, renderer, canvas, hud, gauge, towerBar, pause(bool), modal(html, buttons) }
     this.done = new Set();
     this.steps = [];
     this.current = null;
     this.rewindPhase = 0;
     this.fuseSeen = false;
+    // La police de la bulle arrive parfois après la première indication : la bulle
+    // s'élargit alors sans être replacée (elle débordait de l'écran en 375 px).
+    document.fonts?.addEventListener?.('loadingdone', () => (this.current = null));
   }
 
-  start(game) {
+  // `enabled` : faux en coopération (le tutoriel n'accompagne que la partie en solo).
+  start(game, enabled = true) {
     // Masquer d'abord l'indication éventuelle du niveau précédent.
     this.hide();
     this.el.classList.add('hidden');
     this.el.innerHTML = '';
-    this.steps = [...(game.level.tutorial || [])];
+    this.steps = enabled ? [...(game.level.tutorial || [])] : [];
     this.done = new Set();
-    this.rewindPhase = this.steps.includes('rewind') ? 1 : 0;
+    // défi « sans Rembobinage » : la jauge est cachée, pas de leçon à son sujet
+    this.rewindPhase = this.steps.includes('rewind') && game.rewindEnabled !== false ? 1 : 0;
+    this.waveT0 = null; // instant (game.time) du lancement de la première vague
   }
 
   onEvent(ev) {
@@ -33,6 +46,15 @@ export class Tutorial {
         break;
       case 'waveStart':
         this.done.add('wave');
+        if (this.waveT0 == null && g) this.waveT0 = g.time;
+        // appel anticipé : une vague lancée avant la fin de son compte à rebours
+        if (ev.early && ev.index > 0) this.done.add('early');
+        break;
+      case 'rally':
+        this.done.add('barrier');
+        break;
+      case 'priority':
+        this.done.add('priority');
         break;
       case 'fuse':
         this.done.add('fuse');
@@ -209,13 +231,14 @@ export class Tutorial {
         }
         const tool = input.ui.tool;
         if (!tool || tool === 'stone') {
-          const first = hud.tools.find((t) => t.id !== 'stone');
+          const first = hud.tools.find((t) => t.id !== 'stone' && !t.el.classList.contains('off-tab'));
           if (!first) return false;
           const p = this.elCenter(first.el);
           this.show('place-tool', p.x, p.y - 6, 'Choisissez une lanterne', null, { above: this.footerTop() });
           return true;
         }
-        const slot = this.bestSlot(g, g.defs.towers[tool].levels[0].range);
+        const tdef = g.defs.towers[tool];
+        const slot = this.bestSlot(g, tdef.levels[0].range, tdef.element ?? tool);
         if (!slot) return false;
         const p = this.tileToPage(slot.c, slot.r);
         this.show('place-slot', p.x, p.y, 'Touchez un socle près du chemin', null, { avoid: [this.tileRect(slot.c, slot.r, 0)] });
@@ -242,16 +265,36 @@ export class Tutorial {
         return true;
       }
       case 'combo': {
-        if (g.state !== 'build' || !g.towers.length) return false;
+        // avant la première vague, ou dans un moment calme (plus aucun yokai en jeu)
+        if (!g.towers.length || (g.waveIndex >= 0 && g.enemies.length > 0)) return false;
         if (g.zones.length) {
           this.done.add('combo');
           return false;
         }
-        const spot = this.comboSpot(g);
-        if (!spot) return false;
-        const p = this.tileToPage(spot.c, spot.r);
-        // la case visée, ses voisines (et le lien de combo qui naîtra) restent visibles
-        this.show('combo', p.x, p.y, 'Un autre élément à côté = combo', null, { avoid: [this.tileRect(spot.c, spot.r, 1)] });
+        // Lanterne choisie qui ferait un combo : le socle où la poser (compatible
+        // avec les socles gravés). Sinon, d'abord une lanterne d'un autre élément :
+        // toucher un socle sans lanterne choisie ne fait rien (indication sans issue).
+        const tool = input.ui.tool && input.ui.tool !== 'stone' ? input.ui.tool : null;
+        const spot = tool ? this.comboSpot(g, tool) : null;
+        if (spot) {
+          const p = this.tileToPage(spot.c, spot.r);
+          // la case visée, ses voisines (et le lien de combo qui naîtra) restent visibles
+          this.show('combo', p.x, p.y, 'Un autre élément à côté = combo', null, { avoid: [this.tileRect(spot.c, spot.r, 1)] });
+          return true;
+        }
+        const pick = this.comboPick(g);
+        const item = pick && hud.tools.find((t) => t.id === pick);
+        if (!item) return false;
+        const text = `Un autre élément à côté = combo : prenez ${elementWithArticle(item.element ?? pick, g.defs)}`;
+        if (item.el.classList.contains('off-tab')) {
+          const tab = hud.tabsEl?.querySelector(`.ptab[data-el="${item.element}"]`);
+          if (!tab) return false;
+          const p = this.elCenter(tab);
+          this.show('combo-tab', p.x, p.y, text, null, { above: this.footerTop() });
+          return true;
+        }
+        const p = this.elCenter(item.el);
+        this.show('combo-tool', p.x, p.y - 6, text, null, { above: this.footerTop() });
         return true;
       }
       case 'stone': {
@@ -267,37 +310,125 @@ export class Tutorial {
         const spot = this.stoneSpot(g);
         if (!spot) return false;
         const p = this.tileToPage(spot.c, spot.r);
-        this.show('stone-spot', p.x, p.y, 'Glissez-la sur le gravier', null, { avoid: [this.tileRect(spot.c, spot.r, 1)] });
+        // Gravier large : aucune pierre seule n'allonge le chemin (« Sans effet ») ;
+        // la bulle le dit au lieu de promettre un détour qui n'arrive pas.
+        const text = spot.gain > 0 ? 'Glissez-la sur le gravier' : 'Glissez-la sur le chemin : alignez-en plusieurs pour l’allonger';
+        this.show('stone-spot', p.x, p.y, text, null, { avoid: [this.tileRect(spot.c, spot.r, 1)] });
         return true;
       }
+      case 'early': {
+        // Appeler la vague suivante en avance : quand la vague en cours a fini
+        // d'apparaître (ou qu'il ne reste presque plus de yokai).
+        if (g.waveIndex < 0 || !g.canCallNextWave?.()) return false;
+        const pv = g.nextWavePreview?.();
+        if (!pv || !(pv.bonus > 0)) return false;
+        const calm = g.spawnersDone?.(g.waveIndex) || g.enemies.length <= 2;
+        if (!calm) return false;
+        const p = this.elCenter(hud.waveBtn);
+        const charge = earlyCharge(g, pv);
+        const gain = `+${pv.bonus} or${charge > 0 ? ` · +${charge} 巻` : ''}`;
+        this.show('early', p.x, p.y, `Appelez la vague suivante en avance : ${gain}`, null, { above: this.footerTop() });
+        return true;
+      }
+      case 'priority': {
+        // Une lanterne qui vise ; touchée, sa barre d'actions propose la priorité.
+        const t = g.towers.find((x) => aims(g.defs.towers[x.type]));
+        if (!t) return false;
+        const bar = this.c.towerBar;
+        const prio = bar && !bar.classList.contains('hidden') ? bar.querySelector('.tb-prio') : null;
+        if (prio && input.ui.selectedTower === t.id) {
+          const p = this.elCenter(prio);
+          this.show('priority-btn', p.x, p.y, 'Visez « Plus fort » : la yuki-onna qui soigne tombe la première', null, { avoid: [prio.getBoundingClientRect()] });
+          return true;
+        }
+        if (input.ui.selectedTower != null || input.ui.tool) return false;
+        const p = this.tileToPage(t.c, t.r);
+        this.show('priority', p.x, p.y, 'Touchez une lanterne pour régler sa cible', null, { avoid: [this.tileRect(t.c, t.r, 0)] });
+        return true;
+      }
+      case 'barrier':
+        return this.barrierStep(g, input);
       default:
         return false;
     }
   }
 
+  // Poser un Gardien de pierre, puis déplacer son mur sur le chemin.
+  barrierStep(g, input) {
+    const hud = this.c.hud;
+    const guard = g.towers.find((t) => isBarrierTower(g, t));
+    const guardType = g.availableTowers.find((t) => g.defs.towers[t]?.attack === 'barrier');
+    if (!guardType) return false;
+    if (!guard) {
+      if (g.waveIndex < 0 && !g.towers.length) return false; // d'abord les premières lanternes
+      if (input.ui.tool !== guardType) {
+        const tool = hud.tools.find((t) => t.id === guardType);
+        if (!tool || g.gold < g.defs.towers[guardType].cost) return false;
+        // palette regroupée : d'abord l'onglet de l'élément
+        if (tool.el.classList.contains('off-tab')) {
+          const tab = hud.tabsEl?.querySelector(`.ptab[data-el="${tool.element}"]`);
+          if (!tab) return false;
+          const p = this.elCenter(tab);
+          this.show('barrier-tab', p.x, p.y, 'Le Gardien de pierre est dans la Terre', null, { above: this.footerTop() });
+          return true;
+        }
+        const p = this.elCenter(tool.el);
+        this.show('barrier-tool', p.x, p.y - 6, 'Le Gardien dresse un mur sur le chemin', null, { above: this.footerTop() });
+        return true;
+      }
+      const def = g.defs.towers[guardType];
+      const slot = this.bestSlot(g, def.levels[0].range, def.element ?? guardType);
+      if (!slot) return false;
+      const p = this.tileToPage(slot.c, slot.r);
+      this.show('barrier-slot', p.x, p.y, 'Posez-le près du chemin', null, { avoid: [this.tileRect(slot.c, slot.r, 0)] });
+      return true;
+    }
+    if (input.ui.rally?.towerId === guard.id) {
+      const tiles = rallyTiles(g, guard);
+      const bar = g.barriers.find((b) => b.towerId === guard.id);
+      const i = tiles.find((x) => !bar || x !== bar.tile);
+      if (i == null) return false;
+      const p = this.tileToPage(g.grid.col(i), g.grid.row(i));
+      this.show('barrier-tile', p.x, p.y, 'Touchez une case allumée : le mur s’y dresse', null, { avoid: [this.tileRect(g.grid.col(i), g.grid.row(i), 0)] });
+      return true;
+    }
+    const bar = this.c.towerBar;
+    const btn = bar && !bar.classList.contains('hidden') ? bar.querySelector('.tb-rally') : null;
+    if (btn && input.ui.selectedTower === guard.id) {
+      const p = this.elCenter(btn);
+      this.show('barrier-btn', p.x, p.y, 'Déplacez son mur où les yokai se regroupent', null, { avoid: [btn.getBoundingClientRect()] });
+      return true;
+    }
+    if (input.ui.selectedTower != null || input.ui.tool) return false;
+    const p = this.tileToPage(guard.c, guard.r);
+    this.show('barrier-guard', p.x, p.y, 'Touchez le Gardien pour déplacer son mur', null, { avoid: [this.tileRect(guard.c, guard.r, 0)] });
+    return true;
+  }
+
   updateRewind(g) {
-    if (this.rewindPhase === 1 && g.state === 'wave' && g.waveTime > 2.5) {
+    const waveT = this.waveT0 != null ? g.time - this.waveT0 : 0;
+    if (this.rewindPhase === 1 && g.state === 'wave' && waveT > 2.5) {
       this.rewindPhase = 2;
       this.hide();
       this.c.pause(true, true);
+      const sec = g.rules.rewindSeconds ?? 6;
       this.c.modal(
         `<div class="modal-kanji">巻戻</div>
          <h2>Le Rembobinage</h2>
-         <p>Une fois par vague, <b>glissez la jauge vers la gauche</b> : le temps recule de 6 secondes.</p>
-         <p>Les lanternes posées depuis laissent un <b>écho fantôme</b> qui tire à 50 % pendant 10 s.
-         Posez, rembobinez, reposez : double défense !</p>
-         <div class="demo-gauge"><span class="demo-knob">巻</span></div>`,
+         <p>La <b>jauge 巻</b> se remplit quand vous apaisez des yokai et quand vous appelez une vague en avance. <b>Pleine, glissez-la vers la gauche</b> : le temps recule de ${sec} secondes.</p>
+         <div class="demo-gauge"><span class="demo-knob">巻</span></div>
+         <div class="rules">${rewindRules(g, true)}</div>`,
         [{ label: 'Compris', cls: 'primary', run: () => this.c.pause(false, true) }],
       );
       return true;
     }
-    if (this.rewindPhase === 2 && g.canRewind() && g.rewindAvailable() >= 5) {
+    if (this.rewindPhase === 2 && g.canRewind() && g.rewindAvailable() >= Math.min(5, (g.rules.rewindSeconds ?? 6) - 0.5)) {
       const tr = this.c.gauge.trackRect();
       const kr = this.c.gauge.knobRect();
       const from = { x: kr.left + kr.width / 2, y: kr.top + kr.height / 2 };
       const to = { x: tr.left + tr.width * 0.25, y: from.y };
       const recent = g.towers.some((t) => g.time - t.bornAt < 5);
-      this.show('rewind', from.x, from.y, recent ? 'Glissez ◀◀ : la lanterne laissera un écho' : 'Posez une lanterne, puis glissez ◀◀', to);
+      this.show('rewind', from.x, from.y, recent ? 'Jauge pleine : glissez ◀◀, la lanterne laissera un écho' : 'Jauge pleine : glissez ◀◀ pour remonter le temps', to);
       return true;
     }
     return false;
@@ -311,13 +442,17 @@ export class Tutorial {
     return tiles;
   }
 
-  bestSlot(g, range) {
+  // Socle libre (compatible avec `element` : universel ou gravé de cet élément)
+  // qui couvre le plus de cases du trajet.
+  bestSlot(g, range, element = null) {
     const grid = g.grid;
     const tiles = this.routeTiles(g);
     let best = null;
     let bestN = 0;
     for (let i = 0; i < grid.size; i++) {
       if (grid.type(i) !== T.SLOT || g.towerAt(grid.col(i), grid.row(i))) continue;
+      const se = grid.slotElement?.[i];
+      if (element && se && se !== element) continue;
       let n = 0;
       for (const p of tiles) if (Math.hypot(grid.cx(p) - grid.cx(i), grid.cy(p) - grid.cy(i)) <= range) n++;
       if (n > bestN) {
@@ -337,26 +472,39 @@ export class Tutorial {
     return null;
   }
 
-  comboSpot(g) {
+  // Socle libre voisin d'une lanterne où poser `type` ferait naître un combo
+  // (socle gravé compatible, pas d'écho dessus).
+  comboSpot(g, type) {
     const grid = g.grid;
     for (const t of g.towers) {
       for (let dy = -1; dy <= 1; dy++) {
         for (let dx = -1; dx <= 1; dx++) {
           const c = t.c + dx;
           const r = t.r + dy;
-          if (!grid.inBounds(c, r)) continue;
-          if (grid.type(grid.idx(c, r)) === T.SLOT && !g.towerAt(c, r)) return { c, r };
+          if (!grid.inBounds(c, r) || grid.type(grid.idx(c, r)) !== T.SLOT) continue;
+          const chk = g.canPlaceTower(type, c, r);
+          if (!chk.ok && chk.reason !== 'gold') continue;
+          if (g.previewCombos(type, c, r).length) return { c, r };
         }
       }
     }
     return null;
   }
 
+  // Lanterne (la moins chère, abordable) qui ferait un combo quelque part.
+  comboPick(g) {
+    const list = g.availableTowers.filter((t) => g.goldOf() >= g.defs.towers[t].cost).sort((a, b) => g.defs.towers[a].cost - g.defs.towers[b].cost);
+    return list.find((t) => this.comboSpot(g, t)) ?? null;
+  }
+
+  // Case de gravier où une pierre allonge le plus le chemin ; à gain égal, une case
+  // du trajet actuel (l'aperçu montre alors le détour), la plus proche des portails.
   stoneSpot(g) {
     const grid = g.grid;
     const base = g.routeLength();
+    const route = this.routeTiles(g);
     let best = null;
-    let bestGain = -1;
+    let bestScore = -Infinity;
     for (let i = 0; i < grid.size; i++) {
       if (grid.type(i) !== T.OPEN || grid.stone[i]) continue;
       if (!g.canPlaceStone(grid.col(i), grid.row(i)).ok) continue;
@@ -364,9 +512,10 @@ export class Tutorial {
       let len = 0;
       for (const s of grid.spawns) len += dist[s];
       const gain = len - base;
-      if (gain > bestGain) {
-        bestGain = gain;
-        best = { c: grid.col(i), r: grid.row(i) };
+      const score = gain * 1000 + (route.has(i) ? 100 : 0) + Math.max(0, g.flow.dist[i]) * 0.01;
+      if (score > bestScore) {
+        bestScore = score;
+        best = { c: grid.col(i), r: grid.row(i), gain };
       }
     }
     return best;

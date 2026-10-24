@@ -9,9 +9,15 @@
 //   Outil pierre       même geste : le nouveau chemin s'affiche avant de relâcher.
 //   Lanterne           toucher : sélection (barre d'actions) ; appui long : fiche ;
 //                      glisser : fusion (la lanterne portée flotte au-dessus du doigt).
+//                      En coopération, la lanterne d'un coéquipier ne se fusionne pas.
 //   Yokai              appui long sur le yokai le plus proche du doigt : sa fiche.
-//   En pause           étude seulement : toucher et appui long, ni pose ni fusion.
+//   Déplacer le mur    (Gardien de pierre) un toucher sur une case allumée y déplace
+//                      sa barrière ; ailleurs, le mode s'annule.
+//   En pause           étude seulement : toucher et appui long, ni pose ni fusion
+//                      (réglages permis : priorité, mur d’un Gardien).
+//   Dernière chance    aucun geste sur le plateau : seule la jauge compte.
 import { T } from '../core/grid.js';
+import { rallyTiles } from './overlay.js';
 
 export const LONG_PRESS_MS = 430;
 const HOLD_DELAY_MS = 110; // l'anneau d'appui long n'apparaît qu'après ce délai (pas sur un toucher)
@@ -35,7 +41,7 @@ export class Input {
     this.h = h;
     // État lu par le rendu : outil, aperçu de pose, sélection, lanterne portée,
     // retour animé d'un dépôt raté, message éphémère, yokai visé.
-    this.ui = { tool: null, press: null, selectedTower: null, drag: null, dragBack: null, flash: null, focusEnemy: null };
+    this.ui = { tool: null, press: null, selectedTower: null, drag: null, dragBack: null, flash: null, focusEnemy: null, rally: null };
     this.down = null;
     this.enabled = true;
     this.inspect = false; // pause : étude du plateau seulement
@@ -59,7 +65,17 @@ export class Input {
   setTool(tool) {
     this.ui.tool = this.ui.tool === tool ? null : tool;
     this.ui.selectedTower = null;
+    this.ui.rally = null;
     return this.ui.tool;
+  }
+
+  // Mode « Déplacer le mur » d'un Gardien de pierre (null : quitter).
+  setRally(towerId) {
+    this.ui.rally = towerId != null ? { towerId } : null;
+    if (towerId != null) {
+      this.ui.tool = null;
+      this.ui.selectedTower = towerId;
+    }
   }
 
   pos(e) {
@@ -130,7 +146,8 @@ export class Input {
   }
 
   // Socle libre le plus proche du point visé (aimantation), dans `radius` cases.
-  nearestFreeSlot(a, radius) {
+  // `element` : seuls les socles universels ou gravés de cet élément attirent.
+  nearestFreeSlot(a, radius, element = null) {
     const game = this.game;
     const g = game.grid;
     const ts = this.renderer.ts;
@@ -138,6 +155,8 @@ export class Input {
     let bd = radius * ts;
     for (let i = 0; i < g.size; i++) {
       if (g.type(i) !== T.SLOT) continue;
+      const se = g.slotElement?.[i];
+      if (element && se && se !== element) continue;
       const c = g.col(i);
       const r = g.row(i);
       if (game.towerAt(c, r) || game.echoes?.some((t) => t.c === c && t.r === r)) continue;
@@ -157,8 +176,8 @@ export class Input {
     if (!this.enabled || this.down) return;
     const game = this.game;
     if (!game || game.state === 'won' || game.state === 'lost') return;
-    // Pendant l'animation du rembobinage, aucun geste n'est pris en compte.
-    if (game.rewindAnim) return;
+    // Pendant l'animation du rembobinage ou la dernière chance, aucun geste n'est pris en compte.
+    if (game.rewindAnim || game.lastChanceT > 0) return;
     this.h.onAction?.('pointer');
     const p = this.pos(e);
     const tile = this.tileOf(p);
@@ -173,6 +192,12 @@ export class Input {
     }
     // Un toucher sur le plateau ferme la fiche ouverte.
     this.h.onBoardTouch?.();
+    // « Déplacer le mur » vaut aussi en pause (comme la priorité) : les cases allumées
+    // l'étaient, mais le toucher n'y faisait rien.
+    if (this.ui.rally) {
+      d.mode = 'rally';
+      return;
+    }
     const tool = this.inspect ? null : this.ui.tool;
     if (tool) {
       d.mode = tool === 'stone' ? 'stone' : 'place';
@@ -209,6 +234,11 @@ export class Input {
     } else if (inB && g.stone[g.idx(tile.c, tile.r)]) {
       d.mode = 'stoneInfo';
       this.startHold(d, p, () => this.h.onInfo?.({ kind: 'stone', c: tile.c, r: tile.r }));
+    } else if (inB && game.echoes?.some((t) => t.c === tile.c && t.r === tile.r)) {
+      // Écho (lanterne fantôme du Rembobinage) : toucher ou appui long le présentent.
+      d.mode = 'echo';
+      d.echo = game.echoes.find((t) => t.c === tile.c && t.r === tile.r);
+      this.startHold(d, p, () => this.h.onInfo?.({ kind: 'echo', echo: d.echo }));
     }
   }
 
@@ -248,7 +278,10 @@ export class Input {
       } else {
         this.stopHold(d);
         if (d.mode === 'enemy') this.ui.focusEnemy = null;
-        if (d.mode === 'tower' && !d.long && !this.inspect && game.fuse) {
+        const mine = !(game.players?.length > 1) || d.tower?.owner === game.localPlayer;
+        if (d.mode === 'tower' && !d.long && !this.inspect && !mine) {
+          this.h.onFeedback?.('owner', { tower: d.tower, x: p.x, y: p.y });
+        } else if (d.mode === 'tower' && !d.long && !this.inspect && game.fuse) {
           const a = this.aim(p);
           this.ui.drag = { towerId: d.tower.id, x: p.x, y: p.y, gx: a.x, gy: a.y, hover: null, preview: null };
           this.ui.selectedTower = null;
@@ -274,7 +307,7 @@ export class Input {
     drag.y = p.y;
     drag.gx = a.x;
     drag.gy = a.y;
-    const hover = this.fuseTarget(src, a.x, a.y);
+    const hover = this.fuseTarget(src, a.x, a.y, p.x, p.y);
     const key = hover ? `${hover.c},${hover.r},${hover.valid}` : '';
     if (key !== drag.key) {
       drag.key = key;
@@ -287,7 +320,9 @@ export class Input {
   // Cible de fusion : lanterne compatible dont le corps (≈ 0,3 case au-dessus du
   // centre du socle) est à moins de 0,8 case de la lanterne portée. À défaut, la
   // case sous la lanterne portée (pour afficher un refus clair).
-  fuseTarget(src, gx, gy) {
+  // Le doigt posé SUR une jumelle compte aussi quand le fantôme ne vise rien :
+  // c'est le geste que montre le tutoriel (« glissez une lanterne sur sa jumelle »).
+  fuseTarget(src, gx, gy, fx = null, fy = null) {
     const game = this.game;
     const ts = this.renderer.ts;
     let best = null;
@@ -300,6 +335,11 @@ export class Input {
         bestD = d;
         best = t;
       }
+    }
+    if (!best && fx != null) {
+      const ft = this.tileOf({ x: fx, y: fy });
+      const t = game.grid.inBounds(ft.c, ft.r) ? game.towerAt(ft.c, ft.r) : null;
+      if (t && t.id !== src.id && game.canFuse(src.id, t.id).ok) best = t;
     }
     if (best) return { c: best.c, r: best.r, valid: true, id: best.id };
     const tile = this.tileOf({ x: gx, y: gy + ts * 0.3 });
@@ -330,8 +370,9 @@ export class Input {
     if (!def) return;
     const t = this.tileOf(a);
     let target = null;
+    const el = def.element ?? type;
     if (g.inBounds(t.c, t.r) && g.type(g.idx(t.c, t.r)) === T.SLOT) target = { c: t.c, r: t.r };
-    else target = this.nearestFreeSlot(a, d.lifted ? 0.75 : 0.5);
+    else target = this.nearestFreeSlot(a, d.lifted ? 0.75 : 0.5, el);
     const press = { kind: 'tower', type, gx: a.x, gy: a.y, fx: p.x, fy: p.y, lifted: d.lifted, ...this.riseOf(d, p), c: null, r: null, valid: false, reason: null, combos: [] };
     if (target) {
       const chk = game.canPlaceTower(type, target.c, target.r);
@@ -339,6 +380,7 @@ export class Input {
       press.r = target.r;
       press.valid = chk.ok;
       press.reason = chk.reason;
+      press.element = chk.element ?? null; // socle gravé d'un autre élément
       if (chk.reason === 'gold') press.missing = Math.max(1, Math.ceil(def.cost - game.gold));
       const free = !game.towerAt(target.c, target.r) && !game.echoes?.some((e) => e.c === target.c && e.r === target.r);
       // Combos qui naîtraient (échos compris), affichés même si la pose est refusée.
@@ -408,6 +450,14 @@ export class Input {
       case 'stoneInfo':
         if (!d.moved) this.h.onInfo?.({ kind: 'stone', c: d.tile.c, r: d.tile.r });
         return;
+      case 'echo':
+        if (d.moved) return;
+        this.tapEmpty();
+        this.h.onInfo?.({ kind: 'echo', echo: d.echo });
+        return;
+      case 'rally':
+        if (!d.moved) this.tapRally(d);
+        return;
       default:
         if (!d.moved) this.tapEmpty();
     }
@@ -444,8 +494,40 @@ export class Input {
       this.h.onAction?.('placed', { type, tower: t });
     } else {
       game.emit('reject', { c, r, reason: res.reason });
-      this.h.onFeedback?.('reject', { reason: res.reason, c, r, x: press.gx, y: press.gy, missing: press.missing });
+      this.h.onFeedback?.('reject', { reason: res.reason, element: res.element, c, r, x: press.gx, y: press.gy, missing: press.missing });
     }
+  }
+
+  // Mode « Déplacer le mur » : un toucher sur une case allumée y déplace la
+  // barrière du Gardien ; ailleurs, le mode s'annule.
+  tapRally(d) {
+    const game = this.game;
+    const rally = this.ui.rally;
+    const t = rally ? game.towerById(rally.towerId) : null;
+    this.ui.rally = null;
+    if (!t) return;
+    const { c, r } = d.tile;
+    const g = game.grid;
+    const i = g.inBounds(c, r) ? g.idx(c, r) : -1;
+    const x = d.x;
+    const y = d.y;
+    if (i >= 0 && rallyTiles(game, t).includes(i)) {
+      if (game.setRally(t.id, c, r)) {
+        this.ui.selectedTower = t.id;
+        this.h.onAction?.('rally', { tower: t, c, r });
+        return;
+      }
+    }
+    // toucher la tour elle-même (ou une autre) : simple annulation
+    const other = this.towerNear({ x, y });
+    if (other) {
+      this.h.onFeedback?.('cancel', { x, y });
+      this.ui.selectedTower = other.id;
+      this.h.onAction?.('selectTower', { tower: other });
+      return;
+    }
+    const walk = i >= 0 && g.isWalkableType(i);
+    this.h.onFeedback?.(walk ? 'rallyFar' : 'cancel', { x, y });
   }
 
   releaseStone(d) {
@@ -506,6 +588,7 @@ export class Input {
 
   tapTower(tower) {
     if (this.ui.tool) this.clearTool();
+    this.ui.rally = null;
     this.ui.selectedTower = this.ui.selectedTower === tower.id ? null : tower.id;
     this.h.onAction?.('selectTower', { tower });
   }
@@ -514,6 +597,7 @@ export class Input {
     // Avec une lanterne sélectionnée, un toucher ailleurs ne fait que désélectionner.
     if (this.ui.selectedTower != null) {
       this.ui.selectedTower = null;
+      this.ui.rally = null;
       this.h.onAction?.('deselect');
     }
   }
@@ -528,10 +612,11 @@ export class Input {
   // (la palette relaie pointermove / pointerup).
   startFromPalette(tool, e) {
     const game = this.game;
-    if (!this.enabled || this.inspect || this.down || !game || game.rewindAnim) return false;
+    if (!this.enabled || this.inspect || this.down || !game || game.rewindAnim || game.lastChanceT > 0) return false;
     if (game.state === 'won' || game.state === 'lost') return false;
     this.ui.tool = tool;
     this.ui.selectedTower = null;
+    this.ui.rally = null;
     const p = this.pos(e);
     this.down = { id: e.pointerId, x0: p.x, y0: p.y, x: p.x, y: p.y, t0: performance.now(), tile: this.tileOf(p), moved: true, long: false, lifted: true, external: true, mode: tool === 'stone' ? 'stone' : 'place' };
     this.stoneKey = null;
@@ -555,6 +640,7 @@ export class Input {
       this.updateAim();
     }
     if (this.ui.drag && !this.game?.towerById(this.ui.drag.towerId)) this.ui.drag = null;
+    if (this.ui.rally && !this.game?.towerById(this.ui.rally.towerId)) this.ui.rally = null;
   }
 
   cancel() {
@@ -574,5 +660,6 @@ export class Input {
     this.ui.dragBack = null;
     this.ui.flash = null;
     this.ui.focusEnemy = null;
+    this.ui.rally = null;
   }
 }

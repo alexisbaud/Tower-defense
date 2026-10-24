@@ -42,6 +42,7 @@ export class Coop {
     this.stop();
     this.game = game;
     this.host = new HostSync(game, (snap) => this.session.broadcastSnapshot(snap));
+    this.host.gid = start?.seed ?? null;
     this.offs.push(this.session.on('command', ({ pid, op, args }) => applyCommand(game, pid, op, args)));
     // un joueur revenu en pleine partie reçoit aussitôt un état complet
     this.offs.push(this.session.on('join', () => (this.host.forceKey = true)));
@@ -54,6 +55,7 @@ export class Coop {
     const mirror = makeMirror(Game, level, defs, start);
     this.game = mirror;
     this.client = new ClientSync(mirror, (op, args) => this.session.sendCommand(op, args));
+    this.client.gid = start.seed ?? null;
     this.offs.push(this.session.on('snap', (snap) => {
       this.lastSnapAt = performance.now();
       this.client.apply(snap);
@@ -90,6 +92,20 @@ export class Coop {
 
   get remotePaused() {
     return !!this.client?.paused;
+  }
+
+  // Vitesse de jeu : réglée par l'hôte (×1, ×2), suivie par les invités.
+  get speed() {
+    return this.host ? this.host.speed : this.client ? this.client.speed : 1;
+  }
+
+  set speed(v) {
+    if (this.host) this.host.speed = v;
+  }
+
+  // Force l'envoi immédiat d'un état (fin de partie, hôte en arrière-plan).
+  flush() {
+    if (this.host) this.host.tick(0, true);
   }
 
   stop() {

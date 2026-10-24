@@ -1,8 +1,9 @@
-// Interface DOM de la partie : compteurs, palette, bouton et aperçu de vague,
-// messages, bouton « Annuler ».
+// Interface DOM de la partie : compteurs, palette (regroupée par élément quand
+// un élément a plusieurs lanternes), bouton et aperçu de vague, messages,
+// bouton « Annuler ».
 import { drawTowerIcon } from '../render/towers.js';
-import { elementOf, elementInfo, shapeSvg, readable } from './elements.js';
-import { WavePreview } from './wavepreview.js';
+import { elementOf, elementInfo, elementBadge, shapeSvg, readable, shortName, roleWord, elementWithArticle, toElement } from './elements.js';
+import { WavePreview, earlyCharge } from './wavepreview.js';
 import { LONG_PRESS_MS } from './input.js';
 
 const REASONS = {
@@ -14,11 +15,18 @@ const REASONS = {
   open: 'Les pierres se posent sur le gravier ouvert',
   limit: 'Plus de pierres disponibles',
   level: 'Niveau maximum atteint',
-  mismatch: 'Fusion : même élément et même niveau',
+  mismatch: 'Fusion : même lanterne et même niveau',
   over: 'La partie est terminée',
   echo: 'Un écho occupe ce socle : posez ailleurs',
   rewinding: 'Le temps recule…',
+  lastChance: 'Rembobinez d’abord !',
   bounds: 'Hors du jardin',
+  slotElement: 'Ce socle gravé est réservé à un autre élément',
+  challenge: 'Interdit par le défi',
+  element: 'Élément d’un autre joueur',
+  owner: 'Lanterne d’un autre joueur',
+  barrier: 'Une barrière occupe cette case',
+  unknown: 'Indisponible dans ce niveau',
 };
 
 // Raisons courtes, écrites à côté du fantôme de pose.
@@ -33,6 +41,9 @@ const SHORT = {
   mismatch: 'Pas jumelles',
   echo: 'Écho présent',
   rewinding: 'Le temps recule…',
+  lastChance: 'Rembobinez !',
+  challenge: 'Défi',
+  barrier: 'Barrière',
 };
 
 const STONE_COLOR = '#7d7a70';
@@ -43,7 +54,8 @@ export class Hud {
   /**
    * @param {HTMLElement} root  #screen-game
    * @param {object} handlers  onWave, onPause, onSpeed, onTool(tool), onToolInfo(id),
-   *                           onUndo(id), onHold(state, p, ms), onEnemyInfo(type, absorb), onWaveInfo()
+   *                           onUndo(id), onHold(state, p, ms), onEnemyInfo(type, absorb), onWaveInfo(),
+   *                           onElementInfo(element), onTab(element)
    */
   constructor(root, handlers) {
     this.root = root;
@@ -53,6 +65,10 @@ export class Hud {
     this.gold = this.$('hud-gold');
     this.wave = this.$('hud-wave');
     this.palette = this.$('palette');
+    this.tabsEl = this.$('palette-tabs');
+    this.tab = null; // élément affiché (palette regroupée)
+    this.grouped = false;
+    this.bindTabs();
     this.footer = this.$('hud-bottom');
     this.actionRow = root.querySelector('.action-row');
     this.waveBtn = this.$('btn-wave');
@@ -73,7 +89,9 @@ export class Hud {
     this.toastTimer = 0;
     this.undo = null;
     this.toolPtr = null;
-    this.suppressClick = 0;
+    // Clic fantôme après un glisser ou un appui long : ignoré sur CE bouton seulement
+    // (un toucher rapide sur un autre onglet ou une autre lanterne doit répondre).
+    this.suppress = { el: null, until: 0 };
 
     this.waveBtn.addEventListener('click', () => this.h.onWave());
     this.$('btn-pause').addEventListener('click', () => this.h.onPause());
@@ -97,16 +115,38 @@ export class Hud {
     this.palette.innerHTML = '';
     this.tools = [];
     this.hideUndo();
+    const defs = game.defs;
+    // Lanternes regroupées par élément (ordre de data/elements.js, puis les autres).
+    const types = game.availableTowers.filter((t) => defs.towers[t]);
+    const order = Object.keys(defs.elements || {});
+    const groups = new Map();
+    for (const el of order) groups.set(el, []);
+    for (const t of types) {
+      const el = elementOf(t, defs);
+      if (!groups.has(el)) groups.set(el, []);
+      groups.get(el).push(t);
+    }
+    for (const [el, list] of groups) if (!list.length) groups.delete(el);
+    this.groups = groups;
+    // Une seule lanterne par élément : une rangée simple suffit. Sinon, une rangée
+    // d'onglets (un par élément) puis les lanternes de l'élément choisi.
+    this.grouped = [...groups.values()].some((l) => l.length > 1);
+    this.root.classList.toggle('palette-grouped', this.grouped);
+    // nouvelle partie : premier élément (le tutoriel montre la première lanterne)
+    this.tab = groups.keys().next().value ?? null;
+    this.tool = null;
+    this.buildTabs();
     const dpr = Math.min(3, window.devicePixelRatio || 1);
     // taille d'icône fixée par la feuille de style (--icon, selon l'écran)
-    const size = parseFloat(getComputedStyle(this.palette).getPropertyValue('--icon')) || ICON;
+    const size = parseFloat(getComputedStyle(this.palette).getPropertyValue(this.grouped ? '--icon-g' : '--icon')) || ICON;
     const add = (id, opts, draw) => {
       const b = document.createElement('button');
-      b.className = 'tool';
+      b.className = `tool${this.grouped ? ' g' : ''}`;
       b.dataset.tool = id;
+      if (opts.element) b.dataset.element = opts.element;
       b.style.setProperty('--el', opts.color);
       b.style.setProperty('--el-ink', opts.ink);
-      b.setAttribute('aria-label', `${opts.name}, ${opts.cost} or`);
+      b.setAttribute('aria-label', `${opts.name}${opts.role ? `, ${opts.role}` : ''}, ${opts.cost} or`);
       const cv = document.createElement('canvas');
       cv.width = Math.round(size * dpr);
       cv.height = Math.round(size * dpr);
@@ -114,32 +154,138 @@ export class Hud {
       ctx.scale(dpr, dpr);
       draw(ctx);
       b.appendChild(cv);
-      // Forme + kanji (l'élément se lit sans la couleur), libellé français dessous.
-      b.insertAdjacentHTML(
-        'beforeend',
-        `<span class="tool-id"><span class="el-badge el-${opts.shape}" style="--s:24px">${shapeSvg(opts.shape, opts.ink, 24)}<b>${opts.kanji}</b></span><span class="tool-name">${opts.label}</span></span><span class="cost">${opts.cost}</span>`,
-      );
+      // Forme + kanji (l'élément se lit sans la couleur), libellé français dessous ;
+      // palette regroupée : nom court et rôle en un mot (l'onglet dit l'élément).
+      const badge = `<span class="el-badge el-${opts.shape}" style="--s:24px">${shapeSvg(opts.shape, opts.ink, 24)}<b>${opts.kanji}</b></span>`;
+      if (this.grouped) {
+        b.insertAdjacentHTML('beforeend', `<span class="tool-id">${badge}</span><span class="tool-text"><span class="tool-name">${opts.short}</span><span class="tool-role">${opts.roleWord || ''}</span></span><span class="cost">${opts.cost}</span>`);
+      } else {
+        b.insertAdjacentHTML('beforeend', `<span class="tool-id">${badge}<span class="tool-name">${opts.label}</span></span><span class="cost">${opts.cost}</span>`);
+      }
       if (id === 'stone') b.insertAdjacentHTML('beforeend', '<span class="tool-count"></span>');
       this.bindTool(b, id);
       this.palette.appendChild(b);
-      this.tools.push({ el: b, id, cost: opts.cost, costEl: b.querySelector('.cost'), countEl: b.querySelector('.tool-count') });
+      this.tools.push({ el: b, id, element: opts.element || null, cost: opts.cost, costEl: b.querySelector('.cost'), countEl: b.querySelector('.tool-count') });
       return b;
     };
-    for (const type of game.availableTowers) {
-      const def = game.defs.towers[type];
-      if (!def) continue;
-      const info = elementInfo(elementOf(type, game.defs), game.defs);
-      add(type, { name: def.name, color: def.color, ink: readable(def.color), shape: info.shape, kanji: def.kanji, label: info.label, cost: def.cost }, (ctx) => drawTowerIcon(ctx, size, size, def));
+    for (const [el, list] of groups) {
+      const info = elementInfo(el, defs);
+      for (const type of list) {
+        const def = defs.towers[type];
+        add(
+          type,
+          { name: def.name, element: el, color: def.color, ink: readable(def.color), shape: info.shape, kanji: def.kanji, label: info.label, short: shortName(type, defs), roleWord: roleWord(type, defs), role: def.role, cost: def.cost },
+          (ctx) => drawTowerIcon(ctx, size, size, def),
+        );
+      }
     }
-    if (game.level.stones && game.stoneCost) {
-      add('stone', { name: 'Pierre', color: STONE_COLOR, ink: readable(STONE_COLOR), shape: 'stone', kanji: '石', label: 'Pierre', cost: game.stoneCost() }, (ctx) => drawStoneIcon(ctx, size, size));
+    // en coopération, seuls les joueurs de la Terre posent des pierres
+    if (game.level.stones && game.stoneCost && game.stoneConf?.() && (typeof game.canUseStones !== 'function' || game.canUseStones())) {
+      add('stone', { name: 'Pierre', color: STONE_COLOR, ink: readable(STONE_COLOR), shape: 'stone', kanji: '石', label: 'Pierre', short: 'Pierre', roleWord: 'Chemin', cost: game.stoneCost() }, (ctx) => drawStoneIcon(ctx, size, size));
     }
-    this.palette.style.setProperty('--n', String(this.tools.length));
-    // Beaucoup d'outils (familles de tours) : la palette défile plutôt que de rétrécir sous 44 pt.
-    this.palette.classList.toggle('scroll', this.tools.length > 6);
+    this.applyTab();
     this.refreshTools();
     this.preview.reset();
     this.update(true);
+  }
+
+  // ───────────────────────── onglets d'éléments ─────────────────────────
+
+  buildTabs() {
+    const el = this.tabsEl;
+    if (!el) return;
+    el.innerHTML = '';
+    // un seul élément (coopération à 4) : pas d'onglets, les lanternes suffisent
+    const single = this.groups.size <= 1;
+    el.classList.toggle('hidden', !this.grouped || single);
+    if (!this.grouped || single) return;
+    const defs = this.game.defs;
+    let html = '';
+    for (const [id, list] of this.groups) {
+      const info = elementInfo(id, defs);
+      html += `<button class="ptab" role="tab" data-el="${id}" style="--el:${info.color};--el-ink:${info.ink}" aria-label="${info.label} : ${list.length} lanterne${list.length > 1 ? 's' : ''}">${elementBadge(id, defs, { size: 22 })}<span class="ptab-label">${info.label}</span></button>`;
+    }
+    el.innerHTML = html;
+  }
+
+  // Toucher : afficher les lanternes de l'élément. Appui long : fiche de l'élément.
+  bindTabs() {
+    const el = this.tabsEl;
+    if (!el) return;
+    let hold = null;
+    const clear = () => {
+      if (!hold) return;
+      clearTimeout(hold.timer);
+      clearTimeout(hold.ring);
+      this.h.onHold?.('end');
+    };
+    el.addEventListener('pointerdown', (e) => {
+      const b = e.target.closest('.ptab');
+      if (!b) return;
+      clear();
+      const h = { id: b.dataset.el, x: e.clientX, y: e.clientY, long: false };
+      hold = h;
+      h.ring = setTimeout(() => hold === h && this.h.onHold?.('start', { x: e.clientX, y: e.clientY }, LONG_PRESS_MS - 110), 110);
+      h.timer = setTimeout(() => {
+        if (hold !== h) return;
+        h.long = true;
+        this.h.onHold?.('end');
+        this.h.onElementInfo?.(h.id);
+      }, LONG_PRESS_MS);
+    });
+    el.addEventListener('pointermove', (e) => {
+      if (hold && Math.hypot(e.clientX - hold.x, e.clientY - hold.y) > 10) {
+        clear();
+        hold = null;
+      }
+    });
+    const up = () => {
+      clear();
+      if (hold?.long) this.suppressOn(el.querySelector(`.ptab[data-el="${hold.id}"]`));
+      hold = null;
+    };
+    el.addEventListener('pointerup', up);
+    el.addEventListener('pointercancel', up);
+    el.addEventListener('click', (e) => {
+      const b = e.target.closest('.ptab');
+      if (!b || this.suppressed(b)) return;
+      this.showTab(b.dataset.el);
+      this.h.onTab?.(b.dataset.el);
+    });
+  }
+
+  // Affiche l'onglet d'un élément (palette regroupée) ; sans effet sinon.
+  showTab(el) {
+    if (!this.grouped || !this.groups?.has(el)) return;
+    if (this.tab !== el) {
+      this.tab = el;
+      this.applyTab();
+    }
+  }
+
+  // Onglet de la lanterne `id` (palette regroupée), pour l'afficher avant de la montrer.
+  tabOf(id) {
+    return this.tools.find((t) => t.id === id)?.element ?? null;
+  }
+
+  applyTab() {
+    for (const t of this.tools) t.el.classList.toggle('off-tab', this.grouped && t.element != null && t.element !== this.tab);
+    if (!this.tabsEl) return;
+    for (const b of this.tabsEl.querySelectorAll('.ptab')) {
+      const on = b.dataset.el === this.tab;
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-selected', String(on));
+    }
+    this.markTabs();
+  }
+
+  // L'onglet qui contient l'outil choisi porte une marque (l'outil reste actif
+  // même si l'on regarde un autre élément).
+  markTabs() {
+    if (!this.grouped || !this.tabsEl) return;
+    const tool = this.input?.ui.tool;
+    const el = tool && tool !== 'stone' ? this.tabOf(tool) : null;
+    for (const b of this.tabsEl.querySelectorAll('.ptab')) b.classList.toggle('has-tool', b.dataset.el === el);
   }
 
   // ───────────────────────── palette ─────────────────────────
@@ -194,18 +340,26 @@ export class Hud {
       if (tp.drag) {
         if (cancel) this.input.cancel();
         else this.input.onUp(e);
-        this.suppressClick = performance.now() + 450;
+        this.suppressOn(b);
         this.refreshTools();
       } else if (tp.long) {
-        this.suppressClick = performance.now() + 450;
+        this.suppressOn(b);
       }
     };
     b.addEventListener('pointerup', (e) => end(e, false));
     b.addEventListener('pointercancel', (e) => end(e, true));
     b.addEventListener('click', () => {
-      if (performance.now() < this.suppressClick) return;
+      if (this.suppressed(b)) return;
       this.clickTool(id, b);
     });
+  }
+
+  suppressOn(el) {
+    this.suppress = { el, until: performance.now() + 450 };
+  }
+
+  suppressed(el) {
+    return this.suppress.el === el && performance.now() < this.suppress.until;
   }
 
   usable(id) {
@@ -245,6 +399,11 @@ export class Hud {
         if (left <= 0 && this.input.ui.tool === 'stone' && !this.input.down) this.input.setTool('stone');
       }
     }
+    // l'outil choisi ailleurs (fiche, tutoriel) : son onglet s'affiche
+    const tool = this.input.ui.tool;
+    if (tool && tool !== 'stone' && this.tool !== tool) this.showTab(this.tabOf(tool));
+    this.tool = tool;
+    this.markTabs();
   }
 
   // La bannière (≈ 2,1 s) est-elle encore à l'écran ?
@@ -275,6 +434,19 @@ export class Hud {
         if (t.id === 'stone' && String(cost) !== t.costEl.textContent) t.costEl.textContent = cost;
       }
     }
+    // Défi « N lanternes au plus » : poses épuisées, les lanternes se grisent (sans
+    // le rouge du manque d'or) ; leur libellé le dit.
+    const rule = g.challengeRule;
+    const spent = rule?.maxTowers != null && g.stats.towersBuilt >= rule.maxTowers;
+    if (force || spent !== this.last.spent) {
+      this.last.spent = spent;
+      for (const t of this.tools) {
+        if (t.id === 'stone') continue;
+        t.el.classList.toggle('spent', spent);
+        const base = t.el.getAttribute('aria-label').replace(/ · défi : .*$/, '');
+        t.el.setAttribute('aria-label', spent ? `${base} · défi : ${rule.maxTowers} lanternes déjà posées` : base);
+      }
+    }
     if (force || g.lives !== this.last.lives) {
       this.lives.textContent = g.lives;
       if (!force) bump(this.lives, g.lives < (this.last.lives ?? 0) ? 'hurt' : 'bump');
@@ -297,33 +469,43 @@ export class Hud {
     this.updateUndo(g);
   }
 
-  // Bouton de vague : lancer / compte à rebours et bonus d'appel / en cours ;
-  // aperçu de la vague suivante à côté.
+  // Bouton de vague. Les vagues se chevauchent : après la première, il n'y a plus
+  // de phase de construction ; le bouton montre en permanence la vague suivante,
+  // son compte à rebours, et ce que rapporte un appel anticipé (+or, +charge 巻).
+  // Aperçu de la vague suivante à côté.
   updateWaveButton(g) {
     const pv = g.nextWavePreview ? g.nextWavePreview() : null;
-    const canCall = g.state === 'wave' && typeof g.canCallNextWave === 'function' && !!g.canCallNextWave();
+    const canCall = typeof g.canCallNextWave === 'function' ? !!g.canCallNextWave() : g.state === 'build';
     let label;
     let sub = '';
     let enabled;
     let mode;
-    if (g.state === 'build') {
-      enabled = true;
-      mode = g.countdown != null ? 'countdown' : 'ready';
-      label = g.waveIndex < 0 ? 'Commencer' : `Vague ${g.waveIndex + 2}`;
-      if (g.countdown != null) sub = `${Math.max(0, Math.ceil(g.countdown))} s${pv?.bonus > 0 ? ` · +${pv.bonus} or` : ''}`;
-      else if (g.waveIndex < 0) sub = `${g.totalWaves} vagues`;
-    } else if (canCall && pv) {
-      enabled = true;
-      mode = 'call';
-      label = `Vague ${pv.index + 1}`;
-      sub = pv.bonus > 0 ? `Appeler · +${pv.bonus} or` : 'Appeler';
+    let aria;
+    if (g.waveIndex < 0 && pv) {
+      enabled = canCall;
+      mode = 'ready';
+      label = 'Commencer';
+      sub = `${g.totalWaves} vagues`;
+      aria = `Commencer : ${g.totalWaves} vagues`;
+    } else if (pv) {
+      enabled = canCall;
+      mode = pv.countdown != null && pv.countdown <= 5 ? 'soon' : 'call';
+      label = pv.climax ? `Climax ${pv.index + 1}` : `Vague ${pv.index + 1}`;
+      const parts = [];
+      const charge = earlyCharge(g, pv);
+      if (pv.countdown != null) parts.push(`${Math.max(0, Math.ceil(pv.countdown))} s`);
+      if (pv.bonus > 0) parts.push(`+${pv.bonus} or`);
+      if (charge > 0) parts.push(`+${charge} 巻`);
+      sub = parts.join(' · ');
+      aria = `Appeler la vague ${pv.index + 1}${pv.name ? ` « ${pv.name} »` : ''} maintenant${pv.bonus > 0 ? ` : +${pv.bonus} or` : ''}${charge > 0 ? `, +${charge} de charge du Rembobinage` : ''}${pv.countdown != null ? `. Elle arrive seule dans ${Math.max(0, Math.ceil(pv.countdown))} s` : ''}`;
     } else {
       enabled = false;
       mode = g.state === 'wave' ? 'running' : 'over';
-      label = g.state === 'wave' ? 'En cours' : '—';
+      label = g.state === 'wave' ? 'Dernière vague' : '—';
+      sub = g.state === 'wave' ? 'en cours' : '';
+      aria = label;
     }
-    const climax = enabled && !!pv?.climax;
-    if (climax) sub = sub ? `Climax · ${sub}` : 'Climax';
+    const climax = !!pv?.climax;
     if (label !== this.last.label) {
       this.waveLabel.textContent = label;
       this.last.label = label;
@@ -332,6 +514,10 @@ export class Hud {
       this.waveSub.textContent = sub;
       this.waveSub.classList.toggle('hidden', !sub);
       this.last.sub = sub;
+    }
+    if (aria !== this.last.aria) {
+      this.waveBtn.setAttribute('aria-label', aria);
+      this.last.aria = aria;
     }
     if (enabled !== this.last.enabled) {
       this.waveBtn.classList.toggle('disabled', !enabled);
@@ -347,12 +533,12 @@ export class Hud {
       this.waveKanji.textContent = climax ? '嵐' : '波';
       this.last.climax = climax;
     }
-    const pulse = g.state === 'build' && g.waveIndex < 0 && g.towers.length > 0;
+    const pulse = g.waveIndex < 0 && g.towers.length > 0;
     if (pulse !== this.last.pulse) {
       this.waveBtn.classList.toggle('pulse', pulse);
       this.last.pulse = pulse;
     }
-    const showPv = !!pv && (g.state === 'build' || canCall);
+    const showPv = !!pv;
     this.preview.update(g, showPv ? pv : null);
     if (showPv !== this.last.showPv) {
       this.actionRow.classList.toggle('has-preview', showPv);
@@ -412,18 +598,29 @@ export class Hud {
     this.toastTimer = setTimeout(() => el.classList.remove('show'), ms);
   }
 
-  reason(code) {
+  // `data.element` : élément d'un socle gravé (refus 'slotElement').
+  reason(code, data = {}) {
+    if (code === 'slotElement' && data.element && this.game) {
+      const info = elementInfo(data.element, this.game.defs);
+      return `${info.glyph} Ce socle gravé ${info.kanji} n’accepte que ${elementWithArticle(data.element, this.game.defs)}`;
+    }
     return REASONS[code] || null;
   }
 
-  shortReason(code) {
+  shortReason(code, data = {}) {
+    if (code === 'slotElement' && data.element && this.game) {
+      const info = elementInfo(data.element, this.game.defs);
+      return `${info.glyph} Socle réservé ${toElement(data.element, this.game.defs)}`;
+    }
     return SHORT[code] || REASONS[code] || null;
   }
 
-  banner(big, small = '') {
+  // `cls` : variante ('climax' : vague nommée, pinceau vermillon et or).
+  banner(big, small = '', cls = '') {
     const el = this.bannerEl;
     this.bannerAt = performance.now(); // la carte « Nouveau yokai » évite la bannière affichée
     el.innerHTML = `<span class="big">${big}</span>${small ? `<span class="small">${small}</span>` : ''}`;
+    el.classList.toggle('climax', cls === 'climax');
     el.classList.remove('show');
     void el.offsetWidth;
     el.classList.add('show');

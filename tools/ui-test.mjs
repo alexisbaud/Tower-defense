@@ -2,10 +2,17 @@
 // annulation, barre d'actions (priorité, vente confirmée), fiches (lanterne, yokai,
 // type de lanterne), pierre glissée avec aperçu du chemin, aperçu de vague, pause
 // sans voile et table des combos, fusion avec aperçu, accessibilité.
+// Moteur v3 (événements tactiles réels) : palette regroupée par élément, socles
+// gravés, murs des Gardiens, vagues qui se chevauchent et appel anticipé, jauge de
+// Rembobinage et dernière chance, carte (leçon, Difficile, défi), tutoriel, débogage.
 // Usage : (serveur local sur :8080) node tools/ui-test.mjs
 import { createRequire } from 'node:module';
+import { brokerQuery } from './relay.mjs';
 const require = createRequire(import.meta.url);
 const { chromium } = require('playwright');
+
+// accueil (salon) : relais local s'il répond, sinon salon hors ligne (voir relay.mjs)
+const HOME = `http://localhost:8080/?${await brokerQuery()}`;
 
 const LIFT = 60;
 let failures = 0;
@@ -29,13 +36,22 @@ async function open(level) {
 }
 // Centre écran (page) d'une case (c, r) ; `dy` décale le point de contact.
 const at = (c, r, dy = 0) => page.evaluate(([c, r]) => window.__renderer.toScreen(c + 0.5, r + 0.5), [c, r]).then((p) => ({ x: box.x + p.x, y: box.y + p.y + dy }));
-const slotsOf = () =>
-  page.evaluate(() => {
-    const g = window.__state.game.grid;
+// Socles universels (#) — ou compatibles avec la lanterne `type` (socle gravé de son élément).
+const slotsOf = (type = null) =>
+  page.evaluate((type) => {
+    const game = window.__state.game;
+    const g = game.grid;
+    const el = type ? game.defs.towers[type]?.element ?? type : null;
     const out = [];
-    for (let i = 0; i < g.size; i++) if (g.type(i) === 3) out.push([g.col(i), g.row(i)]);
+    for (let i = 0; i < g.size; i++) {
+      if (g.type(i) !== 3) continue;
+      const se = g.slotElement[i];
+      if (se && se !== el) continue;
+      out.push([g.col(i), g.row(i)]);
+    }
     return out;
-  });
+  }, type);
+const towerName = (type) => page.evaluate((t) => window.__state.game.defs.towers[t].name, type);
 const game = () =>
   page.evaluate(() => {
     const g = window.__state.game;
@@ -166,8 +182,12 @@ check('rien posé sans or', (await game()).towers.length === nb);
 await page.evaluate(() => (window.__state.game.gold = 500));
 
 console.log('Combos en direct pendant la pose (D14)');
-const fireT = (await game()).towers.find((t) => t.type === 'fire');
-const nbSlot = (await slotsOf()).find(([c, r]) => Math.max(Math.abs(c - fireT.c), Math.abs(r - fireT.r)) === 1);
+// une lanterne de Feu posée à côté d'un socle libre où l'Eau peut aller
+const occNow = new Set((await game()).towers.map((t) => `${t.c},${t.r}`));
+const freeW = (await slotsOf('water')).filter(([c, r]) => !occNow.has(`${c},${r}`));
+const pairF = (await slotsOf('fire')).filter(([c, r]) => !occNow.has(`${c},${r}`)).map(([c, r]) => [c, r, freeW.find(([c2, r2]) => Math.max(Math.abs(c - c2), Math.abs(r - r2)) === 1)]).find((x) => x[2]);
+if (pairF) await page.evaluate(([c, r]) => window.__state.game.placeTower('fire', c, r), pairF);
+const nbSlot = pairF ? pairF[2] : null;
 if (nbSlot) {
   await selectTool('water');
   p = await at(nbSlot[0], nbSlot[1], LIFT);
@@ -180,7 +200,8 @@ if (nbSlot) {
 
 console.log('Glisser depuis la palette');
 const gp = (await game()).towers.length;
-const dest = (await slotsOf()).find(([c, r]) => r >= 3 && !(s.towers.some((t) => t.c === c && t.r === r)) && !(nbSlot && c === nbSlot[0] && r === nbSlot[1]));
+const occD = (await game()).towers;
+const dest = (await slotsOf()).find(([c, r]) => r >= 3 && !occD.some((t) => t.c === c && t.r === r) && !(nbSlot && c === nbSlot[0] && r === nbSlot[1]));
 const tb = await rect('.tool[data-tool="fire"]');
 const to = await at(dest[0], dest[1], LIFT);
 await page.mouse.move(tb.x + tb.width / 2, tb.y + tb.height / 2);
@@ -292,7 +313,9 @@ console.log('Fiche avant achat (B9)');
 const tool = await rect('.tool[data-tool="water"]');
 await longPress({ x: tool.x + tool.width / 2, y: tool.y + tool.height / 2 });
 sheet = await page.locator('#info').innerText();
-check('appui long sur la palette : fiche du type de lanterne', /Lanterne de l'Eau/.test(sheet) && /45 or/.test(sheet) && /Combos/.test(sheet), sheet.slice(0, 100));
+const waterName = await towerName('water');
+const waterCost = await page.evaluate(() => window.__state.game.defs.towers.water.cost);
+check('appui long sur la palette : fiche du type de lanterne', sheet.includes(waterName) && sheet.includes(`${waterCost} or`) && /Combos/.test(sheet) && /Socles/.test(sheet), sheet.slice(0, 100));
 check('l’appui long ne choisit pas l’outil', !(await game()).tool);
 await page.locator('#info .sheet-close').click();
 
@@ -310,8 +333,8 @@ await page.locator('#info .sheet-close').click();
 await page.evaluate(() => {
   const g = window.__state.game;
   g.waveIndex = 0;
-  g.state = 'build';
-  g.countdown = 10.2;
+  g.state = 'wave';
+  g.nextWaveT = 10.2;
 });
 await page.waitForTimeout(150);
 const sub = await page.locator('#btn-wave-sub').innerText();
@@ -343,7 +366,7 @@ if (e) {
 } else check('un yokai à viser', false);
 
 console.log('Pierre glissée avec aperçu du chemin (B10, B11, D6, D15)');
-await open('1-2');
+await open('1-4');
 const stones = await page.evaluate(() => {
   const g = window.__state.game;
   g.gold = 999;
@@ -366,7 +389,7 @@ await press(p);
 u = await ui();
 const sl = await page.evaluate(() => window.__renderer.pressLabel(window.__input.ui.press));
 check('pierre fantôme au-dessus du doigt, nouveau tracé affiché', u.press?.kind === 'stone' && u.press.c === stones.best[0] && u.press.r === stones.best[1] && u.press.routes >= 1, JSON.stringify(u.press));
-check('« +X cases » affiché', new RegExp(`\\+${stones.best[2]} case`).test(sl?.text || ''), JSON.stringify(sl));
+check('« +X cases » affiché', stones.best[2] > 0 ? new RegExp(`\\+${stones.best[2]} case`).test(sl?.text || '') : /Sans effet/.test(sl?.text || ''), JSON.stringify({ sl, best: stones.best }));
 if (stones.blocked) {
   const q = await at(stones.blocked[0], stones.blocked[1], LIFT);
   await page.mouse.move(q.x, q.y);
@@ -384,7 +407,7 @@ const badge1 = await page.locator('.tool[data-tool="stone"] .tool-count').innerT
 check('badge mis à jour', badge1 !== badge0, `${badge0} → ${badge1}`);
 await page.evaluate(() => {
   const g = window.__state.game;
-  g.stonesPlaced = g.stoneConf().max;
+  g.stats.stones = g.stoneConf().max;
 });
 await page.waitForTimeout(120);
 check('outil pierre désactivé à 0', (await page.locator('.tool[data-tool="stone"].empty').count()) === 1);
@@ -398,6 +421,7 @@ await page.waitForTimeout(100);
 check('toucher la jauge hors vague : indication neutre, pas d’erreur rouge', (await page.locator('#toast.bad.show').count()) === 0 && (await page.locator('#toast.show').count()) === 1);
 slots = await slotsOf();
 await page.evaluate((sl) => window.__state.game.placeTower('fire', sl[2][0], sl[2][1]), slots);
+const fireName = await towerName('fire');
 await page.locator('#btn-pause').click();
 await page.waitForTimeout(200);
 const veil = await page.evaluate(() => getComputedStyle(document.getElementById('modal')).backgroundColor);
@@ -406,7 +430,7 @@ check('pause : pas de voile sombre plein écran', /rgba\(0, 0, 0, 0\)|transparen
 check('pause : feuille compacte (< 40 % de l’écran)', card && card.height < 844 * 0.4, JSON.stringify(card));
 p = await at(slots[2][0], slots[2][1]);
 await longPress(p);
-check('en pause : appui long sur une lanterne ouvre sa fiche', /Lanterne du Feu/.test(await page.locator('#info').innerText()));
+check('en pause : appui long sur une lanterne ouvre sa fiche', (await page.locator('#info').innerText()).includes(fireName));
 await page.locator('#info .sheet-close').click();
 await page.waitForTimeout(100);
 check('la feuille de pause revient', await visible('#modal .modal-card'));
@@ -487,6 +511,8 @@ console.log('Gestes au doigt réel (événements tactiles, vague en cours)');
   await tap(await center('#btn-wave'));
   await page.waitForTimeout(1200);
   let sl = await slotsOf();
+  const slW = await slotsOf('water');
+  const slE = await slotsOf('earth');
   const occ = () => game().then((g) => new Set(g.towers.map((t) => `${t.c},${t.r}`)));
   // toucher : pose sur le socle touché
   await tap(await center('.tool[data-tool="fire"]'));
@@ -495,7 +521,7 @@ console.log('Gestes au doigt réel (événements tactiles, vague en cours)');
   check('doigt : un toucher pose sur le socle touché', (await occ()).has(`${a[0]},${a[1]}`));
   // doigt maintenu 60 px sous un socle, puis relâché : pose sous le fantôme
   let o = await occ();
-  const b = sl.find(([c, r]) => r >= 2 && !o.has(`${c},${r}`));
+  const b = slW.find(([c, r]) => r >= 2 && !o.has(`${c},${r}`));
   await tap(await center('.tool[data-tool="water"]'));
   const q = await at(b[0], b[1], LIFT);
   await touch('touchStart', q);
@@ -508,7 +534,7 @@ console.log('Gestes au doigt réel (événements tactiles, vague en cours)');
   check('doigt : fantôme soulevé, pose sous le fantôme au relâchement', pu.press?.lifted && (await occ()).has(`${b[0]},${b[1]}`), JSON.stringify(pu.press && [pu.press.c, pu.press.r]));
   // glisser depuis la palette
   o = await occ();
-  const d = sl.find(([c, r]) => r >= 4 && !o.has(`${c},${r}`));
+  const d = slE.find(([c, r]) => r >= 4 && !o.has(`${c},${r}`));
   const from = await center('.tool[data-tool="earth"]');
   const to = await at(d[0], d[1], LIFT);
   await touch('touchStart', from);
@@ -587,6 +613,961 @@ await page.evaluate(() => window.__hud.banner('Test', 'bannière'));
 await page.waitForTimeout(400);
 const op = await page.evaluate(() => getComputedStyle(document.getElementById('banner')).opacity);
 check('bannière visible avec « réduire les animations »', Number(op) > 0.5, `opacity ${op}`);
+
+// ═════════════ Moteur v3, au doigt (événements tactiles réels) ═════════════
+{
+  const cdp = await ctx.newCDPSession(page);
+  const touch = (type, q) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: type === 'touchEnd' ? [] : [{ x: q.x, y: q.y, id: 1, radiusX: 8, radiusY: 8 }] });
+  const tap = async (q, ms = 60) => {
+    await touch('touchStart', q);
+    await page.waitForTimeout(ms);
+    await touch('touchEnd');
+    await page.waitForTimeout(160);
+  };
+  const hold = async (q, ms = 650) => {
+    await touch('touchStart', q);
+    await page.waitForTimeout(ms);
+    await touch('touchEnd');
+    await page.waitForTimeout(200);
+  };
+  const swipe = async (a, b, steps = 12) => {
+    await touch('touchStart', a);
+    for (let k = 1; k <= steps; k++) {
+      await touch('touchMove', { x: a.x + ((b.x - a.x) * k) / steps, y: a.y + ((b.y - a.y) * k) / steps });
+      await page.waitForTimeout(16);
+    }
+    await page.waitForTimeout(60);
+    await touch('touchEnd');
+    await page.waitForTimeout(200);
+  };
+  const center = async (sel) => {
+    const r = await page.locator(sel).first().boundingBox();
+    return r && { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  };
+  const ev = (fn, arg) => page.evaluate(fn, arg);
+  const rects = (sel) => page.locator(sel).evaluateAll((els) => els.map((e) => e.getBoundingClientRect()).filter((r) => r.width).map((r) => ({ x: r.x, y: r.y, w: r.width, h: r.height, r: r.right })));
+  const minGap = (rs) => {
+    let m = Infinity;
+    for (const a of rs) for (const b of rs) if (a !== b && Math.abs(a.y - b.y) < 4 && b.x > a.x) m = Math.min(m, b.x - a.r);
+    return m;
+  };
+  const toast = () => page.locator('#toast').innerText();
+
+  console.log('1. Palette regroupée par élément (onglets, ≥ 44 pt, sans défilement caché)');
+  await open('2-1');
+  const tabs = await rects('#palette-tabs .ptab');
+  check('quatre onglets d’éléments (forme + kanji + libellé)', tabs.length === 4 && (await page.locator('#palette-tabs .ptab .el-badge svg').count()) === 4 && (await page.locator('#palette-tabs .ptab-label').allInnerTexts()).join() === 'Feu,Eau,Vent,Terre', JSON.stringify(tabs.length));
+  check('onglets ≥ 44 pt, espacés ≥ 8 px', tabs.every((r) => r.h >= 44 && r.w >= 44) && minGap(tabs) >= 7.5, JSON.stringify(tabs));
+  let tools = await rects('#palette .tool');
+  check('seules les lanternes de l’élément choisi sont affichées (3)', tools.length === 3, String(tools.length));
+  check('lanternes ≥ 44 pt, espacées ≥ 8 px', tools.every((r) => r.h >= 44 && r.w >= 44) && minGap(tools) >= 7.5, JSON.stringify(tools));
+  const pal = await ev(() => {
+    const p = document.getElementById('palette');
+    return { sw: p.scrollWidth, cw: p.clientWidth, doc: document.documentElement.scrollWidth, w: innerWidth };
+  });
+  check('aucun défilement horizontal caché', pal.sw <= pal.cw + 1 && pal.doc <= pal.w + 1, JSON.stringify(pal));
+  const texts = await page.locator('#palette .tool:not(.off-tab)').allInnerTexts();
+  check('chaque lanterne : nom court, rôle en un mot, coût', texts.every((t) => t.split('\n').filter(Boolean).length >= 3) && texts.some((t) => /Mortier/.test(t)), JSON.stringify(texts));
+  await tap(await center('.ptab[data-el="water"]'));
+  const shown = await page.locator('#palette .tool:not(.off-tab)').evaluateAll((els) => els.map((e) => e.dataset.tool));
+  check('toucher un onglet affiche ses lanternes', shown.join() === 'water,water_spring,water_torrent' && (await page.locator('.ptab.on').getAttribute('data-el')) === 'water', shown.join());
+  await ev(() => (window.__state.game.gold = 50));
+  await page.waitForTimeout(120);
+  const poor = await page.locator('#palette .tool.poor:not(.off-tab)').evaluateAll((els) => els.map((e) => e.dataset.tool));
+  check('lanternes trop chères grisées', poor.includes('water_torrent') && !poor.includes('water'), poor.join());
+  await ev(() => (window.__state.game.gold = 999));
+  await hold(await center('.ptab[data-el="wind"]'));
+  let sheet = await page.locator('#info').innerText();
+  check('appui long sur un onglet : fiche de l’élément (ses lanternes, socles gravés)', /Vent/.test(sheet) && /Carillon/.test(sheet) && /Socles/.test(sheet), sheet.slice(0, 120));
+  await tap(await center('#info .sheet-close'));
+  await hold(await center('.tool[data-tool="water_torrent"]'));
+  sheet = await page.locator('#info').innerText();
+  check('appui long sur une lanterne : fiche avant achat (gardée)', (await ev(() => window.__sheets.cur?.kind)) === 'type' && sheet.includes(await towerName('water_torrent')) && !(await game()).tool);
+  await tap(await center('#info .sheet-close'));
+  await open('1-1');
+  check('une lanterne par élément : rangée simple, sans onglets', (await page.locator('#palette-tabs.hidden').count()) === 1 && (await rects('#palette .tool')).length === 4);
+
+  console.log('2. Socles gravés (atténués / compatibles, refus « Socle réservé »)');
+  await open('2-1');
+  await ev(() => (window.__state.game.gold = 999));
+  const typed = await ev(() => {
+    const g = window.__state.game.grid;
+    const out = {};
+    for (let i = 0; i < g.size; i++) if (g.slotElement[i] && !out[g.slotElement[i]]) out[g.slotElement[i]] = [g.col(i), g.row(i)];
+    return out;
+  });
+  // pixel au centre d'un socle gravé du Feu, avant / après le choix d'une lanterne d'Eau
+  const px = (c, r) =>
+    ev(([c, r]) => {
+      const rd = window.__renderer;
+      rd.render(0, 0, window.__input.ui);
+      const p = rd.toScreen(c + 0.2, r + 0.75);
+      const d = rd.ctx.getImageData(Math.round(p.x * rd.dpr), Math.round(p.y * rd.dpr), 1, 1).data;
+      return [d[0], d[1], d[2]];
+    }, [c, r]);
+  const before = await px(...typed.fire);
+  await tap(await center('.ptab[data-el="water"]'));
+  await tap(await center('.tool[data-tool="water"]'));
+  const after = await px(...typed.fire);
+  const diff = Math.abs(before[0] - after[0]) + Math.abs(before[1] - after[1]) + Math.abs(before[2] - after[2]);
+  check('lanterne choisie : socle gravé d’un autre élément atténué (voile + forme)', diff > 20, JSON.stringify({ before, after }));
+  let q = await at(typed.fire[0], typed.fire[1], LIFT);
+  await touch('touchStart', q);
+  await page.waitForTimeout(560);
+  await touch('touchMove', { x: q.x + 2, y: q.y + 1 });
+  await page.waitForTimeout(60);
+  const lab = await ev(() => window.__renderer.pressLabel(window.__input.ui.press));
+  const pr = await ui();
+  check('viser un socle du Feu avec l’Eau : « ▲ Socle réservé au Feu »', pr.press?.reason === 'slotElement' && /▲ Socle réservé au Feu/.test(lab?.text || ''), JSON.stringify(lab));
+  await touch('touchEnd');
+  await page.waitForTimeout(200);
+  check('rien n’est posé sur un socle d’un autre élément', !(await game()).towers.some((t) => t.c === typed.fire[0] && t.r === typed.fire[1]));
+  check('la règle est expliquée (toast)', /n’accepte que le Feu/.test(await toast()), await toast());
+  if (!(await game()).tool) await tap(await center('.tool[data-tool="water"]'));
+  q = await at(typed.water[0], typed.water[1]);
+  await tap(q);
+  check('socle gravé de l’Eau : la lanterne d’Eau s’y pose', (await game()).towers.some((t) => t.c === typed.water[0] && t.r === typed.water[1]));
+
+  console.log('3. Murs des Gardiens, fiches v3');
+  await page.waitForTimeout(3200);
+  const occG = new Set((await game()).towers.map((t) => `${t.c},${t.r}`));
+  const gSlot = (await slotsOf('earth_guard')).find(([c, r]) => r >= 3 && !occG.has(`${c},${r}`));
+  const placedGuard = await ev(([c, r]) => !!window.__state.game.placeTower('earth_guard', c, r), gSlot);
+  await page.waitForTimeout(3300);
+  const guard = (await game()).towers.find((t) => t.type === 'earth_guard');
+  check('Gardien posé (mur dressé)', placedGuard && (await ev(() => window.__state.game.barriers.length)) === 1);
+  await tap(await at(guard.c, guard.r));
+  const bar = await page.locator('#tower-bar button').evaluateAll((bs) => bs.map((b) => b.dataset.act));
+  check('barre d’actions du Gardien : « Déplacer le mur » (pas de priorité)', bar.join() === 'rally,info,sell', bar.join());
+  await tap(await center('#tower-bar .tb-rally'));
+  const rallyOn = await ev(() => window.__input.ui.rally);
+  check('mode « Déplacer le mur » : la barre s’efface, les cases s’allument', !!rallyOn && !(await visible('#tower-bar')) && (await ev(() => window.__overlay.rallyCache?.tiles.length)) > 0);
+  const target = await ev(() => {
+    const g = window.__state.game;
+    const b = g.barriers[0];
+    const i = window.__overlay.rallyCache.tiles.find((x) => x !== b.tile);
+    return i == null ? null : { i, c: g.grid.col(i), r: g.grid.row(i), from: b.tile };
+  });
+  if (target) {
+    await tap(await at(target.c, target.r));
+    check('toucher une case allumée y déplace le mur (setRally)', (await ev(() => window.__state.game.barriers[0].tile)) === target.i && !(await ev(() => window.__input.ui.rally)));
+  } else check('une case où déplacer le mur', false, 'aucune case');
+  await tap(await center('#tower-bar .tb-rally'));
+  await tap(await at(0, 0));
+  check('toucher ailleurs annule le mode', !(await ev(() => window.__input.ui.rally)));
+  await ev((id) => window.__sheets.open('tower', id), guard.id);
+  await page.waitForTimeout(150);
+  const hp0 = await page.locator('#info .hpbar.wall span').innerText();
+  await ev(() => (window.__state.game.barriers[0].hp -= 50));
+  await page.waitForTimeout(150);
+  const hp1 = await page.locator('#info .hpbar.wall span').innerText();
+  check('fiche du Gardien : PV du mur en direct', /Mur \d+ \/ \d+ PV/.test(hp0) && hp0 !== hp1, `${hp0} → ${hp1}`);
+  await tap(await center('#info .sheet-close'));
+  for (const [type, want] of [
+    ['kappa', ['Armure', 'Résistances', 'Eau', '−50 %', 'Murs', 'frappe']],
+    ['ushioni', ['Armure', 'fracasse les murs']],
+    ['kasaobake', ['Saute par-dessus les murs']],
+    ['tokihami', ['Hors du temps']],
+    ['yukionna', ['insensible', '+40 %']],
+  ]) {
+    await ev((t) => window.__sheets.open('enemy', { type: t }), type);
+    await page.waitForTimeout(120);
+    const txt = await page.locator('#info').innerText();
+    check(`fiche ${type} : ${want.join(', ')}`, want.every((w) => txt.includes(w)), txt.replace(/\n/g, ' | ').slice(0, 220));
+  }
+  // lanterne accélérée par un Carillon
+  const boosted = await ev(() => {
+    const g = window.__state.game;
+    const gr = g.grid;
+    const free = (t, i) => gr.type(i) === 3 && g.canPlaceTower(t, gr.col(i), gr.row(i)).ok;
+    for (let a = 0; a < gr.size; a++) {
+      if (!free('fire', a)) continue;
+      for (let b = 0; b < gr.size; b++) {
+        if (b === a || !free('wind_chime', b) || Math.hypot(gr.cx(a) - gr.cx(b), gr.cy(a) - gr.cy(b)) > 1.6) continue;
+        const t = g.placeTower('fire', gr.col(a), gr.row(a));
+        g.placeTower('wind_chime', gr.col(b), gr.row(b));
+        return t.id;
+      }
+    }
+    return null;
+  });
+  if (boosted != null) {
+    await ev((id) => window.__sheets.open('tower', id), boosted);
+    await page.waitForTimeout(150);
+    const txt = await page.locator('#info').innerText();
+    check('fiche d’une lanterne : élément, cibles, armure, soutien du Carillon', ['Élément', 'Cibles', 'Armure', 'Carillon : cadence +'].every((w) => txt.includes(w)), txt.replace(/\n/g, ' | ').slice(0, 260));
+    await tap(await center('#info .sheet-close'));
+  } else check('un Carillon à côté d’une lanterne', false);
+  await ev(() => window.__sheets.open('type', 'earth_quake'));
+  await page.waitForTimeout(120);
+  sheet = await page.locator('#info').innerText();
+  check('fiche avant achat : brise-armure et socles gravés expliqués', /Brise l’armure/.test(sheet) && /Un socle gravé n’accepte que son élément/.test(sheet), sheet.slice(0, 160));
+  await tap(await center('#info .sheet-close'));
+
+  console.log('4. Vagues qui se chevauchent : appel anticipé, climax, compte à rebours');
+  await open('1-1');
+  await ev(() => {
+    const g = window.__state.game;
+    g.gold = 999;
+    const gr = g.grid;
+    for (let i = 0, n = 0; i < gr.size && n < 4; i++) if (gr.type(i) === 3 && g.placeTower('fire', gr.col(i), gr.row(i))) n++;
+  });
+  await tap(await center('#btn-wave'));
+  await page.waitForTimeout(1500);
+  const sub1 = await page.locator('#btn-wave-sub').innerText();
+  check('pendant une vague : compte à rebours et « +X or » visibles', (await ev(() => window.__state.game.state)) === 'wave' && /^\d+ s · \+\d+ or/.test(sub1) && (await page.locator('#btn-wave.disabled').count()) === 0, sub1);
+  const pvb = await ev(() => window.__state.game.nextWavePreview());
+  await tap(await center('#btn-wave'));
+  const w2 = await ev(() => window.__state.game.waveIndex);
+  check('appel anticipé pendant une vague (vague suivante lancée)', w2 === 1, String(w2));
+  check('bonus d’appel annoncé', /Appel anticipé \+\d+ or/.test(await toast()) && pvb.bonus > 0, await toast());
+  // pause douce : fiche ouverte quand plus aucun yokai n'est en jeu
+  await ev(() => {
+    const g = window.__state.game;
+    for (const s of g.spawners) s.spawned = s.count;
+    g.enemies = [];
+  });
+  await page.waitForTimeout(200);
+  await ev(() => window.__sheets.open('wave'));
+  const cdA = await ev(() => window.__state.game.nextWaveT);
+  await page.waitForTimeout(700);
+  const cdB = await ev(() => window.__state.game.nextWaveT);
+  check('pause douce : fiche ouverte entre deux vagues, le compte à rebours attend', Math.abs(cdA - cdB) < 0.01, `${cdA} → ${cdB}`);
+  await tap(await center('#info .sheet-close'));
+  await page.waitForTimeout(500);
+  check('fiche fermée : le compte à rebours reprend', (await ev(() => window.__state.game.nextWaveT)) < cdB - 0.2);
+  // climax : aperçu marqué, bannière nommée
+  const cl = await ev(() => {
+    const g = window.__state.game;
+    const idx = g.waves.findIndex((w) => w.climax);
+    window.__debug.jump(g, idx);
+    return { idx, name: g.waves[idx].name };
+  });
+  await page.waitForTimeout(250);
+  check('vague climax marquée dans l’aperçu et sur le bouton', (await page.locator('#wave-preview.climax').count()) === 1 && (await page.locator('#btn-wave.climax').count()) === 1 && /嵐/.test(await page.locator('#btn-wave-kanji').innerText()));
+  await tap(await center('#btn-wave'));
+  await page.waitForTimeout(250);
+  const bn = await page.locator('#banner').innerText();
+  check('bannière nommée du climax', bn.includes(cl.name) && /Climax/.test(bn), bn);
+  check('dernière vague lancée : bouton « Dernière vague »', /Dernière vague/.test(await page.locator('#btn-wave-label').innerText()));
+
+  console.log('5. Jauge de Rembobinage et dernière chance');
+  await open('2-2');
+  await ev(() => (window.__save.data.rewindTutorialSeen = true));
+  let gk = await ev(() => ({ k: getComputedStyle(document.getElementById('rewind')).getPropertyValue('--k'), cls: document.getElementById('rewind').className, ratio: window.__state.game.rewindRatio() }));
+  check('jauge compacte : l’anneau suit la charge', /compact/.test(gk.cls) && Math.abs(Number(gk.k) - gk.ratio) < 0.01, JSON.stringify(gk));
+  await tap(await center('#rewind .rewind-track'));
+  check('toucher la jauge : la charge et comment la remplir', /Jauge \d+ %/.test(await toast()), await toast());
+  await hold(await center('#rewind .rewind-track'));
+  check('appui long sur la jauge : la règle (échos remboursés, hors du temps)', (await ev(() => window.__sheets.cur?.kind)) === 'rewind' && /remboursées à 100 %/.test(await page.locator('#info').innerText()) && /Hors du temps/.test(await page.locator('#info').innerText()));
+  await tap(await center('#info .sheet-close'));
+  await tap(await center('#btn-wave'));
+  await page.waitForTimeout(400);
+  await ev(() => (window.__state.game.rewindCharge += 30));
+  await page.waitForTimeout(700);
+  check('gain de charge visible (« +30 巻 »)', /\+30 巻/.test(await page.locator('#rewind').innerText()), await page.locator('#rewind').innerText());
+  await ev(() => (window.__state.game.rewindCharge = window.__state.game.rules.rewindCost));
+  await page.waitForTimeout(2600);
+  gk = await ev(() => document.getElementById('rewind').className);
+  check('pleine et utilisable : elle s’illumine et s’allonge', /full/.test(gk) && /ready/.test(gk) && !/compact/.test(gk), gk);
+  // dernière chance
+  await ev(() => {
+    const g = window.__state.game;
+    g.lives = 1;
+    g.leak(g.enemies.find((e) => e.alive && !e.flying && !e.timeless) || g.enemies[0]);
+  });
+  await page.waitForTimeout(250);
+  const lc = await ev(() => ({ t: window.__state.game.lastChanceT, ov: !document.getElementById('last-chance').classList.contains('hidden'), cnt: document.getElementById('lc-count').textContent, pe: getComputedStyle(document.querySelector('#palette .tool')).pointerEvents, wave: getComputedStyle(document.getElementById('btn-wave')).pointerEvents }));
+  check('dernière chance : « Rembobinez ! » et compte à rebours au-dessus du plateau', lc.t > 0 && lc.ov && /^[1-4]$/.test(lc.cnt), JSON.stringify(lc));
+  check('dernière chance : le reste de l’interface est inactif', lc.pe === 'none' && lc.wave === 'none', JSON.stringify(lc));
+  const k = await page.locator('#rewind .rewind-knob').boundingBox();
+  const tr = await page.locator('#rewind .rewind-track').boundingBox();
+  await swipe({ x: k.x + k.width / 2, y: k.y + k.height / 2 }, { x: tr.x + 8, y: k.y + k.height / 2 });
+  await page.waitForTimeout(1600);
+  const after2 = await ev(() => ({ used: window.__state.game.rewindsUsed, lives: window.__state.game.lives, state: window.__state.game.state, ov: !document.getElementById('last-chance').classList.contains('hidden') }));
+  check('glisser la jauge sauve le sanctuaire (rembobinage, appel masqué)', after2.used === 1 && after2.lives > 0 && after2.state === 'wave' && !after2.ov, JSON.stringify(after2));
+
+  console.log('6. Carte : leçons, Difficile, défi, sauvegarde');
+  await page.goto(HOME, { waitUntil: 'networkidle' });
+  // ancienne sauvegarde (étoiles seules) et champs abîmés : nettoyées, compatibles
+  await ev(() => localStorage.setItem('jardin-des-esprits:v1', JSON.stringify({ stars: { '1-1': 3, '1-2': '2', bad: 'x' }, hard: { '1-1': 9, z: -1 }, challenge: { '1-2': 'oui' }, muted: 'non' })));
+  await page.reload({ waitUntil: 'networkidle' });
+  const sv = await ev(() => JSON.parse(JSON.stringify(window.__save.data)));
+  check('sauvegarde : compatibilité et nettoyage (stars, hard, challenge)', sv.stars['1-1'] === 3 && sv.stars['1-2'] === 2 && !sv.stars.bad && sv.hard['1-1'] === 3 && !sv.hard.z && !sv.challenge['1-2'] && sv.muted === false, JSON.stringify(sv));
+  await tap(await center('#btn-play'));
+  await page.waitForTimeout(900);
+  const concepts = await page.locator('.map-concept').allInnerTexts();
+  check('carte : la leçon de chaque niveau', concepts.length === 8 && concepts.includes('Poser et lancer'), concepts.join(' | '));
+  check('carte : marque Difficile sur le nœud', (await page.locator('.map-node .node-mark.hard').count()) === 1);
+  await tap(await center('.map-node'));
+  await page.waitForTimeout(400);
+  let card = await page.locator('#modal').innerText();
+  check('fiche de niveau : leçon, option Difficile (3 ★) et défi', /leçon/i.test(card) && /Poser et lancer/.test(card) && /Difficile/.test(card) && /Défi : /.test(card), card.slice(0, 200));
+  const optH = await page.locator('.lv-opt[data-opt="hard"]').boundingBox();
+  check('options ≥ 44 pt', optH && optH.height >= 44);
+  await tap(await center('.lv-opt[data-opt="hard"]'));
+  await tap(await center('.lv-opt[data-opt="challenge"]'));
+  check('options activées (interrupteurs)', (await page.locator('.lv-opt[aria-pressed="true"]').count()) === 2);
+  await tap(await center('#modal .btn.primary'));
+  await page.waitForTimeout(800);
+  const mode = await ev(() => ({ hard: window.__state.game.hard, ch: window.__state.game.challenge, lives: window.__state.game.lives, max: window.__state.game.maxLives }));
+  check('partie lancée en Difficile avec le défi', mode.hard === true && mode.ch === true, JSON.stringify(mode));
+  await ev(() => {
+    const g = window.__state.game;
+    g.waveIndex = g.waves.length - 1;
+    g.state = 'wave';
+    g.spawners = [];
+    g.enemies = [];
+  });
+  await page.waitForTimeout(3300);
+  card = await page.locator('#modal').innerText();
+  const sv2 = await ev(() => JSON.parse(JSON.stringify(window.__save.data)));
+  check('victoire : sceaux Difficile et défi, record enregistré', /Victoire en Difficile/.test(card) && /Défi réussi/.test(card) && sv2.hard['1-1'] >= 1 && sv2.challenge['1-1'] === true, JSON.stringify(sv2));
+  await tap(await center('#modal .btn.dark'));
+  await page.waitForTimeout(700);
+  check('carte : sceau du défi réussi', (await page.locator('.map-node .node-mark.ch').count()) === 1);
+  await tap(await center('.map-node:nth-of-type(2)'));
+  await page.waitForTimeout(400);
+  card = await page.locator('#modal').innerText();
+  check('Difficile verrouillé avant 3 ★', /S’ouvre après 3 ★/.test(card) || !/Difficile/.test(card), card.slice(0, 200));
+  await tap(await center('#modal .btn:not(.primary)'));
+
+  console.log('7. Tutoriel : appel anticipé, Gardien, priorité, jauge');
+  await ev(() => localStorage.removeItem('jardin-des-esprits:v1'));
+  await open('1-1');
+  await ev(() => {
+    const g = window.__state.game;
+    g.gold = 999;
+    const gr = g.grid;
+    for (let i = 0, n = 0; i < gr.size && n < 3; i++) if (gr.type(i) === 3 && g.placeTower('fire', gr.col(i), gr.row(i))) n++;
+    g.startNextWave();
+    for (const s of g.spawners) s.spawned = s.count;
+    g.enemies = [];
+  });
+  await page.waitForTimeout(3600);
+  let hint = await page.locator('#hint .bubble').innerText().catch(() => '');
+  check('« early » : appeler la vague suivante en avance (+or)', /en avance : \+\d+ or/.test(hint), hint);
+  await tap(await center('#btn-wave'));
+  await page.waitForTimeout(300);
+  check('« early » validé par l’appel', (await ev(() => window.__tutorial.done.has('early'))) === true);
+  await open('2-1');
+  await ev(() => {
+    const g = window.__state.game;
+    const gr = g.grid;
+    for (let i = 0; i < gr.size; i++) if (gr.type(i) === 3 && !gr.slotElement[i] && g.placeTower('fire', gr.col(i), gr.row(i))) break;
+  });
+  await page.waitForTimeout(3400);
+  hint = await page.locator('#hint .bubble').innerText().catch(() => '');
+  check('« priority » : toucher une lanterne', /régler sa cible/.test(hint), hint);
+  const ft = (await game()).towers[0];
+  await tap(await at(ft.c, ft.r));
+  await page.waitForTimeout(250);
+  hint = await page.locator('#hint .bubble').innerText().catch(() => '');
+  check('« priority » : puis le bouton de priorité', /Plus fort/.test(hint), hint);
+  await tap(await center('#tower-bar .tb-prio'));
+  check('« priority » validé', (await ev(() => window.__tutorial.done.has('priority'))) === true);
+  await open('1-4');
+  await ev(() => {
+    const g = window.__state.game;
+    g.gold = 999;
+    const gr = g.grid;
+    for (let i = 0; i < gr.size; i++) if (gr.type(i) === 3 && !gr.slotElement[i] && g.placeTower('fire', gr.col(i), gr.row(i))) break;
+    window.__tutorial.done.add('stone');
+  });
+  await page.waitForTimeout(3400);
+  hint = await page.locator('#hint .bubble').innerText().catch(() => '');
+  check('« barrier » : trouver le Gardien (onglet Terre, puis la lanterne)', /Terre|Gardien/.test(hint), hint);
+  await tap(await center('.ptab[data-el="earth"]'));
+  await tap(await center('.tool[data-tool="earth_guard"]'));
+  await page.waitForTimeout(200);
+  hint = await page.locator('#hint .bubble').innerText().catch(() => '');
+  const gs = await ev(() => {
+    const t = window.__tutorial;
+    const g = window.__state.game;
+    return t.bestSlot(g, g.defs.towers.earth_guard.levels[0].range, 'earth');
+  });
+  check('« barrier » : poser le Gardien près du chemin', /Posez-le/.test(hint) && !!gs, hint);
+  await tap(await at(gs.c, gs.r));
+  await page.waitForTimeout(3400);
+  await tap(await at(gs.c, gs.r));
+  await page.waitForTimeout(250);
+  hint = await page.locator('#hint .bubble').innerText().catch(() => '');
+  check('« barrier » : « Déplacez son mur »', /Déplacez son mur/.test(hint), hint);
+  await tap(await center('#tower-bar .tb-rally'));
+  await page.waitForTimeout(250);
+  hint = await page.locator('#hint .bubble').innerText().catch(() => '');
+  const tileT = await ev(() => {
+    const g = window.__state.game;
+    const b = g.barriers[0];
+    const i = window.__overlay.rallyCache.tiles.find((x) => x !== b.tile);
+    return { c: g.grid.col(i), r: g.grid.row(i) };
+  });
+  check('« barrier » : « Touchez une case allumée »', /case allumée/.test(hint), hint);
+  await tap(await at(tileT.c, tileT.r));
+  check('« barrier » validé par le déplacement du mur', (await ev(() => window.__tutorial.done.has('barrier'))) === true);
+  await open('1-3');
+  await ev(() => window.__state.game.startNextWave());
+  await page.waitForTimeout(3300);
+  const rw = await page.locator('#modal').innerText();
+  check('« rewind » : la jauge, les échos remboursés, les yokai hors du temps', /jauge/.test(rw) && /remboursées à 100 %/.test(rw) && /hors du temps/i.test(rw), rw.slice(0, 160));
+  await tap(await center('#modal .btn.primary'));
+
+  console.log('8. Panneau de débogage caché');
+  await page.goto(HOME, { waitUntil: 'networkidle' });
+  await page.waitForTimeout(300);
+  check('invisible par défaut', !(await visible('.debug-card')));
+  const tw = await center('#screen-title .title-wrap');
+  for (let k = 0; k < 4; k++) await tap(tw, 30);
+  check('quatre touchers ne suffisent pas', !(await visible('.debug-card')));
+  await tap(tw, 30);
+  check('cinq touchers rapides sur le titre : panneau ouvert', await visible('.debug-card'));
+  const dbtn = await rects('.debug-card button');
+  check('boutons du panneau ≥ 44 pt', dbtn.every((r) => r.h >= 43.5 && r.w >= 43.5), JSON.stringify(dbtn));
+  await tap(await center('[data-dbg="unlock"]'));
+  await tap(await center('[data-dbg="gold"]'));
+  await tap(await center('[data-dbg="fast"]'));
+  await tap(await center('[data-dbg="close"]'));
+  await tap(await center('#btn-play'));
+  await page.waitForTimeout(800);
+  check('déverrouiller tous les niveaux', (await page.locator('.map-node.locked').count()) === 0);
+  await tap(await center('.map-node:nth-of-type(6)'));
+  await page.waitForTimeout(400);
+  await tap(await center('#modal .btn.primary'));
+  await page.waitForTimeout(900);
+  const dg = await ev(() => ({ gold: window.__state.game.gold, speed: window.__state.speed }));
+  check('or infini et vitesse ×4', dg.gold >= 99999 && dg.speed === 4, JSON.stringify(dg));
+  await tap(await center('#btn-pause'));
+  await tap(await center('#modal .btn:has-text("Débogage")'));
+  for (let k = 0; k < 4; k++) await tap(await center('[data-dbg="plus"]'));
+  await tap(await center('[data-dbg="charge"]'));
+  const ch = await ev(() => window.__state.game.rewindRatio());
+  await tap(await center('[data-dbg="go"]'));
+  await page.waitForTimeout(300);
+  const wv = await ev(() => ({ w: window.__state.game.waveIndex, paused: window.__state.paused }));
+  check('remplir la jauge', ch === 1, String(ch));
+  check('aller à la vague 5 (enchaîne les appels)', wv.w === 4 && !wv.paused, JSON.stringify(wv));
+  await ev(() => {
+    window.__debug.infiniteGold = false;
+    window.__debug.fast = false;
+    window.__save.set('unlockAll', false);
+  });
+  await cdp.detach();
+}
+
+console.log('9. Recette solo au doigt (défauts corrigés)');
+{
+  // Doigt simulé dans un contexte donné (taille d'écran), erreurs console comprises.
+  const finger = async (c) => {
+    const pg = await c.newPage();
+    pg.on('pageerror', (e) => errors.push(e.message));
+    pg.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
+    const cd = await c.newCDPSession(pg);
+    const touch = (type, q) => cd.send('Input.dispatchTouchEvent', { type, touchPoints: type === 'touchEnd' ? [] : [{ x: q.x, y: q.y, id: 1, radiusX: 8, radiusY: 8 }] });
+    const f = {
+      pg,
+      touch,
+      ev: (fn, arg) => pg.evaluate(fn, arg),
+      wait: (ms) => pg.waitForTimeout(ms),
+      tap: async (q, ms = 60) => {
+        await touch('touchStart', q);
+        await pg.waitForTimeout(ms);
+        await touch('touchEnd');
+        await pg.waitForTimeout(150);
+      },
+      // glisser au doigt de a vers b
+      slide: async (a, b, n = 14) => {
+        await touch('touchStart', a);
+        await pg.waitForTimeout(40);
+        for (let k = 1; k <= n; k++) {
+          await touch('touchMove', { x: a.x + ((b.x - a.x) * k) / n, y: a.y + ((b.y - a.y) * k) / n });
+          await pg.waitForTimeout(16);
+        }
+        await pg.waitForTimeout(100);
+      },
+      center: async (sel) => {
+        const r = await pg.locator(sel).first().boundingBox();
+        return r && { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+      },
+      open: async (q) => {
+        await pg.goto(`http://localhost:8080/?${q}`, { waitUntil: 'networkidle' });
+        await pg.waitForTimeout(500);
+        f.box = await pg.locator('#board').boundingBox();
+      },
+      at: (c2, r2, dy = 0) => pg.evaluate(([c2, r2]) => window.__renderer.toScreen(c2 + 0.5, r2 + 0.5), [c2, r2]).then((q) => ({ x: f.box.x + q.x, y: f.box.y + q.y + dy })),
+      // libellé visible de la jauge : la variante affichée tient-elle dans la piste ?
+      gaugeLabel: () =>
+        pg.evaluate(() => {
+          const l = document.querySelector('#rewind .rewind-label');
+          const vis = [...l.children].find((x) => getComputedStyle(x).display !== 'none');
+          return { text: vis ? vis.textContent : l.textContent, need: vis ? vis.getBoundingClientRect().width : l.scrollWidth, room: l.clientWidth };
+        }),
+      // charge la jauge pendant une vague (au moins 2 s de passé)
+      readyGauge: async () => {
+        await f.tap(await f.center('#btn-wave'));
+        await pg.waitForTimeout(3300);
+        await pg.evaluate(() => {
+          const g = window.__state.game;
+          g.rewindCharge = g.rules.rewindCost;
+        });
+        await pg.waitForTimeout(250);
+      },
+    };
+    return f;
+  };
+  const sizes = [
+    [375, 667],
+    [390, 844],
+    [430, 932],
+  ];
+  for (const [w, h] of sizes) {
+    const c = await browser.newContext({ viewport: { width: w, height: h }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+    const f = await finger(c);
+    await f.open('level=1-3');
+    await f.ev(() => window.__save.set('rewindTutorialSeen', true));
+    await f.ev(() => (window.__tutorial.rewindPhase = 0));
+    await f.readyGauge();
+    const lab = await f.gaugeLabel();
+    check(`${w} px : jauge prête, libellé entier (« ${lab.text} »)`, lab.need <= lab.room + 0.5 && /◀◀/.test(lab.text), JSON.stringify(lab));
+    if (w === 390) {
+      // simple toucher sur la jauge prête : le geste est rappelé
+      await f.tap(await f.center('#rewind .rewind-track'));
+      const t = await f.ev(() => ({ toast: document.querySelector('#toast.show')?.textContent || '', anim: !!window.__state.game.rewindAnim }));
+      check('jauge prête : un toucher rappelle le geste (glisser vers la gauche)', !t.anim && /Glissez la poignée/.test(t.toast), JSON.stringify(t));
+      // une lanterne posée juste avant : elle deviendra un écho
+      const slot = await f.ev(() => {
+        const game = window.__state.game;
+        const g = game.grid;
+        for (let i = 0; i < g.size; i++) if (g.type(i) === 3 && !g.slotElement[i] && !game.towerAt(g.col(i), g.row(i))) return [g.col(i), g.row(i)];
+        return null;
+      });
+      await f.ev(([c2, r2]) => window.__state.game.placeTower('fire', c2, r2), slot);
+      const kn = await f.ev(() => document.querySelector('#rewind .rewind-knob').getBoundingClientRect().toJSON());
+      const a = { x: kn.x + kn.width / 2, y: kn.y + kn.height / 2 };
+      await f.slide(a, { x: a.x - 200, y: a.y });
+      const mid = await f.gaugeLabel();
+      await f.touch('touchEnd');
+      await f.wait(250);
+      const anim = await f.gaugeLabel();
+      check(`pendant le rembobinage, libellé entier (« ${anim.text} »)`, anim.need <= anim.room + 0.5, JSON.stringify({ mid, anim }));
+      // toucher la jauge pendant l'animation : pas de « Jauge 0 % » trompeur
+      await f.ev(() => document.querySelector('#toast').classList.remove('show'));
+      await f.tap(await f.center('#rewind .rewind-track'));
+      const during = await f.ev(() => ({ anim: !!window.__state.game.rewindAnim, toast: document.querySelector('#toast.show')?.textContent || '' }));
+      check('toucher la jauge pendant le rembobinage : pas d’indication « Jauge 0 % »', during.anim && !/Jauge/.test(during.toast), JSON.stringify(during));
+      await f.wait(1100);
+      const echo = await f.ev(() => window.__state.game.echoes.length);
+      check('glisser la poignée au doigt : écho de la lanterne récente', echo >= 1, String(echo));
+      await f.tap(await f.at(slot[0], slot[1], -8));
+      const et = await f.ev(() => document.querySelector('#toast.show')?.textContent || '');
+      check('toucher un écho : il se présente (lanterne, puissance, durée)', /Écho/.test(et) && /%/.test(et), et);
+    }
+    await c.close();
+  }
+
+  // Défi « sans Rembobinage » (1-3) : pas de leçon sur une jauge cachée
+  {
+    const c = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+    const f = await finger(c);
+    await f.open('level=1-1');
+    await f.ev(() => {
+      window.__save.set('rewindTutorialSeen', false);
+      window.__startLevel('1-3', { challenge: true });
+    });
+    await f.wait(1200);
+    await f.tap(await f.center('#btn-wave'));
+    await f.wait(3800);
+    const m = await f.ev(() => ({ modal: document.querySelector('#modal:not(.hidden) h2')?.textContent || null, paused: window.__state.paused, seen: window.__save.data.rewindTutorialSeen }));
+    check('défi sans Rembobinage : aucune leçon sur la jauge cachée', !m.modal && !m.paused && !m.seen, JSON.stringify(m));
+    await c.close();
+  }
+
+  // Tutoriel 1-2 suivi au doigt : combo (palette puis socle compatible), fusion
+  {
+    const c = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+    const f = await finger(c);
+    await f.open('level=1-2');
+    const hint = () =>
+      f.ev(() => {
+        const h = document.querySelector('#hint:not(.hidden)');
+        const fi = h?.querySelector('.finger');
+        if (!fi) return null;
+        const cs = getComputedStyle(fi);
+        return { key: window.__tutorial.current?.split('|')[0], text: h.querySelector('.bubble').textContent, x: parseFloat(fi.style.left), y: parseFloat(fi.style.top), dx: parseFloat(cs.getPropertyValue('--dx')) || 0, dy: parseFloat(cs.getPropertyValue('--dy')) || 0 };
+      });
+    // une lanterne de Feu posée (le combo se fait à côté)
+    await f.tap(await f.center('.tool[data-tool="fire"]'));
+    const fs = await f.ev(() => {
+      const game = window.__state.game;
+      const g = game.grid;
+      for (let i = 0; i < g.size; i++) {
+        if (g.type(i) !== 3 || (g.slotElement[i] && g.slotElement[i] !== 'fire')) continue;
+        const c2 = g.col(i);
+        const r2 = g.row(i);
+        // un voisin gravé d'un AUTRE élément : le piège de l'ancienne indication
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) if ((dx || dy) && g.inBounds(c2 + dx, r2 + dy) && g.type(g.idx(c2 + dx, r2 + dy)) === 3) return [c2, r2];
+      }
+      return null;
+    });
+    await f.tap(await f.at(fs[0], fs[1]));
+    await f.wait(900);
+    let hi = await hint();
+    check('combo, sans lanterne choisie : le doigt montre d’abord la palette', hi && (hi.key === 'combo-tool' || hi.key === 'combo-tab') && /prenez/.test(hi.text), JSON.stringify(hi));
+    await f.tap({ x: hi.x, y: hi.y });
+    await f.wait(500);
+    hi = await hint();
+    const tool = await f.ev(() => window.__input.ui.tool);
+    const tile = hi && (await f.ev(([x, y]) => window.__renderer.toTile(x - document.querySelector('#board').getBoundingClientRect().left, y - document.querySelector('#board').getBoundingClientRect().top), [hi.x, hi.y]));
+    const ok = tile && (await f.ev(([t, c2, r2]) => window.__state.game.canPlaceTower(t, c2, r2).ok && window.__state.game.previewCombos(t, c2, r2).length > 0, [tool, tile.c, tile.r]));
+    check('combo : puis un socle compatible où le combo naît', hi?.key === 'combo' && ok, JSON.stringify({ hi, tool, tile }));
+    await f.tap({ x: hi.x, y: hi.y });
+    await f.wait(500);
+    check('combo validé au doigt', await f.ev(() => window.__tutorial.done.has('combo') && window.__state.game.zones.length > 0));
+    // fusion : deux Braseros jumeaux, le doigt glisse d'une lanterne SUR l'autre
+    await f.ev(() => (window.__state.game.gold = 999));
+    const fs2 = await f.ev(([c0, r0]) => {
+      const game = window.__state.game;
+      const g = game.grid;
+      for (let i = 0; i < g.size; i++) {
+        if (g.type(i) !== 3 || (g.slotElement[i] && g.slotElement[i] !== 'fire') || game.towerAt(g.col(i), g.row(i))) continue;
+        if (Math.abs(g.col(i) - c0) + Math.abs(g.row(i) - r0) >= 2) return [g.col(i), g.row(i)];
+      }
+      return null;
+    }, fs);
+    await f.tap(await f.center('.tool[data-tool="fire"]'));
+    await f.tap(await f.at(fs2[0], fs2[1]));
+    await f.wait(700);
+    hi = await hint();
+    check('fusion : le doigt glisse d’une lanterne vers sa jumelle', hi?.key === 'fuse' && (hi.dx || hi.dy), JSON.stringify(hi));
+    await f.slide({ x: hi.x, y: hi.y }, { x: hi.x + hi.dx, y: hi.y + hi.dy });
+    await f.touch('touchEnd');
+    await f.wait(300);
+    const fu = await f.ev(() => ({ done: window.__tutorial.done.has('fuse'), lv: window.__state.game.towers.map((t) => t.level) }));
+    check('fusion : le geste montré (doigt posé sur la jumelle) fusionne', fu.done && fu.lv.includes(2), JSON.stringify(fu));
+    await c.close();
+  }
+
+  // 375 px : la bulle du tutoriel reste dans l'écran une fois la police chargée
+  {
+    const c = await browser.newContext({ viewport: { width: 375, height: 667 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+    const f = await finger(c);
+    await f.open('level=1-1');
+    await f.wait(1500);
+    const b = await f.ev(() => document.querySelector('#hint:not(.hidden) .bubble')?.getBoundingClientRect().toJSON());
+    check('375 px : bulle « Choisissez une lanterne » entière à l’écran', b && b.left >= 0 && b.right <= 375, JSON.stringify(b));
+    await c.close();
+  }
+
+  // Glisser refusé depuis la palette, puis toucher aussitôt un autre onglet
+  {
+    const c = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+    const f = await finger(c);
+    await f.open('level=2-2');
+    await f.wait(2200);
+    const ws = await f.ev(() => {
+      const g = window.__state.game.grid;
+      for (let i = 0; i < g.size; i++) if (g.type(i) === 3 && g.slotElement[i] === 'water') return [g.col(i), g.row(i)];
+      return null;
+    });
+    await f.slide(await f.center('.tool[data-tool="fire"]'), await f.at(ws[0], ws[1], 60));
+    await f.touch('touchEnd');
+    await f.wait(120);
+    const refused = await f.ev(([c2, r2]) => !window.__state.game.towerAt(c2, r2) && /Socle réservé/.test(window.__input.ui.flash?.text || ''), ws);
+    await f.tap(await f.center('.ptab[data-el="water"]'));
+    const tab = await f.ev(() => window.__hud.tab);
+    check('Feu glissé sur un socle d’Eau : refusé, puis l’onglet Eau répond aussitôt', refused && tab === 'water', JSON.stringify({ refused, tab }));
+    await c.close();
+  }
+
+  // Double toucher accidentel sur le bouton de vague : une seule vague appelée
+  {
+    const c = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+    const f = await finger(c);
+    await f.open('level=1-1');
+    await f.wait(2200);
+    const wb = await f.center('#btn-wave');
+    await f.tap(wb);
+    await f.wait(800);
+    await f.ev(() => document.querySelector('#btn-wave').addEventListener('click', () => window.__waveClicks.push(performance.now()), true));
+    // Deux touchers à ~150 ms d'écart (machine chargée : on recommence si les clics
+    // arrivent trop espacés pour être un double toucher).
+    let res = null;
+    for (let k = 0; k < 3 && !res; k++) {
+      // la vague suivante ne doit pas partir seule pendant le test (compte à rebours)
+      const w0 = await f.ev(() => {
+        const g = window.__state.game;
+        g.nextWaveT = 60;
+        window.__waveClicks = [];
+        return g.waveIndex;
+      });
+      await f.wait(400);
+      await f.touch('touchStart', wb);
+      await f.wait(50);
+      await f.touch('touchEnd');
+      await f.wait(90);
+      await f.touch('touchStart', wb);
+      await f.wait(50);
+      await f.touch('touchEnd');
+      await f.wait(300);
+      const r = await f.ev(() => ({ w: window.__state.game.waveIndex, gap: window.__waveClicks[1] - window.__waveClicks[0] }));
+      if (r.gap < 340) res = { w0, w1: r.w, gap: Math.round(r.gap) };
+    }
+    await f.wait(500);
+    await f.ev(() => (window.__state.game.nextWaveT = 60));
+    const wa = await f.ev(() => window.__state.game.waveIndex);
+    await f.tap(wb);
+    const w2 = await f.ev(() => window.__state.game.waveIndex);
+    check('double toucher sur le bouton de vague : une seule vague appelée', res && res.w1 === res.w0 + 1 && w2 === wa + 1, JSON.stringify({ res, wa, w2 }));
+    await c.close();
+  }
+
+  // Jauge pleine : l'appel anticipé ne promet ni n'annonce de charge qu'il ne donnera pas
+  {
+    const c = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+    const f = await finger(c);
+    await f.open('level=2-4');
+    await f.ev(() => {
+      window.__save.set('rewindTutorialSeen', true);
+      window.__tutorial.rewindPhase = 0;
+    });
+    await f.tap(await f.center('#btn-wave'));
+    await f.wait(1200);
+    await f.ev(() => {
+      const g = window.__state.game;
+      g.rewindCharge = g.rules.rewindCost - 10;
+    });
+    await f.wait(200);
+    const room = await f.ev(() => document.querySelector('#btn-wave-sub').textContent);
+    await f.ev(() => {
+      const g = window.__state.game;
+      g.rewindCharge = g.rules.rewindCost;
+    });
+    await f.wait(200);
+    const full = await f.ev(() => document.querySelector('#btn-wave-sub').textContent);
+    await f.tap(await f.center('#btn-wave'));
+    const toastFull = await f.ev(() => document.querySelector('#toast').textContent);
+    check('appel anticipé : « +N 巻 » borné à la place libre (10 → +10 巻)', /\+10 巻/.test(room), room);
+    check('jauge pleine : ni le bouton ni l’annonce ne promettent de charge', !/巻/.test(full) && /Appel anticipé/.test(toastFull) && !/巻/.test(toastFull), `${full} / ${toastFull}`);
+    await c.close();
+  }
+
+  // Carte « Nouveau yokai » posée sur des socles : choisir une lanterne l'efface
+  // (un toucher pour poser ouvrait la fiche du yokai)
+  {
+    const c = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+    const f = await finger(c);
+    await f.open('level=2-1');
+    await f.wait(2300);
+    const slot = await f.ev(() => {
+      const g = window.__state.game;
+      const type = g.level.introduce[0];
+      g.events.push({ type: 'spawn', enemy: { type } });
+      const gr = g.grid;
+      for (let i = 0; i < gr.size; i++) if (gr.type(i) === 3 && !gr.slotElement[i]) return [gr.col(i), gr.row(i)];
+      return null;
+    });
+    await f.wait(300);
+    // la carte recouvre ce socle
+    const q = await f.at(slot[0], slot[1]);
+    await f.ev(([x, y]) => {
+      const el = document.getElementById('intro');
+      const st = document.getElementById('stage').getBoundingClientRect();
+      el.style.left = `${Math.max(4, x - st.left - 40)}px`;
+      el.style.top = `${y - st.top - 20}px`;
+    }, [q.x, q.y]);
+    const shown = await f.ev(() => !document.getElementById('intro').classList.contains('hidden'));
+    await f.tap(await f.center('.tool[data-tool="fire"]'));
+    await f.tap(q);
+    const r = await f.ev(([c2, r2]) => ({ intro: !document.getElementById('intro').classList.contains('hidden'), placed: !!window.__state.game.towerAt(c2, r2), sheet: window.__sheets.isOpen }), slot);
+    check('carte « Nouveau yokai » sur un socle : choisir une lanterne l’efface, la pose réussit', shown && !r.intro && r.placed && !r.sheet, JSON.stringify({ shown, ...r }));
+    await c.close();
+  }
+
+  // En pause, « Déplacer le mur » agit (les cases s'allumaient mais le toucher ne faisait rien)
+  {
+    const c = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+    const f = await finger(c);
+    await f.open('level=2-1');
+    await f.wait(2300);
+    const t = await f.ev(() => {
+      const g = window.__state.game;
+      g.gold = 999;
+      const gr = g.grid;
+      for (let i = 0; i < gr.size; i++) {
+        if (gr.type(i) !== 3 || gr.row(i) < 4) continue;
+        const tw = g.placeTower('earth_guard', gr.col(i), gr.row(i));
+        if (tw && g.barriers.length) return { id: tw.id, c: tw.c, r: tw.r };
+      }
+      return null;
+    });
+    await f.tap(await f.center('#btn-pause'));
+    await f.tap(await f.at(t.c, t.r, -8));
+    await f.tap(await f.center('#tower-bar [data-act="rally"]'));
+    const dest = await f.ev((id) => {
+      const g = window.__state.game;
+      const b = g.barriers.find((x) => x.towerId === id);
+      const i = (window.__overlay.rallyOf(g, window.__input.ui)?.tiles || []).find((x) => x !== b.tile);
+      return i == null ? null : [g.grid.col(i), g.grid.row(i), i];
+    }, t.id);
+    await f.tap(await f.at(dest[0], dest[1]));
+    const tile = await f.ev((id) => window.__state.game.barriers.find((x) => x.towerId === id).tile, t.id);
+    check('en pause : « Déplacer le mur » puis une case allumée déplace le mur', tile === dest[2] && (await f.ev(() => window.__state.paused)), JSON.stringify({ tile, dest }));
+    await c.close();
+  }
+
+  // Tutoriel des pierres (1-4) : si aucune pierre seule n'allonge le chemin, la bulle
+  // ne promet pas un détour (elle disait « Glissez-la sur le gravier » → « Sans effet »)
+  {
+    const c = await browser.newContext({ viewport: { width: 375, height: 667 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+    const f = await finger(c);
+    await f.open('level=1-4');
+    await f.wait(2300);
+    await f.ev(() => {
+      const g = window.__state.game;
+      const gr = g.grid;
+      for (let i = 0; i < gr.size; i++) if (gr.type(i) === 3 && !gr.slotElement[i] && g.placeTower('fire', gr.col(i), gr.row(i))) break;
+    });
+    await f.tap(await f.center('.tool[data-tool="stone"]'));
+    await f.wait(500);
+    const st = await f.ev(() => {
+      const g = window.__state.game;
+      const gr = g.grid;
+      let best = -1;
+      for (let i = 0; i < gr.size; i++) if (gr.type(i) === 2) {
+        const pv = g.previewStone(gr.col(i), gr.row(i));
+        if (pv.ok) best = Math.max(best, pv.delta);
+      }
+      return { best, key: window.__tutorial.current?.split('|')[0], text: document.querySelector('#hint:not(.hidden) .bubble')?.textContent || '' };
+    });
+    check('tutoriel des pierres : la bulle dit vrai sur le gain (gain max ' + st.best + ')', st.key === 'stone-spot' && (st.best > 0 ? /gravier/.test(st.text) : /alignez/.test(st.text)), JSON.stringify(st));
+    await c.close();
+  }
+
+  // Défi « Dix lanternes » : le compte des poses est visible, la palette se grise au bout
+  {
+    const c = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+    const f = await finger(c);
+    await f.open('level=1-1');
+    await f.ev(() => window.__startLevel('1-1', { challenge: true }));
+    await f.wait(1200);
+    const max = await f.ev(() => {
+      const g = window.__state.game;
+      g.gold = 9999;
+      return g.challengeRule.maxTowers;
+    });
+    const sl = await f.ev(() => {
+      const g = window.__state.game.grid;
+      const o = [];
+      for (let i = 0; i < g.size; i++) if (g.type(i) === 3 && (!g.slotElement[i] || g.slotElement[i] === 'fire')) o.push([g.col(i), g.row(i)]);
+      return o;
+    });
+    for (let k = 0; k < max - 1; k++) await f.ev(([c2, r2]) => window.__state.game.placeTower('fire', c2, r2), sl[k]);
+    await f.tap(await f.center('.tool[data-tool="fire"]'));
+    await f.tap(await f.at(sl[max - 1][0], sl[max - 1][1]));
+    const fl = await f.ev(() => window.__input.ui.flash?.text || '');
+    check(`défi « ${max} lanternes » : le compte des poses s’affiche à la pose`, fl.includes(`${max}/${max}`), fl);
+    const sp = await f.ev(() => [...document.querySelectorAll('.tool')].every((b) => b.classList.contains('spent') && /défi/.test(b.getAttribute('aria-label'))));
+    check('défi épuisé : lanternes grisées (sans le rouge du manque d’or), libellé du défi', sp);
+    await f.tap(await f.center('#btn-undo'));
+    check('annuler la dernière pose : les lanternes redeviennent disponibles', await f.ev(() => !document.querySelector('.tool.spent')));
+    await c.close();
+  }
+
+  // Toutes les fiches (yokai, types, lanternes N1→N3, éléments, vague, Rembobinage) :
+  // textes ≥ 12 px, ni « undefined » ni « NaN »
+  {
+    const c = await browser.newContext({ viewport: { width: 375, height: 667 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+    const f = await finger(c);
+    await f.open('level=2-4');
+    const bad = await f.ev(async () => {
+      const out = [];
+      const g = window.__state.game;
+      const S = window.__sheets;
+      const look = async (label) => {
+        await new Promise((r) => setTimeout(r, 20));
+        const el = document.querySelector('#info');
+        if (/undefined|NaN|\[object/.test(el.innerText)) out.push(`${label} : texte invalide`);
+        for (const x of el.querySelectorAll('*')) {
+          const own = [...x.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim());
+          if (own && parseFloat(getComputedStyle(x).fontSize) < 12) {
+            out.push(`${label} : « ${x.textContent.trim().slice(0, 20)} » ${getComputedStyle(x).fontSize}`);
+            break;
+          }
+        }
+      };
+      for (const type of Object.keys(g.defs.enemies)) {
+        S.open('enemy', { type });
+        await look(`yokai ${type}`);
+      }
+      g.gold = 99999;
+      const gr = g.grid;
+      for (const type of g.availableTowers) {
+        S.open('type', type);
+        await look(`type ${type}`);
+        let t = null;
+        for (let i = 0; i < gr.size && !t; i++) if (gr.type(i) === 3 && g.canPlaceTower(type, gr.col(i), gr.row(i)).ok) t = g.placeTower(type, gr.col(i), gr.row(i));
+        for (let lv = 1; t && lv <= 3; lv++) {
+          t.level = lv;
+          g.onTowersChanged();
+          S.open('tower', t.id);
+          await look(`${type} N${lv}`);
+        }
+      }
+      for (const el of Object.keys(g.defs.elements)) {
+        S.open('element', el);
+        await look(`élément ${el}`);
+      }
+      S.open('wave');
+      await look('vague');
+      S.open('rewind');
+      await look('Rembobinage');
+      S.close();
+      return out;
+    });
+    check('375 px : toutes les fiches lisibles (≥ 12 px, sans valeur manquante)', bad.length === 0, bad.join(' | '));
+    await c.close();
+  }
+
+  // Plusieurs combos nés d'un coup (375 px, case de 34 px) : leurs noms flottants ne
+  // se chevauchent pas et font au moins 12 px
+  {
+    const c = await browser.newContext({ viewport: { width: 375, height: 667 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+    const f = await finger(c);
+    await f.open('level=2-1');
+    const r = await f.ev(() => {
+      const g = window.__state.game;
+      const R = window.__renderer;
+      g.gold = 99999;
+      const gr = g.grid;
+      const types = g.availableTowers;
+      let k = 0;
+      for (let i = 0; i < gr.size; i++) {
+        if (gr.type(i) !== 3) continue;
+        const se = gr.slotElement[i];
+        const ok = types.filter((t) => !se || g.defs.towers[t].element === se);
+        g.placeTower(ok[k++ % ok.length], gr.col(i), gr.row(i));
+      }
+      R.onEvents(g.events);
+      g.events.length = 0;
+      const ts = R.ts;
+      const m = document.createElement('canvas').getContext('2d');
+      const boxes = R.fx.texts.map((t) => {
+        const px = Math.max(12, Math.round(t.size * ts));
+        m.font = `800 ${px}px "Shippori Mincho", serif`;
+        const w = m.measureText(t.str).width;
+        return { s: t.str, px, l: t.x * ts - w / 2, r: t.x * ts + w / 2, t: t.y * ts - px * 0.5, b: t.y * ts + px * 0.5 };
+      });
+      const over = [];
+      for (let i = 0; i < boxes.length; i++) for (let j = i + 1; j < boxes.length; j++) {
+        const a = boxes[i];
+        const b = boxes[j];
+        if (a.l < b.r - 2 && b.l < a.r - 2 && a.t < b.b - 1 && b.t < a.b - 1) over.push(`${a.s} / ${b.s}`);
+      }
+      return { n: boxes.length, ts, small: boxes.filter((b) => b.px < 12).length, over };
+    });
+    check(`${r.n} noms de combo nés ensemble : aucun chevauchement, ≥ 12 px (case ${r.ts} px)`, r.n >= 3 && !r.over.length && !r.small, JSON.stringify(r));
+    await c.close();
+  }
+}
 
 check('aucune erreur console', errors.length === 0, errors.join(' | '));
 await browser.close();

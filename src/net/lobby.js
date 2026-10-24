@@ -12,7 +12,7 @@ import { BROKERS, connectAny } from './mqtt.js';
 export const MAX_PLAYERS = 4;
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ'; // sans I ni O : pas de confusion avec 1 et 0
 const NS = 'jde/v1';
-const PROTOCOL = 3;
+const PROTOCOL = 4; // 4 : états avec heure d’envoi (tampon de lecture), événements compacts
 const ELEMENTS = ['fire', 'water', 'wind', 'earth'];
 
 export function randomCode(rand = Math.random) {
@@ -39,7 +39,8 @@ export function normalizeCode(text) {
  *   command { pid, op, args } (hôte)
  *   paused  { on } (invités)
  *   end     retour au salon
- *   closed  { reason } salon fermé (hôte parti, salon plein…)
+ *   closed  { reason } salon fermé : 'hostGone' (l'hôte est parti), 'hostLost' (connexion
+ *           de l'hôte coupée sans au revoir : il peut revenir), 'lost' (notre connexion)
  */
 export class NetSession {
   constructor({ id, name, brokers = BROKERS, connect = connectAny } = {}) {
@@ -143,6 +144,47 @@ export class NetSession {
     this.emit('lobby', this.lobby);
   }
 
+  // Reconnexion après une coupure du relais, sans perdre le salon (hôte : mêmes
+  // code et joueurs ; les invités, toujours abonnés, retrouvent les états) ni sa
+  // place (invité : l'hôte le reconnaît à son id et lui renvoie le départ).
+  async reconnect() {
+    if (this.role === 'guest' && this.code) {
+      try {
+        return await this.join(this.code);
+      } catch {
+        return false;
+      }
+    }
+    if (this.role !== 'host' || !this.code || this.client) return this.online;
+    const code = this.code;
+    this.setState('connecting');
+    try {
+      const client = await this.connectFn(this.brokers, {
+        will: { topic: this.topic('h', code), payload: JSON.stringify({ type: 'hostGone', code }) },
+      });
+      if (this.code !== code || this.role !== 'host' || this.client) {
+        client.close();
+        return this.online;
+      }
+      this.attach(client);
+      await client.subscribe(this.topic('c', code));
+      this.setState('online');
+      this.broadcastLobby();
+      return true;
+    } catch (e) {
+      if (this.code === code && this.role === 'host' && !this.client) this.setState('offline', e.message);
+      return false;
+    }
+  }
+
+  // Hors partie : retire les joueurs partis pendant la partie (restés « absents »).
+  prune() {
+    if (!this.isHost || this.inGame || !this.lobby) return;
+    const before = this.lobby.players.length;
+    this.lobby.players = this.lobby.players.filter((p, i) => i === 0 || p.online !== false);
+    if (this.lobby.players.length !== before) this.broadcastLobby();
+  }
+
   // Choix d'élément : un élément par joueur au plus (null = aucun choix).
   pickElement(element) {
     if (this.isHost) this.assignElement(this.id, element);
@@ -181,6 +223,7 @@ export class NetSession {
     this.lobby.level = level;
     const msg = { type: 'start', level, seed, players, ids: this.lobby.players.map((p) => p.id), hard, challenge };
     this.lastStart = msg;
+    this.lobby.solo = null;
     this.broadcastLobby();
     this.send('h', msg);
     return msg;
@@ -339,7 +382,8 @@ export class NetSession {
       this.inGame = false;
       this.emit('end', msg);
     } else if (msg.type === 'hostGone') {
-      this.emit('closed', { reason: 'hostGone' });
+      // message de départ (will) : connexion coupée, l'hôte reviendra peut-être
+      this.emit('closed', { reason: msg.final ? 'hostGone' : 'hostLost' });
     }
   }
 
@@ -376,11 +420,16 @@ export class NetSession {
     }
   }
 
+  // L'onglet se ferme : l'hôte prévient ses invités que c'est définitif.
+  farewell() {
+    if (this.role === 'host' && this.client?.connected) this.send('h', { type: 'hostGone', code: this.code, final: true });
+  }
+
   // Quitte le salon courant (un invité prévient l'hôte ; un hôte prévient ses invités).
   async leave(silent = false) {
     if (this.client?.connected) {
       if (this.role === 'guest') this.send('c', { type: 'bye', id: this.id });
-      if (this.role === 'host') this.send('h', { type: 'hostGone', code: this.code });
+      if (this.role === 'host') this.send('h', { type: 'hostGone', code: this.code, final: true });
     }
     this.detach();
     this.role = null;

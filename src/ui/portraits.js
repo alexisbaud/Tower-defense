@@ -21,6 +21,11 @@ function fakeEnemy(type, def, absorb) {
     stunT: 0,
     blindT: 0,
     shredT: 0,
+    breakT: 0,
+    hopT: 0,
+    blocked: null,
+    armor: def.armor ?? 0,
+    timeless: !!def.abilities?.timeless,
     flying: !!def.abilities?.flying,
     absorb: absorb ?? def.abilities?.absorb ?? def.abilities?.cycleAbsorb?.elements?.[0] ?? null,
   };

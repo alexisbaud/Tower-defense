@@ -530,6 +530,7 @@ export class Fx {
     this.marks = [];
     this.ground = [];
     this.ghosts = [];
+    this.arcs = []; // traînées d'arc (bonds par-dessus les barrières)
     this.trails = new WeakMap();
     this.shake = 0;
     this.flash = 0;
@@ -549,6 +550,7 @@ export class Fx {
     this.marks.length = 0;
     this.ground.length = 0;
     this.ghosts.length = 0;
+    this.arcs.length = 0;
     this.trails = new WeakMap();
     this.shake = 0;
     this.flash = 0;
@@ -627,7 +629,28 @@ export class Fx {
 
   text(x, y, str, color = PALETTE.gold, size = 0.34) {
     if (this.texts.length >= MAX_TEXTS) this.texts.shift();
-    const t = { x, y, str, color, size, life: 1.1, max: 1.1 };
+    // Textes nés ensemble (plusieurs combos d'un coup : fusion, rembobinage, poses
+    // rapprochées) : ils s'empilent au lieu de se chevaucher (« MagmMagmMagma »).
+    // Taille réelle en cases (plancher de 12 px au dessin, voir drawParts ; la case
+    // est donnée par le rendu : fx.textTs) et largeur mesurée dans la police du texte.
+    const ts = this.textTs || 43;
+    const eff = (o) => Math.max(o.size, 12 / ts);
+    const half = (o) => {
+      if (o.half == null) {
+        const px = Math.max(12, Math.round(o.size * ts));
+        if (!measure) measure = makeCanvas(4, 4).getContext('2d');
+        measure.font = `800 ${px}px "Shippori Mincho", "Hiragino Mincho ProN", serif`;
+        o.half = (measure.measureText(String(o.str)).width + px * 0.4) / 2 / ts;
+      }
+      return o.half;
+    };
+    const me = { str, size };
+    for (let guard = 0; guard < 8; guard++) {
+      const hit = this.texts.find((o) => o.max - o.life < 0.6 && Math.abs(o.y - y) < (eff(o) + eff(me)) * 0.6 && Math.abs(o.x - x) < half(o) + half(me));
+      if (!hit) break;
+      y = hit.y - (eff(hit) + eff(me)) * 0.62;
+    }
+    const t = { x, y, str, color, size, life: 1.1, max: 1.1, half: me.half };
     this.texts.push(t);
     return t;
   }
@@ -639,6 +662,7 @@ export class Fx {
       if (Math.abs(t.x - x) > 0.9 || Math.abs(t.y - y) > 0.9) continue;
       t.val += n;
       t.str = `+${t.val}`;
+      t.half = null; // largeur à remesurer (empilement des textes)
       t.life = t.max;
       return;
     }
@@ -963,6 +987,66 @@ export class Fx {
         }
         break;
       }
+      case 'aura':
+        this.auraFx(ev);
+        break;
+      case 'quake':
+        this.quakeFx(ev);
+        break;
+      case 'beam':
+        this.beamFx(ev);
+        break;
+      case 'barrierUp': {
+        // les pierres jaillissent du sol
+        const p = this.tileXY(ev.barrier.tile);
+        if (!p) break;
+        this.fountain(p.x, p.y + 0.25, 7, 'pebble', '#8f8a7c', 2.2, 0.5, 0.05, { g: 7, vr: 8 });
+        this.burst(p.x, p.y + 0.25, 6, 'dust', DUST, 1, 0.6, 0.12, { drag: 0.9 });
+        this.ring(p.x, p.y + 0.28, 0.1, 0.6, ELEMENT_COLORS.earth.dark, 0.45, 0.06, 0.45);
+        break;
+      }
+      case 'barrierBreak': {
+        // éboulement : pierres qui roulent, nuage de poussière, fissure au sol
+        const p = this.tileXY(ev.barrier.tile);
+        if (!p) break;
+        this.fountain(p.x, p.y, 10, 'pebble', '#9a968a', 2.6, 0.6, 0.06, { g: 8, vr: 10, prio: true });
+        this.burst(p.x, p.y + 0.15, 10, 'dust', DUST, 1.6, 0.8, 0.16, { drag: 0.9 });
+        this.decal('crack', p.x, p.y + 0.22, 0.4, INK, 1.6);
+        this.ring(p.x, p.y + 0.25, 0.15, 0.8, INK, 0.5, 0.08, 0.5);
+        this.addShake(0.12);
+        break;
+      }
+      case 'barrierHeal':
+        this.healFx(ev);
+        break;
+      case 'rally': {
+        const p = this.tileXY(ev.tile);
+        if (!p) break;
+        this.ring(p.x, p.y + 0.2, 0.7, 0.15, PALETTE.gold, 0.6, 0.07, 0.5);
+        this.ring(p.x, p.y + 0.2, 0.1, 0.55, INK, 0.45, 0.04, 0.5);
+        break;
+      }
+      case 'hop': {
+        // bond par-dessus la barrière : arc d'encre qui se trace puis s'efface
+        const e = ev.enemy;
+        const p = this.tileXY(ev.barrier?.tile);
+        if (!e || !p) break;
+        const dx = p.x - e.x;
+        const dy = p.y - e.y;
+        const d = Math.hypot(dx, dy) || 1;
+        this.arcs.push({ x0: e.x, y0: e.y, x1: p.x + (dx / d) * 0.7, y1: p.y + (dy / d) * 0.7, h: 0.75, life: 0.7, max: 0.7 });
+        if (this.arcs.length > 12) this.arcs.shift();
+        this.burst(e.x, e.y + 0.1, 4, 'dust', DUST, 0.8, 0.4, 0.09, { drag: 0.9 });
+        break;
+      }
+      case 'lastChance': {
+        // le monde se fige : éclair vermillon, onde qui se resserre sur le sanctuaire
+        this.flash = 0.45;
+        this.flashColor = PALETTE.vermillion;
+        const g = this.game?.grid;
+        if (g) for (const gi of g.goals) this.ring(g.cx(gi), g.cy(gi), 2.2, 0.2, PALETTE.vermillion, 0.9, 0.12, 0.7);
+        break;
+      }
       case 'win':
       case 'lose': {
         // victoire : gerbe dorée sur le sanctuaire ; défaite : l'encre l'engloutit
@@ -984,6 +1068,107 @@ export class Fx {
     }
   }
 
+  tileXY(tile) {
+    const g = this.game?.grid;
+    if (!g || tile == null || tile < 0) return null;
+    return { x: g.cx(tile), y: g.cy(tile) };
+  }
+
+  // Aura des Feux follets : braises qui sautent sur les yokai brûlés.
+  auraFx(ev) {
+    const t = ev.tower;
+    const game = this.game;
+    if (!t || !game || this.density < 0.55) return;
+    let range = 1.4;
+    try {
+      range = game.towerStats(t).range;
+    } catch {
+      /* lanterne inconnue : portée par défaut */
+    }
+    const a = ev.echo ? 0.5 : 1;
+    let n = 0;
+    for (const e of game.enemies) {
+      if (!e.alive || Math.hypot(e.x - t.x, e.y - t.y) > range + 0.2) continue;
+      this.burst(e.x, e.y - 0.15, 2, 'ember', '#ffb35c', 1.1, 0.4, 0.04, { g: -1.4, drag: 0.93, alpha: a });
+      if (++n >= 4) break;
+    }
+    if (n) this.add({ x: t.x, y: t.y - 0.4, vx: 0, vy: 0, kind: 'flare', color: '#ffc06a', life: 0.2, size: 0.22, alpha: 0.6 * a });
+  }
+
+  // Impulsion du Séisme : onde de choc au sol, fissures, poussière.
+  quakeFx(ev) {
+    const t = ev.tower;
+    if (!t) return;
+    const R = ev.radius || 2;
+    const c = ELEMENT_COLORS.earth;
+    const a = ev.echo ? 0.5 : 1;
+    this.ring(t.x, t.y + 0.3, 0.2, R, c.dark, 0.6 * (ev.echo ? 0.7 : 1), 0.14, 0.5);
+    this.ring(t.x, t.y + 0.3, 0.1, R * 0.7, DUST, 0.75, 0.2, 0.5);
+    this.ring(t.x, t.y + 0.3, 0.1, R * 0.4, c.light, 0.5, 0.08, 0.5);
+    for (let i = 0; i < 12; i++) {
+      const ang = (i / 12) * TAU;
+      this.add({ x: t.x + Math.cos(ang) * 0.3, y: t.y + 0.3 + Math.sin(ang) * 0.15, vx: Math.cos(ang) * 2.4, vy: Math.sin(ang) * 1.2, kind: 'dust', color: DUST, life: 0.6, size: 0.14, drag: 0.9, alpha: a });
+    }
+    this.decal('crack', t.x, t.y + 0.32, 0.55, INK, 1.4);
+    const g = this.game?.grid;
+    if (g) {
+      // fissures qui courent sur le chemin, dans la portée
+      for (let k = 0; k < 3; k++) {
+        const ang = Math.random() * TAU;
+        const d = 0.6 + Math.random() * (R - 0.6);
+        const x = t.x + Math.cos(ang) * d;
+        const y = t.y + Math.sin(ang) * d;
+        const i = g.tileAt(x, y);
+        if (i >= 0 && g.isWalkableType(i)) this.decal('crack', x, y, 0.3, INK, 1);
+      }
+    }
+    if (!ev.echo) this.addShake(0.12);
+  }
+
+  // Jet du Torrent : embruns le long du jet, gerbe au bout.
+  beamFx(ev) {
+    const b = ev.beam;
+    if (!b) return;
+    const c = ELEMENT_COLORS.water;
+    const a = ev.echo ? 0.5 : 1;
+    for (let k = 0; k < 4; k++) {
+      const q = 0.25 + Math.random() * 0.75;
+      this.fountain(b.x0 + (b.x1 - b.x0) * q, b.y0 + (b.y1 - b.y0) * q, 1, 'drop', c.light, 1.6, 0.4, 0.045, { g: 6, alpha: a });
+    }
+    this.add({ x: b.x1, y: b.y1, vx: 0, vy: 0, kind: 'splash', color: c.light, life: 0.25, size: 0.2, v: (Math.random() * 3) | 0, alpha: a });
+    this.ring(b.x1, b.y1 + 0.08, 0.05, 0.4, c.main, 0.4, 0.04, 0.55);
+  }
+
+  // Source sacrée : gouttes en cloche de la source vers chaque barrière soignée.
+  healFx(ev) {
+    const t = ev.tower;
+    const game = this.game;
+    if (!t || !game || !game.barriers?.length) return;
+    let range = 2.5;
+    try {
+      range = game.towerStats(t).range;
+    } catch {
+      /* portée par défaut */
+    }
+    const g = game.grid;
+    const c = ELEMENT_COLORS.water;
+    const T = 0.55;
+    const grav = 7;
+    for (const b of game.barriers) {
+      if (!b.alive) continue;
+      const bx = g.cx(b.tile);
+      const by = g.cy(b.tile) - 0.1;
+      if (Math.hypot(bx - t.x, by - t.y) > range + 0.2) continue;
+      for (let k = 0; k < 3; k++) {
+        const sx = t.x + (Math.random() - 0.5) * 0.15;
+        const sy = t.y - 0.25;
+        const tt = T * (0.85 + k * 0.12);
+        this.add({ x: sx, y: sy, vx: (bx - sx) / tt, vy: (by - sy) / tt - 0.5 * grav * tt, g: grav, drag: 1, kind: 'drop', color: c.light, life: tt, size: 0.05 });
+      }
+      this.add({ x: bx, y: by, vx: 0, vy: -0.3, kind: 'plus', color: '#a8d8ff', life: 0.7, size: 0.08, g: -0.4, rot: 0, drag: 0.95 });
+    }
+  }
+
   // Apparition : anneau d'encre qui se resserre et deux gouttes projetées. La
   // naissance elle-même (tache qui s'étale, volutes, silhouette qui se dresse)
   // est dessinée par enemies.js : on ne double pas ses volutes.
@@ -1001,6 +1186,19 @@ export class Fx {
     const y = p ? p.sy : t.y - 0.3;
     const c = this.colOf(ev.element);
     const a = ev.echo ? 0.5 : 1;
+    if (p?.kind === 'boulder' && this.styleOf(ev.element) !== 'boulder') {
+      // mortier : éclair de bouche et bouffée de fumée grise
+      this.add({ x, y, vx: 0, vy: 0, kind: 'flare', color: c.light, life: 0.22, size: 0.3, alpha: a });
+      this.burst(x, y, 4, 'smoke', '#8f897c', 0.7, 0.9, 0.13, { g: -0.6, drag: 0.94, alpha: a });
+      this.burst(x, y, 4, 'spark', '#ffc65a', 2.4, 0.2, 0.08, { drag: 0.86, alpha: a });
+      return;
+    }
+    if (p?.kind === 'arrow') {
+      // corde qui claque : petit croissant de vent
+      const ang = Math.atan2(p.ty - p.sy, p.tx - p.sx);
+      this.add({ x, y, vx: 0, vy: 0, kind: 'slash', color: c.dark, life: 0.18, size: 0.1, rot: ang + Math.PI, alpha: 0.55 * a });
+      return;
+    }
     switch (this.styleOf(ev.element)) {
       case 'ember':
         this.add({ x, y, vx: 0, vy: 0, kind: 'flare', color: c.light, life: 0.14, size: 0.16, alpha: a });
@@ -1029,6 +1227,14 @@ export class Fx {
     const lv = ev.level || 1;
     const sp = ev.splash || 0;
     const { x, y } = ev;
+    if (ev.kind === 'boulder' && this.styleOf(ev.element) === 'ember') return this.hanabi(ev, c, a, lv, sp);
+    if (ev.kind === 'arrow') {
+      // flèche de vent : éclat bref, plumes et feuilles
+      this.burst(x, y, 3, 'spark', c.light, 2.6, 0.2, 0.08, { drag: 0.86, alpha: a });
+      this.add({ x, y, vx: 0, vy: 0, kind: 'slash', color: c.dark, life: 0.24, size: 0.2, rot: Math.random() * TAU, vr: 6, alpha: 0.85 * a });
+      this.burst(x, y, 1 + lv, 'leaf', c.main, 1.8, 0.55, 0.06, { vr: 9, drag: 0.9, alpha: a });
+      return;
+    }
     switch (this.styleOf(ev.element)) {
       case 'ember':
         this.add({ x, y, vx: 0, vy: 0, kind: 'flare', color: c.light, life: 0.2, size: 0.26 + lv * 0.05, alpha: a });
@@ -1067,6 +1273,25 @@ export class Fx {
         this.add({ x, y, vx: 0, vy: 0, kind: 'burst', color: c.light, life: 0.16, size: 0.16 + lv * 0.03, alpha: a });
         this.burst(x, y, 6, 'ember', c.light, 1.8, 0.45, 0.05, { alpha: a });
     }
+  }
+
+  // Obus du mortier hanabi : explosion de feu en gerbe de feu d'artifice.
+  hanabi(ev, c, a, lv, sp) {
+    const { x, y } = ev;
+    const R = sp || 1;
+    this.add({ x, y, vx: 0, vy: 0, kind: 'flare', color: c.light, life: 0.3, size: 0.4 + lv * 0.08, alpha: a });
+    this.add({ x, y, vx: 0, vy: 0, kind: 'burst', color: '#ffb35c', life: 0.2, size: 0.24 + lv * 0.05, v: (Math.random() * 3) | 0, alpha: a });
+    const n = Math.round((10 + lv * 3) * Math.max(0.5, this.density));
+    for (let i = 0; i < n; i++) {
+      const ang = (i / n) * TAU + Math.random() * 0.2;
+      const v = (2.2 + Math.random() * 0.8) * (0.6 + R * 0.4);
+      this.add({ x, y: y - 0.1, vx: Math.cos(ang) * v, vy: Math.sin(ang) * v * 0.75, kind: 'spark', color: i % 3 ? '#ffc65a' : PALETTE.vermillion, life: 0.4, size: 0.1, drag: 0.88, g: 1.5, alpha: a });
+    }
+    this.burst(x, y - 0.1, 4 + lv, 'ember', c.light, 1.4, 0.8, 0.05, { g: 1.2, drag: 0.95, alpha: a });
+    this.burst(x, y, 3, 'smoke', '#5d4a40', 0.5, 1, 0.16, { g: -0.4, alpha: 0.8 * a });
+    this.ring(x, y + 0.1, 0.1, R, c.main, 0.45, 0.08, 0.6);
+    this.decal('scorch', x, y + 0.1, R * 0.8, c.dark, 1.4);
+    if (!ev.echo) this.addShake(0.03 + lv * 0.015);
   }
 
   // Mort d'un yokai : éclaboussure d'encre, âme qui s'élève, or gagné.
@@ -1211,6 +1436,7 @@ export class Fx {
     this.marks = keepAlive(this.marks, dt);
     this.ground = keepAlive(this.ground, dt);
     this.ghosts = keepAlive(this.ghosts, dt);
+    this.arcs = keepAlive(this.arcs, dt);
     this.shake = Math.max(0, this.shake - dt * 2.5);
     this.flash = Math.max(0, this.flash - dt * 1.5);
   }
@@ -1402,6 +1628,24 @@ export class Fx {
       ctx.ellipse(r.x * ts, r.y * ts, rad, rad * r.squash, 0, r.a0 + 3.85, r.a0 + 6.05);
       ctx.stroke();
     }
+    // bonds : arc d'encre pointillé qui se trace en suivant le saut, puis s'efface
+    if (this.arcs.length) {
+      ctx.setTransform(m);
+      for (const r of this.arcs) {
+        const k = 1 - r.life / r.max;
+        const grow = Math.min(1, k / 0.55);
+        const n = Math.max(2, Math.round(10 * grow));
+        const pts = [];
+        for (let i = 0; i <= n; i++) {
+          const u = (i / n) * grow;
+          pts.push([(r.x0 + (r.x1 - r.x0) * u) * ts, (r.y0 + (r.y1 - r.y0) * u - Math.sin(u * Math.PI) * r.h) * ts]);
+        }
+        ctx.globalAlpha = a0 * Math.min(1, (1 - k) * 2.5) * 0.8;
+        brushStroke(ctx, pts, ts * 0.07, withAlpha(INK, 0.7), { taperIn: 0.6, taperOut: 0.1 });
+        brushStroke(ctx, pts, ts * 0.03, PALETTE.cream, { taperIn: 0.6, taperOut: 0.1 });
+      }
+      ctx.globalAlpha = a0;
+    }
     // échos : la lanterne se dédouble puis se rassemble en fantôme
     for (const g of this.ghosts) {
       const k = 1 - g.life / g.max;
@@ -1431,7 +1675,8 @@ export class Fx {
       const k = t.life / t.max;
       const age = t.max - t.life;
       const pop = age < 0.12 ? 0.55 + (age / 0.12) * 0.6 : age < 0.24 ? 1.15 - ((age - 0.12) / 0.12) * 0.15 : 1;
-      const spr = textSprite(t.str, t.color, Math.round(t.size * ts), sc);
+      // au moins 12 px (petits écrans : case de 34 px, les noms de combo tombaient à 10 px)
+      const spr = textSprite(t.str, t.color, Math.max(12, Math.round(t.size * ts)), sc);
       ctx.globalAlpha = a0 * Math.min(1, k * 2.8);
       put(ctx, spr.c, t.x * ts, t.y * ts, spr.w * pop, spr.h * pop);
     }

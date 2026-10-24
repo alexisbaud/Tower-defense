@@ -1,10 +1,84 @@
-/* Salon multijoueur de l'écran d'accueil (src/ui/lobby.js). */
+/* Salon multijoueur de l'écran d'accueil (src/ui/lobby.js), et éléments de la
+   partie coopérative (coéquipiers, attente de l'hôte, lanternes des autres). */
+
+/* ───────────── Accueil = salon : le titre se resserre ───────────── */
+
+/* le salon (racine .lobby) se pose au-dessus de « Jouer » ; la scène peinte se cale au-dessus de lui */
+#title-lobby {
+  position: relative;
+  margin-top: auto;
+  flex: none;
+}
+#screen-title .title-actions {
+  margin-top: 10px;
+  margin-bottom: 8px;
+}
+#screen-title h1 {
+  font-size: clamp(36px, 11vw, 52px);
+}
+.title-wait {
+  flex: 1 1 auto;
+  min-height: 58px;
+  max-width: 260px;
+  margin: 0;
+  display: grid;
+  place-items: center;
+  padding: 8px 16px;
+  border-radius: 29px;
+  background-color: var(--indigo);
+  background-image: var(--washi);
+  background-size: var(--washi-size);
+  color: var(--cream);
+  border: 2px solid var(--ink);
+  box-shadow: 0 3px 0 var(--ink);
+  font-family: var(--font-title);
+  font-size: 16px;
+  font-weight: 800;
+  line-height: 1.25;
+  text-align: center;
+}
+.title-actions .hidden,
+.title-wait.hidden {
+  display: none !important;
+}
+@media (max-height: 760px) {
+  #screen-title .tagline {
+    display: none;
+  }
+  #screen-title h1 {
+    font-size: clamp(34px, 10.2vw, 46px);
+  }
+  #screen-title h1::after {
+    margin-top: 6px;
+    height: 9px;
+  }
+  .title-kanji {
+    font-size: 17px;
+  }
+}
+@media (max-height: 700px) {
+  #screen-title .title-foot {
+    display: none;
+  }
+  #screen-title {
+    padding-top: calc(var(--sat) + 14px);
+  }
+}
+
+/* message bref hors partie (accueil, carte) */
+.app-toast {
+  bottom: calc(var(--sab) + 96px);
+  z-index: 60;
+}
+
+/* ───────────── Salon ───────────── */
+
 .lobby {
   width: min(100%, 380px);
   margin: 0 auto;
-  padding: 12px 14px 10px;
+  padding: 10px 12px 10px;
   border-radius: 14px;
-  background: rgba(22, 34, 58, 0.86);
+  background-color: rgba(22, 34, 58, 0.97);
   background-image: var(--washi);
   background-size: var(--washi-size);
   background-blend-mode: soft-light;
@@ -18,21 +92,23 @@
   display: grid;
   grid-template-columns: auto 1fr auto;
   align-items: center;
-  gap: 10px;
+  gap: 6px;
 }
 .lobby-title {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  min-width: 0;
 }
 .lobby-label {
   font-family: var(--font-title);
   font-size: 15px;
+  font-weight: 800;
   letter-spacing: 0.08em;
 }
 .lobby-status {
   font-size: 12px;
-  opacity: 0.85;
+  opacity: 0.9;
   white-space: nowrap;
 }
 .lobby-status::before {
@@ -62,31 +138,38 @@
 .lobby-code {
   display: flex;
   justify-content: center;
-  gap: 5px;
+  gap: 4px;
 }
 .lobby-code-ch {
   display: grid;
   place-items: center;
-  width: 34px;
+  width: 30px;
   height: 40px;
   border-radius: 6px;
   background: var(--cream);
   color: var(--vermillion-dark);
   font-family: var(--font-title);
-  font-weight: 700;
+  font-weight: 800;
   font-size: 24px;
   box-shadow: inset 0 0 0 2px var(--vermillion), 0 2px 0 rgba(0, 0, 0, 0.3);
   -webkit-user-select: text;
   user-select: text;
 }
 .lobby-code.dim .lobby-code-ch {
-  opacity: 0.45;
+  opacity: 0.5;
 }
 .lobby-share {
   display: flex;
   gap: 8px;
 }
 
+.lobby .btn {
+  color: var(--ink);
+}
+.lobby .btn.primary,
+.lobby .btn.dark {
+  color: var(--cream);
+}
 .lobby .btn.small {
   min-height: 44px;
   min-width: 44px;
@@ -97,41 +180,50 @@
   display: none !important;
 }
 
+/* quatre places côte à côte : sceau d'élément, nom, marques */
 .lobby-players {
   list-style: none;
-  margin: 12px 0 0;
+  margin: 10px 0 0;
   padding: 0;
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
 }
 .lobby-player {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 8px;
-  min-height: 44px;
-  padding: 4px 8px;
+  justify-content: center;
+  gap: 2px;
+  min-height: 66px;
+  min-width: 0;
+  padding: 5px 3px;
   border-radius: 10px;
   background: rgba(242, 232, 208, 0.1);
+  text-align: center;
   overflow: hidden;
 }
 .lobby-player.me {
   background: rgba(242, 232, 208, 0.2);
-  box-shadow: inset 0 0 0 1px rgba(240, 207, 106, 0.6);
+  box-shadow: inset 0 0 0 1.5px rgba(240, 207, 106, 0.75);
+  cursor: pointer;
 }
 .lobby-player.empty {
-  opacity: 0.55;
+  opacity: 0.6;
+}
+.lobby-player.off {
+  opacity: 0.6;
 }
 .lobby-seal {
   flex: none;
   display: grid;
   place-items: center;
-  width: 30px;
-  height: 30px;
+  width: 28px;
+  height: 28px;
   border-radius: 7px;
   background: var(--el, #6d6a78);
   color: var(--cream);
-  font-size: 15px;
+  font-size: 14px;
   box-shadow: inset 0 0 0 2px rgba(242, 232, 208, 0.6);
 }
 .lobby-seal.empty {
@@ -140,33 +232,41 @@
   font-family: var(--font-title);
 }
 .lobby-pname {
-  flex: 1;
-  min-width: 0;
-  font-size: 14px;
+  max-width: 100%;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.2;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.lobby-player.empty .lobby-pname {
+  font-size: 12px;
+  font-weight: 500;
+}
 .lobby-player.me .lobby-pname {
-  text-decoration: underline dotted rgba(242, 232, 208, 0.6);
+  text-decoration: underline dotted rgba(242, 232, 208, 0.7);
   text-underline-offset: 3px;
-  cursor: pointer;
 }
 .lobby-tags {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 2px 3px;
+}
+.lobby-tags:empty {
+  display: none;
 }
 .lobby-tag {
   font-style: normal;
   font-size: 12px;
-  padding: 0 5px;
+  padding: 0 4px;
   border-radius: 4px;
   background: rgba(242, 232, 208, 0.16);
-  line-height: 16px;
+  line-height: 15px;
 }
 .lobby-tag.host {
-  background: var(--gold-dark);
+  background: #6e500f; /* or sombre : texte crème lisible (AA) */
 }
 .lobby-tag.you {
   background: var(--vermillion-ui);
@@ -175,14 +275,65 @@
   background: #55505f;
 }
 
-.lobby-sub {
-  margin: 12px 0 6px;
+/* « Votre élément » : titre de section, et bouton qui replie le choix */
+.lobby-fold {
+  width: 100%;
+  min-height: 44px;
+  margin: 8px 0 6px;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 10px;
+  background: rgba(242, 232, 208, 0.07);
+  color: var(--cream);
   font-family: var(--font-title);
+  font-size: 15px;
+  font-weight: 800;
+  text-align: left;
+}
+.lobby-fold:active {
+  background: rgba(242, 232, 208, 0.16);
+}
+.lobby-fold-el {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-ui);
   font-size: 14px;
 }
+.lobby-fold-el i {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  background: var(--el);
+  font-style: normal;
+  font-size: 12px;
+  box-shadow: inset 0 0 0 1.5px rgba(242, 232, 208, 0.6);
+}
+.lobby-fold-el.none {
+  opacity: 0.85;
+  font-weight: 500;
+}
+.lobby-chev {
+  margin-left: auto;
+  font-size: 14px;
+  opacity: 0.85;
+}
+.lobby.folded .lobby-fold {
+  margin-bottom: 0;
+}
+.lobby.folded .lobby-elements,
+.lobby.folded .lobby-note {
+  display: none;
+}
+
 .lobby-elements {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
 }
 .lobby-el {
@@ -191,7 +342,8 @@
   flex-direction: column;
   align-items: center;
   gap: 1px;
-  min-height: 70px;
+  min-height: 68px;
+  min-width: 0;
   padding: 6px 2px 5px;
   border: 0;
   border-radius: 10px;
@@ -209,7 +361,7 @@
   box-shadow: inset 0 0 0 2px var(--gold-2), 0 0 12px rgba(240, 207, 106, 0.45);
 }
 .lobby-el:disabled {
-  opacity: 0.45;
+  opacity: 0.5;
 }
 .lobby-el-glyph {
   position: absolute;
@@ -217,9 +369,12 @@
   right: 6px;
   font-size: 12px;
   color: var(--el);
+  /* forme lisible sur l'indigo (Eau, Terre sombres) */
+  text-shadow: 0 0 2px rgba(242, 232, 208, 0.9);
 }
 .lobby-el.selected .lobby-el-glyph {
   color: var(--cream);
+  text-shadow: none;
 }
 .lobby-el-kanji {
   font-family: var(--font-title);
@@ -232,7 +387,7 @@
 }
 .lobby-el-style {
   font-size: 12px;
-  opacity: 0.85;
+  opacity: 0.9;
   max-width: 100%;
   overflow: hidden;
   white-space: nowrap;
@@ -243,7 +398,7 @@
   margin: 8px 0 0;
   font-size: 12px;
   line-height: 1.4;
-  opacity: 0.88;
+  opacity: 0.92;
 }
 .lobby-join {
   display: flex;
@@ -286,54 +441,267 @@
 .lobby-error.busy {
   color: var(--gold-2);
 }
+.lobby-error.info {
+  color: var(--cream);
+  opacity: 0.85;
+  font-size: 12px;
+}
 
 /* Petits écrans : salon plus compact */
-@media (max-height: 740px) {
+@media (max-height: 760px) {
   .lobby {
-    padding: 10px 12px 8px;
+    padding: 8px 10px 8px;
+  }
+  .lobby-players {
+    margin-top: 8px;
+  }
+  .lobby-player {
+    min-height: 60px;
   }
   .lobby-el {
-    min-height: 60px;
+    min-height: 58px;
   }
   .lobby-el-style {
     display: none;
   }
+  .lobby-join {
+    margin-top: 8px;
+  }
 }
 
-/* Compagnons de partie (coopération), sous le HUD */
+/* ───────────── Partie coopérative ───────────── */
+
+/* Coéquipiers, sous le HUD : sceau d'élément, nom, or (absent : estompé) */
 .coop-roster {
+  flex: 0 0 auto;
   display: flex;
   justify-content: center;
   gap: 6px;
-  padding: 2px 8px;
-  pointer-events: none;
+  padding: 0 8px 4px;
+  background-color: var(--indigo);
+  background-image: var(--washi);
+  background-size: var(--washi-size);
+  position: relative;
+  z-index: 2;
+  overflow: hidden;
+}
+.coop-roster.hidden {
+  display: none;
 }
 .coop-mate {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 1px 7px 1px 3px;
-  border-radius: 10px;
-  background: rgba(22, 34, 58, 0.72);
+  min-width: 0;
+  padding: 1px 8px 1px 3px;
+  border-radius: 11px;
+  background: rgba(10, 14, 26, 0.42);
+  box-shadow: inset 0 0 0 1px rgba(242, 232, 208, 0.16);
   color: var(--cream);
   font-size: 12px;
-  line-height: 18px;
+  line-height: 20px;
+  white-space: nowrap;
+}
+.coop-mate b {
+  min-width: 0;
+  max-width: 82px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.coop-mate .cm-gold {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--gold-2);
+}
+.coop-mate .cm-gold i {
+  font-style: normal;
+  font-size: 12px;
+  opacity: 0.9;
+}
+.coop-mate em {
+  font-style: normal;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: #55505f;
 }
 .coop-mate.off {
-  opacity: 0.5;
+  opacity: 0.62;
 }
-.coop-mate i {
+.coop-mate .el-badge {
+  flex: none;
+}
+
+/* Invité : pause de l'hôte, ou hôte sans nouvelles (le plateau reste visible) */
+.coop-wait {
+  position: absolute;
+  left: 50%;
+  top: 44px;
+  z-index: 33;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: max-content;
+  max-width: calc(100% - 32px);
+  padding: 10px 16px 10px 10px;
+  border-radius: 14px;
+  background-color: var(--ink);
+  background-image: var(--washi);
+  background-size: var(--washi-size);
+  color: var(--cream);
+  border: 2px solid var(--gold-2);
+  box-shadow: 0 5px 0 rgba(0, 0, 0, 0.45), 0 0 20px rgba(240, 207, 106, 0.3);
+  pointer-events: none;
+  animation: cardIn 0.25s cubic-bezier(0.2, 0.9, 0.3, 1.12);
+}
+.coop-wait.hidden {
+  display: none;
+}
+.cw-kanji {
+  flex: none;
   display: grid;
   place-items: center;
-  width: 16px;
-  height: 16px;
-  border-radius: 4px;
-  background: var(--el);
-  font-style: normal;
-  font-size: 10px;
+  width: 42px;
+  height: 42px;
+  border-radius: 10px;
+  background: var(--indigo-2);
+  font-family: var(--font-title);
+  font-size: 24px;
+  font-weight: 800;
+  box-shadow: inset 0 0 0 2px rgba(255, 244, 222, 0.35);
 }
+.cw-kanji.wait {
+  animation: cwBreath 1.4s ease-in-out infinite;
+}
+@keyframes cwBreath {
+  50% {
+    opacity: 0.55;
+  }
+}
+.cw-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.cw-text b {
+  font-family: var(--font-title);
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--gold-2);
+}
+.cw-text small {
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+/* Invité : la vitesse est réglée par l'hôte (bouton affiché, inactif) */
+.coop-guest #btn-speed {
+  opacity: 0.6;
+}
+
+/* Barre d'actions sur la lanterne d'un coéquipier : « Lanterne de Aki » */
+.tb-owner {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 190px;
+  min-height: 50px;
+  padding: 0 10px 0 6px;
+  color: var(--cream);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+.tb-owner .tb-txt {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tb-owner-seal {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  background: var(--el);
+  color: var(--cream);
+  font-size: 13px;
+  box-shadow: inset 0 0 0 1.5px rgba(242, 232, 208, 0.6);
+}
+
+/* Fiche d'une lanterne : son joueur */
+.sheet-owner {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* Fiche de niveau de l'hôte : qui part avec lui */
+.modal-card p.lv-team {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 4px 10px;
+}
+.lv-mate {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 700;
+}
+.lv-mate-any {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  background: #6d6a78;
+  color: var(--cream);
+  font-size: 12px;
+}
+
+/* Pause et résultat en coopération */
+.modal-card p.pause-coop,
+.modal-card p.res-coop {
+  margin: 4px 0 2px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--indigo);
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .lobby-status.connecting::before {
+  .lobby-status.connecting::before,
+  .cw-kanji.wait {
     animation: none;
   }
+  .coop-wait {
+    animation: none;
+  }
+  .lobby-el {
+    transition: none;
+  }
+}
+
+/* Sceau d'un joueur sans élément choisi : son initiale sur fond neutre */
+.seal-any {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: var(--s, 18px);
+  height: var(--s, 18px);
+  border-radius: 50%;
+  background: #6d6a78;
+  color: var(--cream);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+  box-shadow: inset 0 0 0 1.5px rgba(242, 232, 208, 0.6);
 }

@@ -1169,6 +1169,15 @@ h4 {
   opacity: 0.4;
 }
 
+/* défi « N lanternes au plus » épuisé : grisée, sans le rouge du manque d'or */
+.tool.spent {
+  background-color: var(--cream-3);
+}
+
+.tool.spent canvas {
+  opacity: 0.4;
+}
+
 .tool.poor .cost {
   color: var(--vermillion-dark);
   background: rgba(242, 232, 208, 0.7);
@@ -1233,6 +1242,37 @@ h4 {
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
   opacity: 0.88;
   pointer-events: none;
+}
+
+/* Libellé en trois longueurs (rewind.js) : seule la variante qui tient dans la
+   piste s'affiche (« ◀◀ glisser · −6 s », « ◀◀ glisser », « ◀◀ ») — jamais un
+   mot coupé. Le conteneur est la piste (ses enfants sont positionnés : sa taille
+   n'en dépend pas). Sans requêtes de conteneur : « ◀◀ » seul. */
+.rewind-track {
+  container-type: inline-size;
+}
+
+.rewind-label.v .rl-full,
+.rewind-label.v .rl-mid {
+  display: none;
+}
+
+@container (min-width: 130px) {
+  .rewind-label.v .rl-short {
+    display: none;
+  }
+  .rewind-label.v .rl-mid {
+    display: inline;
+  }
+}
+
+@container (min-width: 172px) {
+  .rewind-label.v .rl-mid {
+    display: none;
+  }
+  .rewind-label.v .rl-full {
+    display: inline;
+  }
 }
 
 .rewind-knob {
@@ -1581,7 +1621,10 @@ h4 {
 .hint .bubble {
   position: absolute;
   transform: translate(-50%, -100%);
-  white-space: nowrap;
+  white-space: normal;
+  width: max-content;
+  max-width: min(330px, calc(100vw - 24px));
+  text-align: center;
   background-color: var(--cream);
   background-image: var(--washi);
   background-size: var(--washi-size);
@@ -3417,4 +3460,955 @@ h4 {
   .hold .hold-fill {
     transition-duration: var(--hold-ms, 320ms) !important;
   }
+}
+
+/* ═════════════ Moteur v3 : éléments, socles gravés, murs, vagues, jauge ═════════════ */
+
+/* ───────────── Palette regroupée par élément : onglets puis lanternes ───────────── */
+
+:root {
+  --tabs-h: 44px;
+  --palette-g-h: 64px;
+  --icon-g: 36px;
+}
+
+.palette-tabs {
+  display: flex;
+  gap: 8px;
+  height: var(--tabs-h);
+  margin-bottom: -2px; /* l'onglet choisi se soude à la rangée des lanternes */
+}
+
+.ptab {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 0 6px;
+  border-radius: 12px;
+  background-color: var(--indigo-2);
+  background-image: var(--washi);
+  background-size: var(--washi-size);
+  color: var(--cream);
+  border: 1.5px solid rgba(242, 232, 208, 0.34);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+  transition: background-color 0.15s, color 0.15s;
+}
+
+.ptab .el-badge {
+  flex: 0 0 auto;
+}
+
+.ptab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ptab:active {
+  transform: translateY(1px);
+}
+
+/* onglet choisi : crème, cerné d'encre, ouvert vers les lanternes */
+.ptab.on {
+  background-color: var(--cream);
+  color: var(--ink);
+  border: 2px solid var(--ink);
+  box-shadow: inset 0 -4px 0 var(--el, var(--gold));
+}
+
+/* l'outil choisi appartient à cet onglet (on regarde un autre élément) */
+.ptab.has-tool:not(.on)::after {
+  content: '';
+  position: absolute;
+  top: -5px;
+  right: 6px;
+  width: 10px;
+  height: 10px;
+  background: var(--vermillion);
+  border: 2px solid var(--ink);
+  transform: rotate(45deg);
+}
+
+.tool.off-tab {
+  display: none;
+}
+
+.palette-grouped .palette {
+  height: var(--palette-g-h);
+}
+
+.palette-grouped .hud-bottom {
+  gap: 8px;
+}
+
+/* lanterne de la palette regroupée : dessin (haut gauche), coût (haut droite),
+   forme + kanji de la lanterne (sous le coût), nom court et rôle en un mot */
+.tool.g {
+  justify-content: flex-end;
+  align-items: stretch;
+  padding: 0 4px 3px;
+  max-width: 120px;
+}
+
+.tool.g canvas {
+  top: 2px;
+  left: 3px;
+  transform: none;
+  width: var(--icon-g);
+  height: var(--icon-g);
+}
+
+.tool.g .tool-id {
+  top: 21px;
+  left: auto;
+  right: 3px;
+}
+
+.tool.g .tool-id .el-badge {
+  --s: 21px !important;
+  width: 21px;
+  height: 21px;
+}
+
+.tool.g .tool-id .el-badge > b {
+  font-size: 12px;
+}
+
+.tool.g .tool-text {
+  text-align: left;
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  pointer-events: none;
+}
+
+.tool.g .tool-name {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  padding: 0 2px;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 15px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  background: rgba(242, 232, 208, 0.86);
+}
+
+.tool-role {
+  min-width: 0;
+  padding: 0 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 15px;
+  color: var(--ink-soft);
+}
+
+.tool.g .cost {
+  position: absolute;
+  z-index: 1;
+  top: 3px;
+  right: 3px;
+  padding: 0 4px 0 2px;
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.tool.g .cost::before {
+  width: 8px;
+  height: 8px;
+  box-shadow: inset 0 0 0 2px var(--gold), 0 0 0 1px var(--ink);
+}
+
+.tool.g.poor .cost::before {
+  box-shadow: inset 0 0 0 2px #a39b88, 0 0 0 1px var(--ink);
+}
+
+/* la pierre dans la palette regroupée garde son badge de pierres restantes */
+.tool.g .tool-count {
+  top: 22px;
+  right: 3px;
+  min-width: 26px;
+  height: 18px;
+  line-height: 18px;
+}
+
+.tool.g[data-tool='stone'] .tool-id {
+  display: none;
+}
+
+@media (max-height: 720px) {
+  :root {
+    --palette-g-h: 60px;
+    --icon-g: 32px;
+  }
+  .palette-tabs .ptab {
+    font-size: 13px;
+  }
+}
+
+/* ───────────── Bouton de vague : compte à rebours permanent, appel anticipé ───────────── */
+
+.wave-btn-text small {
+  font-variant-numeric: tabular-nums;
+}
+
+/* la vague arrive (≤ 5 s) : le sceau or bat doucement */
+.wave-btn[data-mode='soon'] .wave-btn-kanji {
+  background: var(--gold-2);
+  color: var(--ink);
+  animation: sealBeat 0.9s ease-in-out infinite;
+}
+
+.wave-btn[data-mode='running'] .wave-btn-text small,
+.wave-btn[data-mode='over'] .wave-btn-text small {
+  opacity: 0.9;
+}
+
+/* climax : bannière vermillon cernée d'or */
+.banner.climax .big::before {
+  background: var(--stroke-red) center / 100% 100% no-repeat;
+  filter: drop-shadow(0 0 0 var(--gold-2));
+}
+
+.banner.climax .small {
+  background-color: var(--ink);
+  color: var(--gold-2);
+  border-color: var(--gold-2);
+}
+
+/* ───────────── Jauge de Rembobinage : charge, plein, gains ───────────── */
+
+.rewind {
+  position: relative;
+  --k: 0;
+}
+
+/* disque compact : l'anneau dit la charge (forme + valeur, pas seulement la teinte) */
+.rewind.compact .rewind-track {
+  background: conic-gradient(var(--gold-2) calc(var(--k) * 360deg), rgba(8, 12, 24, 0.42) 0);
+  border-color: rgba(242, 232, 208, 0.42);
+}
+
+.rewind.compact .rewind-knob {
+  top: 3px;
+  right: 3px;
+  width: calc(var(--action-h) - 10px);
+  height: calc(var(--action-h) - 10px);
+  border-width: 1.5px;
+  font-size: 16px;
+}
+
+/* pleine (mais pas encore utilisable) : elle s'illumine */
+.rewind.full .rewind-track {
+  border-color: var(--gold-2);
+  box-shadow: 0 0 0 2px rgba(240, 207, 106, 0.35), 0 0 14px rgba(240, 207, 106, 0.7);
+}
+
+.rewind.full .rewind-knob {
+  background-color: var(--gold-2);
+  color: var(--ink);
+}
+
+.rewind.gain .rewind-track {
+  animation: gaugeGain 0.45s ease-out;
+}
+
+@keyframes gaugeGain {
+  40% {
+    box-shadow: 0 0 0 3px rgba(240, 207, 106, 0.55), 0 0 16px rgba(240, 207, 106, 0.8);
+  }
+}
+
+/* « +12 巻 » : gain de charge (élimination, appel anticipé) */
+.rewind-float {
+  position: absolute;
+  z-index: 25;
+  left: 50%;
+  bottom: calc(100% + 4px);
+  transform: translateX(-50%);
+  padding: 1px 7px;
+  border-radius: 9px;
+  background: var(--ink);
+  color: var(--gold-2);
+  border: 1.5px solid var(--gold-2);
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 18px;
+  white-space: nowrap;
+  pointer-events: none;
+  animation: gainUp 1.2s ease-out forwards;
+}
+
+.rewind.compact .rewind-float {
+  left: 0;
+  transform: none;
+}
+
+.rewind-float.big {
+  font-size: 15px;
+  line-height: 20px;
+}
+
+@keyframes gainUp {
+  0% {
+    opacity: 0;
+    translate: 0 6px;
+  }
+  15% {
+    opacity: 1;
+    translate: 0 0;
+  }
+  75% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    translate: 0 -14px;
+  }
+}
+
+/* dernière chance : la jauge est l'unique issue */
+.rewind.urgent .rewind-track {
+  border-color: var(--vermillion-2);
+  background-color: rgba(200, 64, 42, 0.38);
+  box-shadow: 0 0 0 3px var(--gold-2), 0 0 22px rgba(240, 207, 106, 0.9);
+  animation: urgentGlow 0.8s ease-in-out infinite;
+}
+
+@keyframes urgentGlow {
+  50% {
+    box-shadow: 0 0 0 5px var(--gold-2), 0 0 30px rgba(240, 207, 106, 1);
+  }
+}
+
+/* ───────────── Dernière chance : « Rembobinez ! » ───────────── */
+
+.last-chance {
+  position: absolute;
+  inset: 0;
+  z-index: 34;
+  display: grid;
+  place-items: end center;
+  padding: 0 16px 28px;
+  background: rgba(16, 22, 40, 0.5);
+  pointer-events: auto; /* le plateau est inactif */
+}
+
+.lc-card {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 4px 12px;
+  width: min(100%, 360px);
+  padding: 12px 14px;
+  border-radius: 16px;
+  background-color: var(--ink);
+  background-image: var(--washi);
+  background-size: var(--washi-size);
+  color: var(--cream);
+  border: 2px solid var(--gold-2);
+  box-shadow: 0 5px 0 rgba(0, 0, 0, 0.5), 0 0 26px rgba(240, 207, 106, 0.45);
+  animation: cardIn 0.25s cubic-bezier(0.2, 0.9, 0.3, 1.12);
+}
+
+.lc-kanji {
+  grid-row: span 2;
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 10px;
+  background: var(--vermillion-ui);
+  font-family: var(--font-title);
+  font-size: 28px;
+  font-weight: 800;
+  box-shadow: inset 0 0 0 2px rgba(255, 244, 222, 0.4);
+}
+
+.lc-title {
+  font-family: var(--font-title);
+  font-size: 26px;
+  font-weight: 800;
+  line-height: 1.1;
+  color: var(--gold-2);
+}
+
+.lc-count {
+  grid-row: span 2;
+  min-width: 52px;
+  height: 52px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--cream);
+  color: var(--vermillion-dark);
+  font-family: var(--font-title);
+  font-size: 30px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  border: 2px solid var(--gold-2);
+}
+
+.lc-text {
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+/* flèche vers la poignée de la jauge (sous le plateau) */
+.lc-arrow {
+  position: absolute;
+  bottom: 2px;
+  left: 50%;
+  width: 0;
+  height: 0;
+  margin-left: -11px;
+  border-left: 11px solid transparent;
+  border-right: 11px solid transparent;
+  border-top: 16px solid var(--gold-2);
+  animation: arrowNudge 0.8s ease-in-out infinite;
+}
+
+@keyframes arrowNudge {
+  50% {
+    transform: translateY(5px);
+  }
+}
+
+/* le reste de l'interface est inactif ; la jauge est mise en avant */
+.lc-on .hud-top .hud-buttons,
+.lc-on .palette,
+.lc-on .palette-tabs,
+.lc-on .wave-preview,
+.lc-on .wave-btn,
+.lc-on .undo-pill {
+  pointer-events: none;
+  opacity: 0.35;
+  filter: grayscale(0.6);
+}
+
+.lc-on .rewind {
+  position: relative;
+  z-index: 3;
+  flex: 1 1 auto;
+}
+
+.lc-on .action-row .wave-preview {
+  display: none;
+}
+
+.lc-on .wave-btn {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+/* ───────────── Barre d'actions : déplacer le mur d'un Gardien ───────────── */
+
+.tb-rally .tb-ico {
+  background: #6e5428;
+}
+
+.tb-rally.on {
+  background-color: var(--gold-2);
+  border-color: var(--ink);
+  box-shadow: inset 0 0 0 2px var(--ink);
+}
+
+/* ───────────── Fiches v3 ───────────── */
+
+.sheet-pic.el {
+  background: var(--cream-2);
+}
+
+.sheet-pic.climax {
+  background: var(--vermillion-ui);
+  color: var(--gold-2);
+}
+
+.hpbar.wall i {
+  background: linear-gradient(180deg, #a39d8e, #6e6a60);
+}
+
+.enemy-state {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--indigo);
+}
+
+.enemy-state b {
+  font-family: var(--font-title);
+}
+
+.res-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-right: 8px;
+  white-space: nowrap;
+}
+
+.sheet .btn.rally .tb-ico,
+.sheet .btn.prio .tb-ico {
+  display: inline-grid;
+}
+
+.sheet .btn.rally .tb-ico {
+  background: #6e5428;
+}
+
+.wave-line small {
+  color: var(--ink-soft);
+  font-weight: 700;
+  font-size: 12px; /* « — Dégâts » : <small> seul tombait à 11,7 px (fiche d'élément) */
+}
+
+/* règle du Rembobinage dans la fenêtre du tutoriel */
+.modal-card .rules {
+  margin-top: 8px;
+  text-align: left;
+  font-size: 13px;
+  line-height: 1.38;
+}
+
+.modal-card .rules .sheet-row {
+  margin-bottom: 4px;
+}
+
+/* ───────────── Fiche de niveau : leçon, Difficile, défi ───────────── */
+
+.level-card .lv-sub {
+  margin: 0 0 8px;
+}
+
+.lv-concept {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 auto 6px;
+  padding: 4px 12px 4px 4px;
+  border-radius: 12px;
+  background: rgba(29, 27, 34, 0.07);
+  box-shadow: inset 0 0 0 1px rgba(29, 27, 34, 0.14);
+  text-align: left;
+}
+
+.lv-concept-k {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  background: var(--indigo);
+  color: var(--cream);
+  font-family: var(--font-title);
+  font-size: 19px;
+  font-weight: 800;
+}
+
+.lv-concept small {
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.lv-concept b {
+  display: block;
+  font-family: var(--font-title);
+  font-size: 17px;
+  line-height: 1.15;
+}
+
+.lv-els {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px 12px;
+  margin: 8px 0 4px;
+}
+
+.lv-el {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.lv-el .el-label {
+  font-size: 14px;
+}
+
+.lv-el small {
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.modal-card p.lv-line {
+  margin: 4px 0;
+  font-size: 14px;
+}
+
+.lv-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.lv-opt {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 52px;
+  padding: 6px 10px 6px 6px;
+  border-radius: 12px;
+  border: 2px solid var(--ink);
+  background: rgba(255, 250, 236, 0.6);
+  text-align: left;
+  box-shadow: 0 2px 0 var(--ink);
+}
+
+.lv-opt:active {
+  transform: translateY(1px);
+}
+
+.lv-opt.on {
+  background: #f6dc8c;
+}
+
+.lv-opt.locked {
+  border-style: dashed;
+  border-color: rgba(29, 27, 34, 0.45);
+  box-shadow: none;
+  background: none;
+  color: var(--ink-soft);
+}
+
+.lv-opt-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.lv-opt-text b {
+  font-size: 15px;
+  line-height: 1.2;
+}
+
+.lv-opt-text b em {
+  font-style: normal;
+  font-size: 13px;
+  color: var(--vermillion-dark);
+}
+
+.lv-opt-text small {
+  font-size: 12px;
+  line-height: 1.3;
+  color: var(--ink-soft);
+}
+
+.lv-seal {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  font-family: var(--font-title);
+  font-size: 20px;
+  font-weight: 800;
+  color: var(--cream);
+  box-shadow: inset 0 0 0 1.5px rgba(255, 244, 222, 0.4), 0 1.5px 0 rgba(0, 0, 0, 0.35);
+}
+
+.lv-seal.hard {
+  background: var(--ink);
+  color: var(--vermillion-2);
+  border: 2px solid var(--vermillion);
+}
+
+.lv-seal.ch {
+  background: var(--gold);
+  color: var(--ink);
+}
+
+.lv-seal.ch.done {
+  background: var(--vermillion-ui);
+  color: var(--cream);
+}
+
+.lv-opt.locked .lv-seal {
+  opacity: 0.5;
+}
+
+.lv-lock {
+  font-family: var(--font-title);
+  font-weight: 800;
+  font-size: 18px;
+  opacity: 0.6;
+}
+
+/* interrupteur : rond qui glisse (position + couleur + contour) */
+.lv-switch {
+  flex: 0 0 auto;
+  position: relative;
+  width: 44px;
+  height: 26px;
+  border-radius: 13px;
+  border: 2px solid var(--ink);
+  background: var(--cream-3);
+}
+
+.lv-switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--ink);
+  transition: transform 0.15s;
+}
+
+.lv-switch.on {
+  background: var(--vermillion-ui);
+}
+
+.lv-switch.on::after {
+  transform: translateX(18px);
+  background: var(--cream);
+  box-shadow: 0 0 0 2px var(--ink);
+}
+
+/* ───────────── Carte : leçon de chaque niveau, marques Difficile et défi ───────────── */
+
+.map-concept {
+  position: absolute;
+  z-index: 1;
+  max-width: 44%;
+  padding: 2px 8px;
+  border-radius: 8px;
+  background: rgba(246, 238, 219, 0.92);
+  box-shadow: inset 0 0 0 1px rgba(29, 27, 34, 0.25);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 16px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.map-concept.locked {
+  color: rgba(29, 27, 34, 0.74);
+  background: rgba(236, 228, 207, 0.85);
+}
+
+.node-mark {
+  position: absolute;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  font-family: var(--font-title);
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1;
+  box-shadow: 0 0 0 2px var(--paper);
+}
+
+.node-mark.hard {
+  top: -7px;
+  left: -7px;
+  background: var(--ink);
+  color: var(--vermillion-2);
+  border: 1.5px solid var(--vermillion);
+}
+
+.node-mark.ch {
+  right: -8px;
+  bottom: 2px;
+  background: var(--vermillion-ui);
+  color: var(--cream);
+  transform: rotate(-6deg);
+}
+
+/* gagné en Difficile : anneau vermillon autour du sceau */
+.map-node.hard .face {
+  box-shadow: 0 4px 0 var(--ink), 0 9px 14px rgba(29, 27, 34, 0.22), inset 0 0 0 3px var(--cream), inset 0 0 0 5px var(--vermillion);
+}
+
+/* ───────────── Résultat et pause : marques du mode ───────────── */
+
+.res-seals {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px 8px;
+  margin: 8px 0 4px;
+}
+
+.res-seal,
+.mode-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 9px 2px 3px;
+  border-radius: 9px;
+  background: rgba(29, 27, 34, 0.07);
+  box-shadow: inset 0 0 0 1px rgba(29, 27, 34, 0.18);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.res-seal b,
+.mode-chip b {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  font-family: var(--font-title);
+  font-size: 14px;
+  background: var(--ink);
+  color: var(--vermillion-2);
+}
+
+.res-seal.ch b,
+.mode-chip.ch b {
+  background: var(--vermillion-ui);
+  color: var(--cream);
+}
+
+.res-seal.lost,
+.mode-chip.lost {
+  text-decoration: line-through;
+  text-decoration-thickness: 1.5px;
+  color: var(--ink-soft);
+}
+
+.res-seal.lost b,
+.mode-chip.lost b {
+  background: #77736a;
+}
+
+.modal-card p.mode-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 6px 0 0;
+}
+
+/* mode Difficile en partie : sceau 難 à côté du numéro de vague */
+.mode-hard .wave-label small::after {
+  content: ' · 難';
+  color: var(--vermillion-2);
+}
+
+/* ───────────── Panneau de débogage ───────────── */
+
+.debug-card .dbg-grid {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 8px 12px;
+  margin: 10px 0 4px;
+  text-align: left;
+}
+
+.dbg-l {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.debug-card .dbg-t {
+  flex: none;
+  min-width: 76px;
+  min-height: 44px;
+  font-size: 15px;
+}
+
+.debug-card .dbg-t.on {
+  background-color: var(--gold-2);
+}
+
+.dbg-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dbg-step .btn {
+  flex: none;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0;
+  font-size: 20px;
+}
+
+.dbg-step b {
+  min-width: 28px;
+  text-align: center;
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+}
+
+.modal-card .actions.dbg-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.dbg-actions .btn.primary {
+  grid-column: 1 / -1;
+}
+
+/* « réduire les animations » : les gains de charge restent affichés (information) */
+@media (prefers-reduced-motion: reduce) {
+  .rewind-float {
+    animation: none !important;
+  }
+}
+
+.level-card .actions .btn.primary {
+  flex: 2;
+  line-height: 1.15;
+}
+
+.btn-sub {
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  opacity: 0.92;
+}
+
+.dbg-actions .btn.primary + .btn.dark {
+  grid-column: 1 / -1;
 }

@@ -1,6 +1,14 @@
 // Barre d'actions flottante au-dessus de la lanterne sélectionnée :
-// [priorité de ciblage] [Fiche] [Vendre — secondaire, confirmé par un second toucher].
+// [priorité de ciblage | déplacer le mur | « Lanterne d’Aki »] [Fiche] [Vendre — secondaire, confirmé
+// par un second toucher]. Les lanternes qui ne visent pas (aura, impulsion,
+// soutien) n'ont pas de priorité ; le Gardien de pierre déplace son mur.
 import { PRIORITIES } from '../core/game.js';
+
+// La priorité de ciblage compte-t-elle pour cette lanterne ?
+export function aims(def) {
+  const a = def?.attack ?? 'projectile';
+  return a === 'projectile' || a === 'lob' || a === 'beam';
+}
 
 export const PRIORITY_INFO = {
   first: { kanji: '先', label: 'Premier', desc: 'le plus avancé vers le sanctuaire' },
@@ -24,11 +32,20 @@ export function cyclePriority(game, t) {
 }
 
 const CONFIRM_MS = 2600;
+const GLYPHS = { triangle: '▲', drop: '●', diamond: '◆', square: '■' };
+
+// « de Botan », « d’Aki » (élision devant une voyelle ou un h muet).
+export function ofName(name) {
+  const s = String(name ?? '');
+  return /^[aeiouyhàâäéèêëîïôöùûü]/i.test(s) ? `d’${s}` : `de ${s}`;
+}
+const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
 export class TowerBar {
   /**
    * @param {HTMLElement} el  #tower-bar (dans #stage)
-   * @param {object} h  game(), input, renderer, sheetOpen(), onPriority(t), onSheet(t), onSell(t)
+   * @param {object} h  game(), input, renderer, sheetOpen(), onPriority(t), onSheet(t), onSell(t), onRally(t),
+   *                    owner(pid) → { name, color, … } (coopération)
    */
   constructor(el, h) {
     this.el = el;
@@ -48,6 +65,8 @@ export class TowerBar {
     const act = b.dataset.act;
     if (act === 'prio') {
       this.h.onPriority?.(t);
+    } else if (act === 'rally') {
+      this.h.onRally?.(t);
     } else if (act === 'info') {
       this.h.onSheet?.(t);
     } else if (act === 'sell') {
@@ -83,21 +102,36 @@ export class TowerBar {
     const id = input.ui.selectedTower;
     const t = g && id != null ? g.towerById(id) : null;
     // Fiche ouverte : ses propres boutons suffisent (pas de doublon « Vendre »).
-    if (!t || input.ui.drag || input.ui.press || this.h.sheetOpen?.() || g.rewindAnim || g.state === 'won' || g.state === 'lost') {
+    // « Déplacer le mur » : la barre s'efface pour laisser voir les cases allumées.
+    if (!t || input.ui.drag || input.ui.press || input.ui.rally || this.h.sheetOpen?.() || g.rewindAnim || g.lastChanceT > 0 || g.state === 'won' || g.state === 'lost') {
       this.hide();
       return;
     }
     if (this.confirm != null && this.confirm !== t.id) this.confirm = null;
     const sell = g.sellValue(t);
     const p = priorityInfo(t.priority);
-    const sig = `${t.id}|${t.priority}|${sell}|${this.confirm === t.id}`;
+    const def = g.defs.towers[t.type];
+    const wall = def?.attack === 'barrier';
+    const rally = wall && input.ui.rally?.towerId === t.id;
+    // en coopération, la lanterne d'un autre joueur ne se règle ni ne se vend : fiche seule
+    const mine = !(g.players?.length > 1) || t.owner === g.localPlayer;
+    const sig = `${t.id}|${t.priority}|${sell}|${this.confirm === t.id}|${rally}|${mine}|${t.owner}`;
     if (sig !== this.sig) {
       this.sig = sig;
       const confirm = this.confirm === t.id;
+      let first = '';
+      // lanterne d'un coéquipier : « Lanterne d’Aki » (sceau de son élément), fiche seule
+      if (!mine) {
+        const o = this.h.owner?.(t.owner);
+        const name = o?.name ?? g.players[t.owner]?.name ?? 'un coéquipier';
+        const glyph = GLYPHS[o?.shape] ?? escapeHtml(o?.initial ?? '●');
+        first = `<span class="tb-owner" style="--el:${o?.color ?? '#6d6a78'}"><span class="tb-owner-seal" aria-hidden="true">${glyph}</span><span class="tb-txt">Lanterne ${escapeHtml(ofName(name))}</span></span>`;
+      } else if (wall) first = `<button class="tb-btn tb-rally${rally ? ' on' : ''}" data-act="rally" aria-pressed="${rally}" aria-label="${rally ? 'Annuler le déplacement du mur' : 'Déplacer le mur : touchez ensuite une case allumée'}"><span class="tb-ico">壁</span><span class="tb-txt">${rally ? 'Annuler' : 'Déplacer le mur'}</span></button>`;
+      else if (aims(def)) first = `<button class="tb-btn tb-prio" data-act="prio" aria-label="Priorité de ciblage : ${p.label}. Toucher pour changer"><span class="tb-ico">${p.kanji}</span><span class="tb-txt">${p.label}</span></button>`;
       this.el.innerHTML =
-        `<button class="tb-btn tb-prio" data-act="prio" aria-label="Priorité de ciblage : ${p.label}. Toucher pour changer"><span class="tb-ico">${p.kanji}</span><span class="tb-txt">${p.label}</span></button>` +
+        first +
         `<button class="tb-btn tb-info" data-act="info" aria-label="Fiche de la lanterne"><span class="tb-ico">札</span><span class="tb-txt">Fiche</span></button>` +
-        `<button class="tb-btn tb-sell${confirm ? ' confirm' : ''}" data-act="sell" aria-label="${confirm ? 'Confirmer la vente' : 'Vendre'} pour ${sell} or"><span class="tb-ico">金</span><span class="tb-txt">${confirm ? 'Confirmer' : 'Vendre'} +${sell}</span></button>`;
+        (mine ? `<button class="tb-btn tb-sell${confirm ? ' confirm' : ''}" data-act="sell" aria-label="${confirm ? 'Confirmer la vente' : 'Vendre'} pour ${sell} or"><span class="tb-ico">金</span><span class="tb-txt">${confirm ? 'Confirmer' : 'Vendre'} +${sell}</span></button>` : '');
       this.el.classList.remove('hidden');
       this.pos = null;
     }

@@ -6,6 +6,8 @@
 // qui ne simule rien, dont l'état est remplacé à chaque réception ; le rendu et
 // l'interface le lisent comme une partie normale. Les commandes des invités
 // (poser, fusionner, vendre…) sont envoyées à l'hôte, qui les valide et les applique.
+// Les états portent l'heure d'envoi de l'hôte : l'invité les rejoue à cette cadence,
+// avec un léger retard (tampon de gigue), pour que les yokai glissent sans à-coups.
 //
 // On ne fait pas tourner la simulation chez chacun (pas de « lockstep ») : les
 // fonctions mathématiques diffèrent légèrement d'un navigateur à l'autre et les
@@ -27,7 +29,7 @@ export const COMMANDS = {
   cyclePriority: 1,
   placeStone: 2,
   removeStone: 2,
-  startNextWave: 0,
+  startNextWave: 1, // [vague demandée] : une demande déjà servie (deux joueurs, double toucher) est ignorée
   rewind: 0,
   setRally: 3,
 };
@@ -42,21 +44,39 @@ const RELAYED = new Set([
 
 const r2 = (v) => Math.round(v * 100) / 100;
 
+const ELS = ['fire', 'water', 'wind', 'earth']; // absorption d'un yokai : indice (−1 : aucune)
+
 // Bits d'état d'un yokai.
 const B = { flying: 1, boss: 2, enraged: 4, timeless: 8, blocked: 16, slow: 32, burn: 64, stun: 128, blind: 256, brk: 512, hit: 1024, hop: 2048, left: 4096, shred: 8192 };
 
 // ───────────────────────── encodage (hôte) ─────────────────────────
 
-// Copie plate d'un objet d'événement : seuls les champs simples voyagent.
-function packObj(o) {
+// Objets du moteur cités par les événements : seule une référence compacte voyage
+// (l'invité retrouve l'objet vivant de son miroir par son id ; la copie ne sert que
+// s'il a disparu entre-temps : yokai abattu, lanterne vendue). Un yokai complet
+// pèse ~600 octets, une lanterne ~250 : les tirs et apparitions en citent sans cesse.
+const REF_FIELDS = {
+  enemy: ['id', 'type', 'x', 'y', 'flying', 'boss', 'size', 'absorb', 'wave', 'timeless', 'dirX'],
+  tower: ['id', 'type', 'level', 'owner', 'c', 'r', 'x', 'y'],
+  projectile: ['kind', 'element', 'level', 'sx', 'sy', 'tx', 'ty', 'targetId', 'speed', 'lob', 'dur', 'echo'], // part de (sx, sy)
+  zone: ['key', 'x', 'y', 'radius', 'a', 'b'],
+};
+const REF_OF = { enemy: 'enemy', parent: 'enemy', tower: 'tower', a: 'tower', b: 'tower', projectile: 'projectile', zone: 'zone' };
+
+const isCombo = (o) => !!(o && o.effect && o.elements && o.id);
+
+// Copie plate d'un objet d'événement : seuls les champs simples voyagent
+// (`fields` : liste des champs gardés).
+function packObj(o, fields = null) {
   if (!o || typeof o !== 'object') return o;
-  if (o.effect && o.elements && o.id) return { __combo: o.id }; // définition de combo
+  if (isCombo(o)) return { __combo: o.id }; // définition de combo
   const out = {};
-  for (const k in o) {
+  for (const k of fields || Object.keys(o)) {
     const v = o[k];
     if (typeof v === 'number') out[k] = Number.isInteger(v) ? v : r2(v);
     else if (typeof v === 'string' || typeof v === 'boolean' || v === null) out[k] = v;
     else if (Array.isArray(v) && v.length <= 12 && v.every((x) => typeof x === 'number')) out[k] = v;
+    else if (isCombo(v)) out[k] = { __combo: v.id }; // zone de combo : sa définition
   }
   return out;
 }
@@ -65,16 +85,32 @@ export function packEvent(ev) {
   const out = {};
   for (const k in ev) {
     const v = ev[k];
-    if (v && typeof v === 'object' && !Array.isArray(v)) out[k] = packObj(v);
-    else if (Array.isArray(v)) out[k] = v.every((x) => typeof x !== 'object') ? v : v.map(packObj);
+    if (v && typeof v === 'object' && !Array.isArray(v)) {
+      const kind = REF_OF[k];
+      out[k] = packObj(v, kind ? REF_FIELDS[kind] : null);
+      if (kind === 'zone' && v.def) out[k].def = { __combo: v.def.id };
+    } else if (Array.isArray(v)) out[k] = v.every((x) => typeof x !== 'object') ? v : v.map((x) => packObj(x));
     else out[k] = typeof v === 'number' && !Number.isInteger(v) ? r2(v) : v;
   }
   return out;
 }
 
 function towerSig(list) {
-  return list.map((t) => `${t.id}:${t.level}:${t.priority}`).join(',');
+  return list.map((t) => `${t.id}:${t.level}:${t.priority}:${t.rally ?? ''}:${t.owner ?? 0}`).join(',');
 }
+
+// Horloge en millisecondes (navigateur et Node).
+const clock = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+
+// Une pose (ou une commande qui l'attend) reste provisoire chez l'invité au plus
+// PENDING_MS de temps réel (pas de temps de jeu : à ×2, 2 s de jeu ne laissaient
+// qu'une seconde à la réponse de l'hôte, retard de lecture compris).
+const PENDING_MS = 3500;
+const fresh = (t) => clock() - (t.sentAt ?? -Infinity) < PENDING_MS;
+
+// Événements purement décoratifs : un invité qui rattrape un retard (onglet en
+// arrière-plan) les saute plutôt que de tout rejouer d'un coup.
+const COSMETIC = new Set(['shoot', 'hit', 'beam', 'aura', 'quake', 'absorb', 'heal', 'spawn', 'spawnChild', 'split', 'pulse', 'tornado', 'barrierHeal', 'hop', 'absorbShift', 'kill', 'summon', 'stomp']);
 
 export class HostSync {
   constructor(game, publish) {
@@ -83,10 +119,14 @@ export class HostSync {
     this.events = [];
     this.acc = 0;
     this.seq = 0;
-    this.sig = { towers: '', echoes: '', stones: '' };
+    this.sig = { towers: '', echoes: '', stones: '', charged: '' };
+    this.stunned = false; // lanternes étourdies à l'état précédent (liste `su`)
+    this.known = new Set(); // yokai déjà envoyés en entier (lignes courtes ensuite)
     this.typeIndex = new Map(Object.keys(game.defs.enemies).map((k, i) => [k, i]));
     this.towerIndex = new Map(Object.keys(game.defs.towers).map((k, i) => [k, i]));
     this.paused = false;
+    this.speed = 1; // vitesse de jeu de l'hôte (×1, ×2) : les effets des invités la suivent
+    this.gid = null; // identifiant de la partie (graine du départ) : un état d'une partie précédente est ignoré
   }
 
   // À appeler avec la file d'événements de la frame, avant qu'elle soit vidée.
@@ -108,7 +148,9 @@ export class HostSync {
     this.forceKey = false;
     const s = {
       type: 'snap',
+      gid: this.gid,
       seq: this.seq,
+      rt: Math.round(clock()), // heure d'envoi (ms, horloge de l'hôte) : cadence de lecture chez l'invité
       t: r2(g.time),
       ct: r2(g.ct),
       st: g.state,
@@ -123,8 +165,9 @@ export class HostSync {
       ru: g.rewindsUsed,
       sp: g.stats.stones,
       pz: this.paused ? 1 : 0,
-      en: g.enemies.filter((e) => e.alive).map((e) => this.packEnemy(e)),
-      ba: g.barriers.map((b) => [b.id, b.towerId, b.tile, Math.ceil(b.hp), Math.ceil(b.maxHp), b.alive ? 1 : 0, r2(b.respawnT), b.owner ?? 0]),
+      gs: this.speed,
+      ...this.packEnemies(g, key),
+      ba: g.barriers.map((b) => [b.id, b.towerId, b.tile, Math.ceil(b.hp), Math.ceil(b.maxHp), b.alive ? 1 : 0, r2(b.respawnT), b.owner ?? 0, r2(b.thorns || 0), b.hitT > 0 ? 1 : 0]),
       to: g.tornadoes.map((t) => [t.id, r2(t.x), r2(t.y), r2(t.life), r2(t.max), r2(t.size)]),
       ev: this.events,
     };
@@ -146,11 +189,54 @@ export class HostSync {
       this.sig.stones = ss;
       s.sn = stones;
     }
+    // lanternes étourdies (piétinement d'un boss) : liste courte, tant qu'il y en a
+    const su = [];
+    for (const t of g.towers) if (t.stunT > 0) su.push([t.id, r2(t.stunT)]);
+    for (const t of g.echoes) if (t.stunT > 0) su.push([t.id, r2(t.stunT)]);
+    if (su.length || this.stunned) s.su = su;
+    this.stunned = su.length > 0;
+    // vagues déjà appelées en avance (l'aperçu « +N 巻 » ne les compte plus)
+    const cw = [...g.chargedWaves].join(',');
+    if (key || cw !== this.sig.charged) {
+      this.sig.charged = cw;
+      s.cw = [...g.chargedWaves];
+    }
     if (g.rewindAnim) s.rw = { t: r2(g.rewindAnim.t), d: g.rewindAnim.dur, gh: g.rewindAnim.ghosts };
     return s;
   }
 
+  // Yokai : ligne complète (`en`) pour ceux que les invités ne connaissent pas encore
+  // (apparition, retour après un Rembobinage, état complet), ligne courte (`em` :
+  // position, PV, états) ensuite — près de deux fois moins d'octets par yokai.
+  packEnemies(g, key) {
+    const en = [];
+    const em = [];
+    const seen = new Set();
+    for (const e of g.enemies) {
+      if (!e.alive) continue;
+      seen.add(e.id);
+      if (key || e.boss || !this.known.has(e.id)) en.push(this.packEnemy(e));
+      else em.push(this.packEnemyShort(e));
+    }
+    this.known = seen;
+    return em.length ? { en, em } : { en };
+  }
+
+  // [id, x, y, pv, bits, absorption, apparition, ralenti] ; valeurs par défaut finales omises.
+  packEnemyShort(e) {
+    const out = [e.id, r2(e.x), r2(e.y), Math.ceil(e.hp), this.bitsOf(e), ELS.indexOf(e.absorb), r2(e.spawnT), r2(e.slowF)];
+    const def = [-1, 0, 1];
+    while (out.length > 5 && out[out.length - 1] === def[out.length - 6]) out.pop();
+    return out;
+  }
+
   packEnemy(e) {
+    const out = [e.id, this.typeIndex.get(e.type), r2(e.x), r2(e.y), Math.ceil(e.hp), Math.ceil(e.maxHp), this.bitsOf(e), ELS.indexOf(e.absorb), r2(e.spawnT), r2(e.slowF), e.wave];
+    if (e.boss) out.push({ stomp: r2(e.timers.stomp ?? 0), summon: r2(e.timers.summon ?? 0), cycle: r2(e.timers.cycle ?? 0) });
+    return out;
+  }
+
+  bitsOf(e) {
     let bits = 0;
     if (e.flying) bits |= B.flying;
     if (e.boss) bits |= B.boss;
@@ -166,10 +252,7 @@ export class HostSync {
     if (e.hitT > 0) bits |= B.hit;
     if (e.hopT > 0) bits |= B.hop;
     if (e.dirX < 0) bits |= B.left;
-    const els = ['fire', 'water', 'wind', 'earth'];
-    const out = [e.id, this.typeIndex.get(e.type), r2(e.x), r2(e.y), Math.ceil(e.hp), Math.ceil(e.maxHp), bits, els.indexOf(e.absorb), r2(e.spawnT), r2(e.slowF), e.wave];
-    if (e.boss) out.push({ stomp: r2(e.timers.stomp ?? 0), summon: r2(e.timers.summon ?? 0), cycle: r2(e.timers.cycle ?? 0) });
-    return out;
+    return bits;
   }
 
   packTower(t) {
@@ -183,7 +266,10 @@ export function applyCommand(game, pid, op, args = []) {
   if (n == null || !Array.isArray(args)) return null;
   const a = args.slice(0, n).map((v) => (typeof v === 'number' || typeof v === 'string' ? v : null));
   while (a.length < n) a.push(undefined);
-  if (op === 'startNextWave') return game.startNextWave(pid, true);
+  if (op === 'startNextWave') {
+    if (typeof a[0] === 'number' && a[0] !== game.waveIndex + 1) return false; // vague déjà appelée
+    return game.startNextWave(pid, true);
+  }
   if (op === 'undoPlace') return game.undoPlace(a[0], 3.6, pid); // marge pour la latence du relais
   return game[op](...a, pid);
 }
@@ -202,15 +288,29 @@ export class ClientSync {
     this.towerTypes = Object.keys(mirror.defs.towers);
     this.byId = new Map();
     this.history = []; // positions récentes des yokai (animation du Rembobinage)
-    this.lastSnap = 0; // horodatage local de la dernière réception
-    this.interval = 1 / SNAPSHOT_HZ;
     this.alpha = 1;
     this.lastSeq = 0;
     this.paused = false;
     this.received = 0;
     this.pendingN = 0;
     this.realIds = new Map(); // id provisoire d'une pose → id attribué par l'hôte
+    this.deferred = []; // commandes visant une pose pas encore confirmée (Annuler, Vendre…)
     this.rewindAvail = 0;
+    this.speed = 1;
+    this.gid = null;
+    // Lecture régulière des états : ils arrivent par à-coups (relais, réseau mobile) ;
+    // on les rejoue à la cadence de l'hôte avec un léger retard (tampon de gigue),
+    // et les yokai glissent d'un état au suivant sans arrêt ni saut.
+    this.queue = []; // états reçus, pas encore appliqués
+    this.offsets = []; // (heure locale de réception − heure d'envoi de l'hôte), récents
+    this.offset = null; // le plus petit : trajet le plus rapide
+    this.lags = []; // retards de réception au-delà du plus rapide (ms)
+    this.iv = 1000 / SNAPSHOT_HZ; // intervalle entre deux états de l'hôte (ms, moyenne)
+    this.delay = this.iv * 1.5; // retard de lecture visé (ms)
+    this.playRt = null; // instant de l'hôte en cours de lecture (ms)
+    this.prevRt = null; // états encadrant la lecture : précédent…
+    this.curRt = null; // … et dernier appliqué
+    this.lastTick = null;
     this.makeRemote();
   }
 
@@ -222,6 +322,10 @@ export class ClientSync {
     g.update = () => {};
     g.rewindAvailable = () => self.rewindAvail;
     const real = (id) => (id < 0 ? self.realIds.get(id) ?? id : id);
+    // Une pose provisoire garde son id pour l'interface (sélection, « Annuler ») :
+    // une fois confirmée, cet id désigne la lanterne attribuée par l'hôte.
+    const byId = g.towerById.bind(g);
+    g.towerById = (id) => byId(id) ?? (id < 0 && self.realIds.has(id) ? byId(self.realIds.get(id)) : null);
     g.placeTower = function (type, c, r) {
       const check = g.canPlaceTower(type, c, r);
       if (!check.ok) {
@@ -231,7 +335,7 @@ export class ClientSync {
       self.send('placeTower', [type, c, r]);
       // lanterne provisoire, remplacée par celle de l'hôte au prochain état reçu
       const def = g.defs.towers[type];
-      const t = { id: -++self.pendingN, type, element: def.element, owner: g.localPlayer, level: 1, c, r, x: c + 0.5, y: r + 0.5, angle: -Math.PI / 2, shotT: 0, stunT: 0, priority: def.priority ?? 'first', invested: def.cost, bornAt: g.time, pending: true, cooldown: 0, rateMult: 1 };
+      const t = { id: -++self.pendingN, type, element: def.element, owner: g.localPlayer, level: 1, c, r, x: c + 0.5, y: r + 0.5, angle: -Math.PI / 2, shotT: 0, stunT: 0, priority: def.priority ?? 'first', invested: def.cost, bornAt: g.time, sentAt: clock(), pending: true, cooldown: 0, rateMult: 1 };
       g.towers.push(t);
       g.player().gold -= def.cost;
       return t;
@@ -241,10 +345,23 @@ export class ClientSync {
       const local = g[op].bind(g);
       g[op] = (...args) => {
         const n = COMMANDS[op];
+        // appel de vague : la réponse de l'hôte met un instant à revenir ; un second
+        // toucher pendant ce temps (bouton encore inchangé) n'appelle pas une vague de plus
+        if (op === 'startNextWave') {
+          const w = self.waveCall;
+          if (w && g.waveIndex < w.idx && clock() - w.at < 1500) return false;
+          if (!g.canCallNextWave()) return false;
+          self.waveCall = { idx: g.waveIndex + 1, at: clock() };
+          args = [g.waveIndex + 1];
+        }
         // les identifiants de lanterne sont toujours les premiers arguments
         if (['sellTower', 'undoPlace', 'setPriority', 'cyclePriority', 'setRally'].includes(op)) args[0] = real(args[0]);
         if (op === 'fuse') args = [real(args[0]), real(args[1])];
-        self.send(op, args.slice(0, n));
+        // une pose pas encore confirmée n'a pas d'id chez l'hôte : la commande attend
+        // la confirmation (sinon « Annuler » juste après la pose serait perdu)
+        const ids = op === 'fuse' ? args.slice(0, 2) : ['sellTower', 'undoPlace', 'setPriority', 'cyclePriority', 'setRally'].includes(op) ? [args[0]] : [];
+        if (ids.some((id) => typeof id === 'number' && id < 0)) self.deferred.push({ op, args: args.slice(0, n), at: clock() });
+        else self.send(op, args.slice(0, n));
         // réponse optimiste quand l'action est valide localement
         if (op === 'fuse') return g.canFuse(args[0], args[1]).ok ? g.towerById(args[1]) : null;
         if (op === 'placeStone') return g.canPlaceStone(args[0], args[1]).ok;
@@ -267,18 +384,31 @@ export class ClientSync {
   // Avance les effets purement visuels entre deux états reçus.
   tick(dt) {
     const g = this.game;
+    this.play();
+    // partie en pause chez l'hôte : rien n'avance ; sinon, à la vitesse de l'hôte
+    dt = this.paused ? 0 : dt * this.speed;
     g.time += dt;
-    const now = g.time;
-    this.alpha = Math.min(1, (now - this.lastSnap) / this.interval);
-    for (const t of g.towers) if (t.shotT > 0) t.shotT -= dt;
+    for (const t of g.towers) {
+      if (t.shotT > 0) t.shotT -= dt;
+      if (t.stunT > 0) t.stunT = Math.max(0, t.stunT - dt);
+    }
     for (const t of g.echoes) {
       if (t.shotT > 0) t.shotT -= dt;
+      if (t.stunT > 0) t.stunT = Math.max(0, t.stunT - dt);
       t.ttl = Math.max(0, t.ttl - dt);
+    }
+    // tornades : elles glissent d'un état à l'autre, comme les yokai
+    for (const t of g.tornadoes) {
+      if (t.x1 == null) continue;
+      t.x = t.x0 + (t.x1 - t.x0) * this.alpha;
+      t.y = t.y0 + (t.y1 - t.y0) * this.alpha;
     }
     for (const e of g.enemies) {
       e.age += dt;
       if (e.hitT > 0) e.hitT -= dt;
+      if (e.hopT > 0) e.hopT -= dt;
     }
+    for (const b of g.barriers) if (b.hitT > 0) b.hitT -= dt;
     for (const b of g.beams) b.life -= dt;
     if (g.beams.some((b) => b.life <= 0)) g.beams = g.beams.filter((b) => b.life > 0);
     this.moveProjectiles(dt);
@@ -300,8 +430,9 @@ export class ClientSync {
       }
       const target = this.byId.get(p.targetId);
       if (target) {
-        p.tx = target.x;
-        p.ty = target.y;
+        // le yokai tel qu'il est dessiné (interpolé), pas sa position du dernier état
+        p.tx = target.px + (target.x - target.px) * this.alpha;
+        p.ty = target.py + (target.y - target.py) * this.alpha;
       }
       const dx = p.tx - p.x;
       const dy = p.ty - p.y;
@@ -317,15 +448,93 @@ export class ClientSync {
     if (g.projectiles.some((p) => !p.alive)) g.projectiles = g.projectiles.filter((p) => p.alive);
   }
 
+  // État reçu de l'hôte : mis en file, appliqué à son tour par play() (chaque image).
   apply(s) {
+    if (this.gid != null && s.gid != null && s.gid !== this.gid) return; // état d'une autre partie
     if (s.seq <= this.lastSeq) return; // message en retard
     this.lastSeq = s.seq;
     this.received++;
+    if (s.rt == null) {
+      this.applyNow(s); // hôte sans heure d'envoi : application immédiate
+      this.alpha = 1;
+      return;
+    }
+    const now = clock();
+    const off = now - s.rt;
+    this.offsets.push(off);
+    if (this.offsets.length > 40) this.offsets.shift();
+    this.offset = Math.min(...this.offsets);
+    // Retard de lecture : l'état k doit être là quand la lecture atteint l'état k−1,
+    // soit (intervalle + retard de réception) ; on vise le 9e décile, sans dépasser
+    // ~0,4 s de plus qu'un intervalle (un relais lent ne fige pas la partie).
+    const gap = this.lastRt != null ? s.rt - this.lastRt : this.iv;
+    this.lastRt = s.rt;
+    if (gap > 0 && gap < 400) {
+      this.iv = this.iv * 0.9 + gap * 0.1;
+      this.lags.push(gap + off - this.offset);
+      if (this.lags.length > 40) this.lags.shift();
+      const sorted = this.lags.slice().sort((a, b) => a - b);
+      const need = sorted[Math.floor(sorted.length * 0.9)] ?? this.iv;
+      this.delay = Math.max(this.iv, Math.min(this.iv + 400, need + 10));
+    }
+    this.queue.push(s);
+    // lecture arrêtée (onglet caché) : on ne garde pas des minutes d'états en attente
+    while (this.queue.length > 24) this.applyNow(this.queue.shift(), true);
+  }
+
+  // Lecture : applique les états dont l'heure est venue, calcule l'interpolation.
+  play() {
+    const now = clock();
+    const step = this.lastTick == null ? 0 : now - this.lastTick;
+    this.lastTick = now;
+    if (this.offset == null || !this.queue.length && this.curRt == null) return;
+    const target = now - this.offset - this.delay;
+    if (this.playRt == null || Math.abs(target - this.playRt) > 1000) this.playRt = target;
+    else {
+      // la lecture suit le temps réel, et rejoint en douceur (± 10 %) le retard visé
+      this.playRt += step;
+      this.playRt += Math.max(-0.1 * step, Math.min(0.1 * step, target - this.playRt));
+    }
+    // états dus : l'état k s'applique quand la lecture atteint l'état k−1
+    let due = 0;
+    while (due < this.queue.length && this.playRt >= (due ? this.queue[due - 1].rt : this.curRt ?? -Infinity)) due++;
+    for (let k = 0; k < due; k++) {
+      const s = this.queue.shift();
+      // gros retard rattrapé d'un coup : les effets décoratifs des plus anciens sont sautés
+      this.applyNow(s, due - k > 3);
+      this.prevRt = this.curRt ?? s.rt;
+      this.curRt = s.rt;
+    }
+    const span = this.curRt - this.prevRt;
+    this.alpha = span > 0 ? Math.max(0, Math.min(1, (this.playRt - this.prevRt) / span)) : 1;
+  }
+
+  // Message direct de l'hôte (pause / reprise), plus rapide que les états en file.
+  setPaused(on) {
+    this.paused = !!on;
+    this.pauseHint = { on: !!on, seq: this.lastSeq };
+  }
+
+  // Applique tout ce qui attend (fin de partie : le dernier état compte).
+  drain() {
+    while (this.queue.length) {
+      const s = this.queue.shift();
+      this.applyNow(s, this.queue.length > 0);
+      this.prevRt = this.curRt ?? s.rt;
+      this.curRt = s.rt;
+    }
+    this.alpha = 1;
+  }
+
+  applyNow(s, quiet = false) {
     const g = this.game;
     const defs = g.defs;
-    this.interval = Math.max(0.05, Math.min(0.5, g.time - this.lastSnap || 1 / SNAPSHOT_HZ));
-    this.lastSnap = g.time;
-    this.paused = !!s.pz;
+    // pause annoncée directement par l'hôte : les états plus anciens encore en file ne
+    // la contredisent pas (sans quoi « Pause par l'hôte » clignoterait)
+    const hint = this.pauseHint;
+    this.paused = hint && s.seq <= hint.seq ? hint.on : !!s.pz;
+    if (hint && s.seq >= hint.seq) this.pauseHint = null;
+    this.speed = s.gs || 1;
     g.ct = s.ct;
     g.state = s.st;
     g.lives = s.lv;
@@ -342,6 +551,7 @@ export class ClientSync {
     g.stats.stones = s.sp;
 
     // yokai : on garde les objets (interpolation px → x) et l'on crée les nouveaux
+    const rewound = !s.rw && !!g.rewindAnim;
     const seen = new Set();
     const list = [];
     for (const row of s.en) {
@@ -355,54 +565,56 @@ export class ClientSync {
         e.y = e.py = e.my = y;
         this.byId.set(id, e);
       }
-      e.px = e.x;
-      e.py = e.y;
-      e.x = e.mx = x;
-      e.y = e.my = y;
-      e.hp = hp;
       e.maxHp = maxHp;
-      e.flying = !!(bits & B.flying);
-      e.enraged = !!(bits & B.enraged);
-      e.blocked = bits & B.blocked ? 1 : null;
-      e.slowT = bits & B.slow ? 0.5 : 0;
-      e.slowF = slowF;
-      e.burnT = bits & B.burn ? 0.5 : 0;
-      e.stunT = bits & B.stun ? 0.5 : 0;
-      e.blindT = bits & B.blind ? 0.5 : 0;
-      e.breakT = bits & B.brk ? 0.5 : 0;
-      e.shredT = bits & B.shred ? 0.5 : 0;
-      if (bits & B.hit) e.hitT = Math.max(e.hitT, 0.12);
-      e.hopT = bits & B.hop ? 0.3 : 0;
-      e.dirX = bits & B.left ? -1 : 1;
-      e.absorb = ab >= 0 ? ['fire', 'water', 'wind', 'earth'][ab] : null;
-      e.spawnT = spawnT;
+      this.setEnemy(e, x, y, hp, bits, ab, spawnT, slowF, rewound);
       if (timers) Object.assign(e.timers, timers);
+      seen.add(id);
+      list.push(e);
+    }
+    // lignes courtes : yokai déjà connus (un inconnu attend l'état complet suivant)
+    for (const [id, x, y, hp, bits, ab = -1, spawnT = 0, slowF = 1] of s.em || []) {
+      const e = this.byId.get(id);
+      if (!e) continue;
+      this.setEnemy(e, x, y, hp, bits, ab, spawnT, slowF, rewound);
       seen.add(id);
       list.push(e);
     }
     for (const id of this.byId.keys()) if (!seen.has(id)) this.byId.delete(id);
     g.enemies = list;
     this.history.push({ t: g.time, enemies: list.map((e) => ({ ...e })) });
-    while (this.history.length && g.time - this.history[0].t > 7) this.history.shift();
+    // (pause de l'hôte : l'horloge s'arrête, la longueur est donc bornée aussi)
+    while (this.history.length && (g.time - this.history[0].t > 7 || this.history.length > 64)) this.history.shift();
 
     // poses provisoires confirmées par l'hôte : id provisoire → id réel (pour « Annuler »)
     for (const ev of s.ev) {
       if (ev.type !== 'place' || (ev.pid ?? 0) !== g.localPlayer || !ev.tower) continue;
-      const p = g.towers.find((t) => t.pending && t.c === ev.tower.c && t.r === ev.tower.r);
+      const p = g.towers.find((t) => t.pending && !t.confirmed && t.c === ev.tower.c && t.r === ev.tower.r);
       if (p) {
         this.realIds.set(p.id, ev.tower.id);
         p.confirmed = true;
       }
     }
+    // commandes qui attendaient une confirmation : elles partent avec l'id réel
+    if (this.deferred.length) {
+      const keep = [];
+      for (const d of this.deferred) {
+        const args = d.args.map((v, k) => (k < (d.op === 'fuse' ? 2 : 1) && v < 0 && this.realIds.has(v) ? this.realIds.get(v) : v));
+        const waiting = args.slice(0, d.op === 'fuse' ? 2 : 1).filter((v) => typeof v === 'number' && v < 0);
+        if (!waiting.length) this.send(d.op, args);
+        // pose refusée (ou trop ancienne) : la commande est abandonnée
+        else if (clock() - d.at < PENDING_MS && waiting.every((id) => g.towers.some((t) => t.id === id))) keep.push({ ...d, args });
+      }
+      this.deferred = keep;
+    }
     if (s.tw) {
       const old = new Map(g.towers.filter((t) => !t.pending).map((t) => [t.id, t]));
-      // une pose encore en route vers l'hôte reste affichée (2 s au plus)
-      const waiting = g.towers.filter((t) => t.pending && !t.confirmed && g.time - t.bornAt < 2);
+      // une pose encore en route vers l'hôte reste affichée (PENDING_MS au plus)
+      const waiting = g.towers.filter((t) => t.pending && !t.confirmed && fresh(t));
       g.towers = s.tw.map((row) => this.unpackTower(row, old.get(row[0])));
       for (const p of waiting) if (!g.towerAt(p.c, p.r)) g.towers.push(p);
       computeZones(g);
-    } else if (g.towers.some((t) => t.pending && (t.confirmed || g.time - t.bornAt >= 2))) {
-      g.towers = g.towers.filter((t) => !t.pending || (!t.confirmed && g.time - t.bornAt < 2));
+    } else if (g.towers.some((t) => t.pending && (t.confirmed || !fresh(t)))) {
+      g.towers = g.towers.filter((t) => !t.pending || (!t.confirmed && fresh(t)));
     }
     if (s.ec) {
       const old = new Map(g.echoes.map((t) => [t.id, t]));
@@ -415,8 +627,32 @@ export class ClientSync {
       });
       computeZones(g);
     }
-    g.barriers = s.ba.map(([id, towerId, tile, hp, maxHp, alive, respawnT, owner]) => ({ id, towerId, tile, hp, maxHp, alive: !!alive, respawnT, owner, hitT: 0 }));
-    g.tornadoes = s.to.map(([id, x, y, life, max, size]) => ({ id, x, y, life, max, size, color: this.tornadoColor() }));
+    const oldBars = new Map(g.barriers.map((b) => [b.id, b]));
+    g.barriers = s.ba.map(([id, towerId, tile, hp, maxHp, alive, respawnT, owner, thorns = 0, hit = 0]) => ({
+      id,
+      towerId,
+      tile,
+      hp,
+      maxHp,
+      alive: !!alive,
+      respawnT,
+      owner,
+      thorns,
+      hitT: hit ? 0.15 : Math.max(0, oldBars.get(id)?.hitT ?? 0),
+    }));
+    // tornades : de leur position précédente (x0, y0) à la nouvelle (x1, y1), cf. tick()
+    const oldTor = new Map(g.tornadoes.map((t) => [t.id, t]));
+    g.tornadoes = s.to.map(([id, x, y, life, max, size]) => {
+      const o = oldTor.get(id);
+      return { id, x: o ? o.x : x, y: o ? o.y : y, x0: o ? o.x1 : x, y0: o ? o.y1 : y, x1: x, y1: y, life, max, size, color: this.tornadoColor() };
+    });
+    // lanternes étourdies (l'étourdissement s'écoule ensuite chez l'invité, cf. tick())
+    if (s.su) {
+      const su = new Map(s.su);
+      for (const t of g.towers) if (!t.pending) t.stunT = su.get(t.id) ?? 0;
+      for (const t of g.echoes) t.stunT = su.get(t.id) ?? 0;
+    }
+    if (s.cw) g.chargedWaves = new Set(s.cw);
     if (s.sn) {
       const st = g.grid.stone;
       let changed = false;
@@ -439,7 +675,49 @@ export class ClientSync {
       g.rewindAnim = null;
       this.history = [];
     }
-    for (const ev of s.ev) this.event(ev);
+    for (const ev of s.ev) {
+      // retard rattrapé, ou file d'effets qui n'est plus lue (onglet caché) : on saute le décor
+      if ((quiet || g.events.length > 300) && COSMETIC.has(ev.type)) continue;
+      this.event(ev);
+    }
+    // Or du joueur local : les poses encore en route vers l'hôte restent décomptées
+    // (sans quoi le compteur remonterait puis redescendrait).
+    const me = g.players[g.localPlayer];
+    if (me) {
+      let pending = 0;
+      for (const t of g.towers) if (t.pending && !t.confirmed) pending += t.invested || 0;
+      if (pending) me.gold = Math.max(0, me.gold - pending);
+    }
+  }
+
+  // Nouvel état d'un yokai du miroir (interpolé de px, py vers x, y).
+  setEnemy(e, x, y, hp, bits, ab, spawnT, slowF, rewound) {
+    // fin d'un Rembobinage ou grand écart : replacé d'un coup (pas de glissade à travers la carte)
+    const jump = rewound || Math.hypot(x - e.x, y - e.y) > 2.5;
+    e.px = jump ? x : e.x;
+    e.py = jump ? y : e.y;
+    e.x = e.mx = x;
+    e.y = e.my = y;
+    e.hp = hp;
+    e.flying = !!(bits & B.flying);
+    e.enraged = !!(bits & B.enraged);
+    e.blocked = bits & B.blocked ? 1 : null;
+    e.slowT = bits & B.slow ? 0.5 : 0;
+    e.slowF = slowF;
+    e.burnT = bits & B.burn ? 0.5 : 0;
+    e.stunT = bits & B.stun ? 0.5 : 0;
+    e.blindT = bits & B.blind ? 0.5 : 0;
+    e.breakT = bits & B.brk ? 0.5 : 0;
+    e.shredT = bits & B.shred ? 0.5 : 0;
+    if (bits & B.hit) e.hitT = Math.max(e.hitT, 0.12);
+    // saut (kasaobake) : l'animation démarre au premier état qui le signale, puis s'écoule
+    if (bits & B.hop) {
+      if (!e.hopping) e.hopT = 0.5;
+      e.hopping = true;
+    } else e.hopping = false;
+    e.dirX = bits & B.left ? -1 : 1;
+    e.absorb = ab >= 0 ? ELS[ab] : null;
+    e.spawnT = spawnT;
   }
 
   tornadoColor() {
@@ -458,9 +736,20 @@ export class ClientSync {
   // Événement de l'hôte → file locale (rendu, sons) avec les objets du miroir.
   event(ev) {
     const g = this.game;
+    ev.fromHost = true; // (main.js : refus d'une commande de l'invité, dit près du socle)
     for (const k in ev) {
       const v = ev[k];
       if (v && v.__combo) ev[k] = g.defs.combos.find((c) => c.id === v.__combo) || v;
+    }
+    if (ev.zone) {
+      // zone de combo (impulsion du Givre) : celle du miroir, ou la copie avec sa définition
+      const live = g.zones.find((z) => z.key === ev.zone.key);
+      if (live) ev.zone = live;
+      else {
+        const def = g.defs.combos.find((c) => c.id === ev.zone.def?.__combo);
+        if (!def) return;
+        ev.zone.def = def;
+      }
     }
     // les objets voyagent en copie : on préfère l'objet vivant du miroir s'il existe
     if (ev.enemy && this.byId.has(ev.enemy.id)) ev.enemy = this.byId.get(ev.enemy.id);
@@ -470,6 +759,9 @@ export class ClientSync {
     }
     if (ev.type === 'shoot' && ev.projectile) {
       const p = { ...ev.projectile, alive: true, t: 0 };
+      p.x ??= p.sx;
+      p.y ??= p.sy;
+      p.homing ??= !p.lob;
       g.projectiles.push(p);
       ev.projectile = p;
       if (ev.tower) {
@@ -480,6 +772,8 @@ export class ClientSync {
       g.beams.push({ ...ev.beam });
     } else if (ev.type === 'reject' && ev.pid !== g.localPlayer) {
       return; // refus adressé à un autre joueur
+    } else if (ev.type === 'combo') {
+      return; // le miroir recalcule ses zones (computeZones) et annonce lui-même les combos
     } else if (ev.type === 'quake' && ev.tower) {
       ev.tower.shotT = 0.3;
     }

@@ -11,8 +11,12 @@
 // orbites lumineuses, feu follet) et les états (brûlure, givre, étourdissement…)
 // sont des surcouches légères, elles aussi à base de sprites en cache.
 // Un look ajouté sans entrée META est dessiné en vectoriel à chaque frame.
+// Armure (e.armor) : plaques lamellaires dessinées dans les looks qui la portent
+// (kappa, ushi-oni, aka-oni : META.armor), fendues quand elle est brisée (e.breakT) ;
+// sinon un petit écusson d'acier. Sceau d'absorption : la forme de l'élément.
 import { INK, PALETTE, withAlpha, wash, brushStroke, quadPts, mix, seeded, makeCanvas } from './brush.js';
 import { ELEMENT_COLORS } from './fx.js';
+import { elementLook, shapePath, shapeCenterY } from './glyphs.js';
 
 const TAU = Math.PI * 2;
 
@@ -53,6 +57,28 @@ const COL = {
   heal: mix(PALETTE.moss, PALETTE.cream, 0.5),
   healDeep: mix(PALETTE.moss, PALETTE.cream, 0.15),
   steam: '#fbf7ec',
+  // ushi-oni
+  ushi: mix(PALETTE.indigo, INK, 0.35),
+  ushiFar: mix(PALETTE.indigo, INK, 0.65),
+  ushiLight: PALETTE.indigoLight,
+  ushiMuzzle: mix(PALETTE.indigoLight, PALETTE.cream, 0.35),
+  hoof: mix(INK, PALETTE.gold, 0.15),
+  hornShade: mix(PALETTE.cream, PALETTE.stoneDark, 0.35),
+  dust: mix(PALETTE.gold, PALETTE.cream, 0.55),
+  // armure (kozane)
+  plate: mix(PALETTE.indigoLight, PALETTE.cream, 0.42),
+  plateShade: PALETTE.indigo,
+  plateDark: mix(PALETTE.indigoLight, INK, 0.35),
+  // kasa-obake
+  legSkin: mix(PALETTE.cream, PALETTE.gold, 0.35),
+  tongue: mix(PALETTE.vermillion, '#ffb0b8', 0.45),
+  // tokihami (encre pâle)
+  timePale: mix(PALETTE.indigoLight, '#ffffff', 0.72),
+  timeShade: mix(PALETTE.indigoLight, PALETTE.cream, 0.4),
+  timeFrame: mix(PALETTE.indigoLight, PALETTE.stoneDark, 0.4),
+  glass: '#e6eef6',
+  sand: mix(PALETTE.gold, PALETTE.cream, 0.4),
+  dial: '#f6f3ea',
 };
 
 const ELEM = ELEMENT_COLORS || {};
@@ -356,6 +382,15 @@ export const LOOKS = {
     }
     ctx.restore();
     line(ctx, ell(-0.3 * r, 0.1 * r, 0.47 * r, 0.59 * r, 14, -0.12, -1.2, 1.1), r * 0.08, COL.gold, 0.2, 0.3);
+    if (e.breakT > 0) {
+      // carapace fendue (armure brisée) : fissures d'encre bordées de crème, écaille arrachée
+      shape(ctx, U(r, [[-0.6, -0.28], [-0.42, -0.42], [-0.34, -0.26], [-0.48, -0.16]]), COL.mossInk, 0, null, null);
+      for (const crack of [[[-0.42, -0.26], [-0.36, -0.06], [-0.48, 0.14], [-0.34, 0.4]], [[-0.1, -0.44], [-0.2, -0.22], [-0.04, 0.0], [-0.12, 0.14]], [[-0.76, 0.18], [-0.56, 0.26], [-0.42, 0.5]]]) {
+        const pts = U(r, crack);
+        line(ctx, pts, r * 0.1, withAlpha(COL.paper, 0.9), 0.1, 0.3);
+        line(ctx, pts, r * 0.05, INK, 0.1, 0.4);
+      }
+    }
     // corps et plastron
     const body = ell(0.08 * r, 0.3 * r, 0.38 * r, 0.48 * r, 22);
     shape(ctx, body, skin, 0, COL.moss, null);
@@ -609,6 +644,9 @@ export const LOOKS = {
     line(ctx, [[-0.48 * r, 0.41 * r], [0.48 * r, 0.41 * r]], r * 0.08, INK, 0.1, 0.1);
     // bras avant jusqu'au poing (le poing est dessiné avec la massue)
     limb(ctx, [[0.42 * r, -0.12 * r], [0.64 * r, 0.22 * r], [0.74 * r, 0.04 * r]], r * 0.21, w * 0.8, skin);
+    // épaulière de fer (sode) : armure lamellaire, fendue quand elle est brisée
+    kozane(ctx, r, [[0.3, -0.2], [0.46, -0.16], [0.32, -0.06], [0.48, -0.02]], 0.17, 0.12, e.breakT > 0, w);
+    kozane(ctx, r, [[-0.42, -0.16], [-0.3, -0.2]], 0.15, 0.11, e.breakT > 0, w);
     // crinière d'encre
     const mane = [];
     for (let k = 0; k < 15; k++) {
@@ -700,6 +738,241 @@ export const LOOKS = {
     line(ctx, [[-0.08 * r, -0.86 * r], [-0.02 * r, -0.76 * r], [-0.08 * r, -0.68 * r]], r * 0.035, INK, 0.2, 0.6);
     line(ctx, [[0.3 * r, -0.8 * r], [0.24 * r, -0.72 * r]], r * 0.03, INK, 0.2, 0.6);
   },
+
+  // Ushi-oni : démon-taureau massif, échine hérissée, cornes immenses, plaques de
+  // fer sur le garrot et le front. Bloqué par une barrière (e.blocked), il baisse
+  // la tête et la fracasse à coups de cornes.
+  ushioni(ctx, e, r, t) {
+    const a = t * TAU;
+    const ram = !!e.blocked;
+    const broken = e.breakT > 0;
+    const w = r * 0.085;
+    const push = ram ? Math.max(0, Math.sin(a)) : 0;
+    const pull = ram ? Math.max(0, -Math.sin(a)) : 0;
+    const lean = ram ? 0.06 * push - 0.05 * pull : 0;
+    // pattes : galop lourd, ou arc-bouté quand il charge la barrière
+    const legAt = (x, ph, near) => {
+      const sw = ram ? -0.08 - Math.sin(ph) * 0.03 : Math.sin(ph) * 0.17;
+      const lift = ram ? 0 : Math.max(0, Math.cos(ph)) * 0.11;
+      const fx = x + sw;
+      const col = near ? COL.ushi : COL.ushiFar;
+      limb(ctx, [[x * r, 0.32 * r], [(x + sw * 0.4) * r, 0.62 * r], [fx * r, (0.84 - lift) * r]], r * 0.2, w * 0.6, col);
+      shape(ctx, U(r, [[fx - 0.11, 0.94 - lift], [fx - 0.09, 0.8 - lift], [fx + 0.1, 0.8 - lift], [fx + 0.12, 0.94 - lift]]), COL.hoof, w * 0.6, null, null);
+    };
+    legAt(-0.56 + lean, a + Math.PI, false);
+    legAt(0.28 + lean, a, false);
+    // queue fouettée
+    line(ctx, quadPts(-0.78 * r, 0.0, -1.0 * r, (-0.2 + 0.1 * Math.sin(a)) * r, -0.92 * r, (-0.45 + 0.08 * Math.sin(a + 1)) * r, 6), r * 0.07, INK, 0.1, 0.5);
+    dot(ctx, -0.92 * r, (-0.47 + 0.08 * Math.sin(a + 1)) * r, r * 0.07, INK);
+    // corps hérissé
+    ctx.save();
+    ctx.translate(lean * r, 0);
+    const body = ellW(-0.12 * r, 0.1 * r, 0.74 * r, 0.46 * r, seeded(17), 0.04, 26, ram ? 0.14 : 0.05);
+    shape(ctx, body, COL.ushi, w, INK, COL.ushiLight);
+    const mane = [];
+    for (let k = 0; k <= 12; k++) {
+      const u = k / 12;
+      const x = -0.62 + u * 1.0;
+      const y = -0.22 - Math.sin(u * Math.PI) * 0.2 + (k % 2 ? 0.0 : -0.14);
+      mane.push([x * r, y * r]);
+    }
+    mane.push([0.36 * r, 0.02 * r], [-0.6 * r, -0.02 * r]);
+    polyPath(ctx, mane);
+    ctx.fillStyle = INK;
+    ctx.fill();
+    // plaques de fer (kozane) sur le garrot ; fendues et arrachées si l'armure est brisée
+    kozane(ctx, r, [[-0.32, -0.2], [-0.12, -0.24], [0.08, -0.22], [-0.22, -0.04], [-0.02, -0.06], [0.18, -0.06]], 0.2, 0.16, broken, w);
+    ctx.restore();
+    legAt(-0.44 + lean, a, true);
+    legAt(0.4 + lean, a + Math.PI, true);
+    // tête de taureau : baissée et projetée en avant quand il charge
+    ctx.save();
+    ctx.translate((0.62 + lean * 1.6 + 0.1 * push) * r, (0.0 + (ram ? 0.12 : 0)) * r);
+    ctx.rotate(ram ? 0.3 + 0.12 * push : 0.08 + Math.sin(a * 2) * 0.03);
+    horn(ctx, r, -0.12, -0.28, -1, COL.hornShade, w);
+    const head = U(r * 1.15, [[-0.26, -0.28], [0.14, -0.32], [0.36, -0.12], [0.44, 0.16], [0.28, 0.32], [-0.04, 0.3], [-0.26, 0.1]]);
+    shape(ctx, head, COL.ushi, w, INK, COL.ushiLight);
+    shape(ctx, ell(0.36 * r, 0.2 * r, 0.18 * r, 0.15 * r, 14), COL.ushiMuzzle, w * 0.8, null, null);
+    dot(ctx, 0.42 * r, 0.14 * r, r * 0.04, INK);
+    dot(ctx, 0.44 * r, 0.25 * r, r * 0.04, INK);
+    // anneau de nez doré
+    line(ctx, ell(0.47 * r, 0.3 * r, 0.08 * r, 0.08 * r, 10, 0, -0.4, Math.PI + 0.4), r * 0.06, COL.gold, 0.1, 0.1);
+    // œil de braise
+    oval(ctx, 0.1 * r, -0.08 * r, 0.09 * r, 0.065 * r, INK);
+    oval(ctx, 0.11 * r, -0.08 * r, 0.065 * r, 0.045 * r, COL.verm);
+    dot(ctx, 0.13 * r, -0.08 * r, 0.022 * r, COL.goldLight);
+    line(ctx, [[-0.02 * r, -0.2 * r], [0.2 * r, -0.13 * r]], r * 0.08, INK, 0.2, 0.3);
+    // frontal de fer entre les cornes
+    kozane(ctx, r, [[-0.04, -0.3]], 0.2, 0.12, broken, w);
+    horn(ctx, r, 0.04, -0.3, 1, COL.horn, w);
+    ctx.restore();
+    if (ram) {
+      // poussière soulevée par les sabots arrière
+      for (let k = 0; k < 2; k++) {
+        const q = (t * 2 + k * 0.5) % 1;
+        ctx.globalAlpha = 0.5 * (1 - q);
+        oval(ctx, (-0.7 - q * 0.4) * r, (0.86 - q * 0.2) * r, (0.1 + q * 0.12) * r, (0.06 + q * 0.06) * r, COL.dust);
+        ctx.globalAlpha = 1;
+      }
+    }
+  },
+
+  // Kasa-obake : vieux parapluie de papier huilé, un œil, une langue pendante, une
+  // jambe velue chaussée d'un geta ; il avance à cloche-pied.
+  kasaobake(ctx, e, r, t) {
+    const a = t * TAU;
+    const crouch = Math.max(0, Math.cos(a));
+    const w = r * 0.09;
+    // jambe : pliée à l'appel, tendue en l'air
+    const hip = [0.0, 0.0];
+    const knee = [(0.1 + 0.12 * crouch) * r, (0.4 - 0.08 * crouch) * r];
+    const foot = [0.02 * r, (0.78 - 0.1 * crouch) * r];
+    limb(ctx, [[hip[0] * r, hip[1] * r], knee, foot], r * 0.16, w * 0.55, COL.legSkin);
+    for (let k = 0; k < 3; k++) {
+      const u = 0.25 + k * 0.25;
+      const px = lerp(hip[0] * r, knee[0], u);
+      const py = lerp(hip[1] * r, knee[1], u);
+      line(ctx, [[px, py], [px - 0.08 * r, py + 0.03 * r]], r * 0.03, INK, 0.1, 0.6);
+    }
+    // geta (socque de bois à deux dents)
+    shape(ctx, U(r, [[-0.16, foot[1] / r + 0.04], [0.2, foot[1] / r + 0.04], [0.2, foot[1] / r + 0.1], [-0.16, foot[1] / r + 0.1]]), COL.ochre, w * 0.6, null, null);
+    for (const gx of [-0.1, 0.12]) shape(ctx, U(r, [[gx - 0.03, foot[1] / r + 0.1], [gx + 0.03, foot[1] / r + 0.1], [gx + 0.03, foot[1] / r + 0.18], [gx - 0.03, foot[1] / r + 0.18]]), COL.ochreDark, w * 0.4, null, null);
+    line(ctx, [[-0.02 * r, foot[1] + 0.04 * r], [0.06 * r, foot[1] - 0.02 * r]], r * 0.04, COL.verm, 0.1, 0.1);
+    // ombrelle : cône de papier huilé, ourlet festonné, baleines d'encre
+    const sq = 1 - 0.08 * crouch;
+    const tipY = -1.02 * sq;
+    const rimY = -0.08;
+    const hem = [];
+    const n = 8;
+    for (let k = 0; k <= n; k++) {
+      const u = k / n;
+      const x = -0.84 + u * 1.68;
+      const y = rimY + Math.sin(u * Math.PI) * 0.1 - (k % 2 ? 0.0 : 0.05);
+      hem.push([x * r, y * r]);
+    }
+    const canopy = [[0.04 * r, tipY * r]].concat(hem.reverse());
+    shape(ctx, canopy, COL.verm, w, COL.vermDark, COL.vermLight);
+    polyPath(ctx, canopy);
+    ctx.save();
+    ctx.clip();
+    for (let k = 0; k < n; k += 2) {
+      const p0 = hem[k];
+      const p1 = hem[k + 1];
+      ctx.fillStyle = withAlpha(COL.cream, 0.22);
+      ctx.beginPath();
+      ctx.moveTo(0.04 * r, tipY * r);
+      ctx.lineTo(p0[0], p0[1]);
+      ctx.lineTo(p1[0], p1[1]);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.restore();
+    for (let k = 1; k < n; k++) line(ctx, [[0.04 * r, tipY * r], hem[k]], r * 0.03, withAlpha(INK, 0.55), 0.3, 0.1);
+    // pointe et lien de papier
+    dot(ctx, 0.04 * r, tipY * r, r * 0.06, INK);
+    line(ctx, quadPts(0.04 * r, (tipY + 0.02) * r, -0.2 * r, (tipY + 0.08 + 0.05 * Math.sin(a)) * r, -0.32 * r, (tipY + 0.24) * r, 5), r * 0.05, COL.paper, 0.1, 0.4);
+    // œil unique
+    oval(ctx, 0.2 * r, -0.44 * r, 0.22 * r, 0.24 * r, INK);
+    oval(ctx, 0.2 * r, -0.44 * r, 0.18 * r, 0.2 * r, COL.paper);
+    oval(ctx, 0.27 * r, -0.42 * r, 0.09 * r, 0.11 * r, INK);
+    dot(ctx, 0.24 * r, -0.47 * r, r * 0.035, COL.paper);
+    line(ctx, [[0.0 * r, -0.72 * r], [0.38 * r, -0.66 * r]], r * 0.07, INK, 0.2, 0.4);
+    // bouche et longue langue qui pend
+    line(ctx, quadPts(0.12 * r, -0.12 * r, 0.3 * r, -0.04 * r, 0.48 * r, -0.14 * r, 5), r * 0.06, INK, 0.2, 0.2);
+    const wag = Math.sin(a * 2) * 0.06;
+    const tongue = qpath(r, 0.28, -0.09, [[0.36, 0.1, 0.42 + wag, 0.32], [0.5 + wag, 0.38, 0.54 + wag, 0.28], [0.48, 0.06, 0.4, -0.1]], 5);
+    shape(ctx, tongue, COL.tongue, w * 0.7, COL.vermDark, null);
+  },
+
+  // Tokihami : dévoreur de temps, encre pâle. Corps-sablier dont le sable s'écoule,
+  // tête-cadran aux aiguilles folles et mâchoire dentée, traîne de brume.
+  tokihami(ctx, e, r, t) {
+    const a = t * TAU;
+    const w = r * 0.09;
+    // traîne de brume pâle (pas de pieds)
+    for (let k = 0; k < 3; k++) {
+      const x0 = (-0.24 + k * 0.24) * r;
+      line(ctx, quadPts(x0, 0.56 * r, x0 + (0.14 * Math.sin(a + k * 2)) * r, 0.78 * r, x0 - (0.1 + k * 0.04) * r, (0.98 + 0.04 * Math.sin(a + k)) * r, 6), r * 0.13, withAlpha(COL.timePale, 0.85), 0.1, 0.75);
+    }
+    // bras grêles, longs doigts tendus vers l'avant
+    for (const [s, ph] of [[-1, 0], [1, Math.PI]]) {
+      const reach = Math.sin(a + ph) * 0.08;
+      const sho = [s < 0 ? -0.3 * r : 0.3 * r, 0.06 * r];
+      const elb = [(s < 0 ? -0.1 : 0.62) * r, (0.26 + reach) * r];
+      const hand = [(s < 0 ? 0.2 : 0.86) * r, (0.14 + reach) * r];
+      limb(ctx, [sho, elb, hand], r * 0.07, w * 0.5, s < 0 ? COL.timeShade : COL.timePale);
+      for (let k = -1; k <= 1; k++) line(ctx, [hand, [hand[0] + 0.14 * r, hand[1] + (k * 0.07 + 0.02) * r]], r * 0.035, INK, 0.1, 0.7);
+    }
+    // sablier : montants, plateaux, deux ampoules de verre
+    for (const s of [-1, 1]) shape(ctx, U(r, [[s * 0.3 - 0.035, 0.0], [s * 0.3 + 0.035, 0.0], [s * 0.3 + 0.035, 0.6], [s * 0.3 - 0.035, 0.6]]), COL.timeFrame, w * 0.6, null, null);
+    const bulb = (y0, y1) =>
+      qpath(r, -0.24, y0, [
+        [-0.26, (y0 + y1) / 2 - (y1 - y0) * 0.1, -0.03, y1],
+        [0.03, y1],
+        [0.26, (y0 + y1) / 2 - (y1 - y0) * 0.1, 0.24, y0],
+      ], 6);
+    const top = bulb(0.04, 0.3);
+    const bot = bulb(0.56, 0.3);
+    shape(ctx, top, withAlpha(COL.glass, 0.85), w * 0.7, null, '#ffffff');
+    shape(ctx, bot, withAlpha(COL.glass, 0.85), w * 0.7, null, '#ffffff');
+    // sable : le haut se vide, le bas s'emplit, filet qui coule
+    const k = t;
+    polyPath(ctx, top);
+    ctx.save();
+    ctx.clip();
+    ctx.fillStyle = COL.sand;
+    ctx.fillRect(-0.3 * r, (0.12 + 0.16 * k) * r, 0.6 * r, 0.3 * r);
+    ctx.restore();
+    polyPath(ctx, bot);
+    ctx.save();
+    ctx.clip();
+    ctx.fillStyle = COL.sand;
+    ctx.beginPath();
+    ctx.moveTo(-0.3 * r, 0.56 * r);
+    ctx.lineTo(0, (0.5 - 0.14 * k) * r);
+    ctx.lineTo(0.3 * r, 0.56 * r);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+    line(ctx, [[0, 0.3 * r], [0, 0.52 * r]], r * 0.03, COL.sand, 0, 0);
+    for (const y of [0.0, 0.6]) shape(ctx, U(r, [[-0.4, y - 0.05], [0.4, y - 0.05], [0.4, y + 0.05], [-0.4, y + 0.05]]), COL.timeFrame, w * 0.7, null, null);
+    // tête-cadran
+    const hc = [0.04 * r, -0.44 * r];
+    const R = 0.44 * r;
+    shape(ctx, ell(hc[0], hc[1], R, R, 24), COL.dial, w, COL.timeShade, '#ffffff');
+    ctx.strokeStyle = withAlpha(INK, 0.8);
+    ctx.lineWidth = Math.max(0.6, r * 0.035);
+    ctx.beginPath();
+    for (let i = 0; i < 12; i++) {
+      const aa = (i / 12) * TAU;
+      const r0 = R * (i % 3 ? 0.8 : 0.7);
+      ctx.moveTo(hc[0] + Math.cos(aa) * r0, hc[1] + Math.sin(aa) * r0);
+      ctx.lineTo(hc[0] + Math.cos(aa) * R * 0.9, hc[1] + Math.sin(aa) * R * 0.9);
+    }
+    ctx.stroke();
+    // mâchoire dentée qui mord le bas du cadran
+    const jaw = 0.05 + 0.05 * Math.max(0, Math.sin(a * 2));
+    const maw = [];
+    for (let i = 0; i <= 8; i++) {
+      const aa = Math.PI * (0.15 + (i / 8) * 0.7);
+      const rr = R * (i % 2 ? 0.55 - jaw : 0.86);
+      maw.push([hc[0] + Math.cos(aa) * rr, hc[1] + Math.sin(aa) * rr * 0.9 + R * 0.08]);
+    }
+    shape(ctx, maw, COL.hole, 0, null, null);
+    // aiguilles folles (tournent à rebours, à des vitesses différentes)
+    line(ctx, [hc, [hc[0] + Math.cos(-a * 2 - 1.2) * R * 0.62, hc[1] + Math.sin(-a * 2 - 1.2) * R * 0.62]], r * 0.07, INK, 0.05, 0.6);
+    line(ctx, [hc, [hc[0] + Math.cos(-a - 2.4) * R * 0.42, hc[1] + Math.sin(-a - 2.4) * R * 0.42]], r * 0.09, COL.verm, 0.05, 0.5);
+    dot(ctx, hc[0], hc[1], r * 0.05, INK);
+    // deux yeux de braise
+    for (const ex of [-0.12, 0.2]) {
+      oval(ctx, hc[0] + ex * r, hc[1] - 0.17 * r, 0.06 * r, 0.035 * r, INK);
+      dot(ctx, hc[0] + ex * r, hc[1] - 0.17 * r, 0.022 * r, COL.verm);
+    }
+    // grain d'encre pâle
+    const rnd = seeded(23 + Math.floor(t * 8));
+    ctx.fillStyle = withAlpha(COL.timeFrame, 0.55);
+    for (let i = 0; i < 14; i++) ctx.fillRect((rnd() - 0.5) * 1.3 * r, (-0.85 + rnd() * 1.7) * r, r * 0.04, r * 0.04);
+  },
 };
 
 // Position des orbites du gashadokuro (unités de r), partagée avec la lueur dynamique.
@@ -715,6 +988,41 @@ function sickle(ctx, x, y, len, rot, w, col) {
   const pts = outer.concat(inner.slice(1)).map(P);
   shape(ctx, pts, col, w, null, '#ffffff');
   line(ctx, quadPts(0.1, -0.1, 0.66, -0.34, 0.16, -0.88, 6).map(P), Math.max(0.6, len * 0.05), withAlpha('#ffffff', 0.9), 0.3, 0.5);
+}
+
+// Plaques d'armure lamellaire (kozane) : acier bleuté, liseré d'encre, rivets d'or.
+// Armure brisée : plaques ternies, fendues (traits d'encre bordés de crème), et
+// une plaque sur trois arrachée.
+function kozane(ctx, r, cells, cw, ch, broken, w) {
+  cells.forEach(([cx, cy], i) => {
+    if (broken && i % 3 === 1) {
+      // plaque arrachée : il ne reste que les trous des rivets
+      dot(ctx, cx * r, (cy - ch * 0.25) * r, r * 0.022, INK);
+      return;
+    }
+    const pts = U(r, [[cx - cw / 2, cy - ch / 2], [cx + cw / 2, cy - ch / 2], [cx + cw / 2 - 0.01, cy + ch / 2], [cx, cy + ch / 2 + 0.03], [cx - cw / 2 + 0.01, cy + ch / 2]]);
+    shape(ctx, pts, broken ? COL.plateDark : COL.plate, w * 0.75, broken ? INK : COL.plateShade, broken ? null : '#ffffff');
+    line(ctx, [[(cx - cw * 0.36) * r, (cy + ch * 0.05) * r], [(cx + cw * 0.36) * r, (cy + ch * 0.05) * r]], r * 0.025, withAlpha(INK, 0.6), 0.1, 0.1);
+    dot(ctx, cx * r, (cy - ch * 0.22) * r, r * 0.032, broken ? COL.goldDark : COL.gold);
+    if (broken) {
+      const crack = [[(cx - cw * 0.3) * r, (cy - ch * 0.45) * r], [(cx - cw * 0.02) * r, (cy - ch * 0.05) * r], [(cx + cw * 0.12) * r, (cy + ch * 0.1) * r], [(cx + cw * 0.3) * r, (cy + ch * 0.5) * r]];
+      line(ctx, crack, r * 0.07, withAlpha(COL.paper, 0.9), 0.1, 0.3);
+      line(ctx, crack, r * 0.035, INK, 0.1, 0.4);
+    }
+  });
+}
+
+// Corne de taureau : croissant épais qui part vers l'arrière puis se recourbe vers
+// l'avant et le haut (dir : 1 corne proche, plus avancée ; −1 corne lointaine).
+function horn(ctx, r, bx, by, dir, col, w) {
+  const f = dir > 0 ? 1 : 0.8;
+  const pts = qpath(r, bx - 0.1, by + 0.03, [
+    [bx - 0.46 * f, by - 0.3, bx + (0.16 + 0.06 * dir) * f, by - 0.66 * f],
+    [bx - 0.2 * f, by - 0.36, bx + 0.08, by + 0.0],
+  ], 8);
+  shape(ctx, pts, col, w * 0.9, COL.gold, null);
+  line(ctx, [[(bx - 0.13) * r, (by - 0.08) * r], [(bx + 0.02) * r, (by - 0.12) * r]], r * 0.04, COL.goldDark, 0.1, 0.1);
+  line(ctx, [[(bx - 0.18) * r, (by - 0.2) * r], [(bx - 0.06) * r, (by - 0.25) * r]], r * 0.035, COL.goldDark, 0.1, 0.1);
 }
 
 // Os : fût cerné d'encre et têtes renflées aux deux bouts.
@@ -830,7 +1138,9 @@ const META = {
     motion: (a) => mo(-Math.cos(a) * 0.06, Math.cos(a) * 0.05),
   },
   kappa: {
-    box: [-1.0, -0.98, 1.08, 1.04], frames: 8, rate: 1.3, head: [0.38, -0.42], top: -0.86, foot: 0.9, shadow: 0.7, core: 0.1,
+    box: [-1.0, -0.98, 1.08, 1.04], frames: 8, rate: 1.3, head: [0.38, -0.42], top: -0.86, foot: 0.9, shadow: 0.7, core: 0.1, armor: true,
+    variant: (e) => (e.breakT > 0 ? 1 : 0),
+    fake: (v) => ({ seed: 0.5, breakT: v }),
     motion: (a) => mo(-Math.abs(Math.sin(a)) * 0.04, Math.sin(a) * 0.07),
   },
   tengu: {
@@ -852,8 +1162,9 @@ const META = {
   },
   akaoni: {
     box: [-1.08, -1.36, 1.08, 1.06], frames: 8, rate: 0.9, head: [0.08, -0.62], top: -1.3, foot: 0.92, shadow: 0.78, core: 0.15,
-    variant: (e) => (e.enraged ? 1 : 0),
-    fake: (v) => ({ seed: 0.5, enraged: v === 1 }),
+    armor: true,
+    variant: (e) => (e.enraged ? 1 : 0) + (e.breakT > 0 ? 2 : 0),
+    fake: (v) => ({ seed: 0.5, enraged: (v & 1) === 1, breakT: v & 2 ? 1 : 0 }),
     motion: (a) => mo(-Math.abs(Math.sin(a)) * 0.04, Math.sin(a) * 0.03),
     under: stompWarning,
     after: oniClub,
@@ -863,6 +1174,22 @@ const META = {
     motion: (a) => mo(Math.sin(a) * 0.03, Math.sin(a) * 0.02),
     under: (ctx, e, x, y, by, r, ts, scale) => blit(ctx, auraSprite(COL.indigo, INK, r * 1.3, scale), x, by + 0.75 * r),
     overlay: skullEyes,
+  },
+  ushioni: {
+    box: [-1.15, -1.12, 1.5, 1.04], frames: 8, rate: 1.4, head: [0.78, -0.12], top: -0.98, foot: 0.92, shadow: 0.9, core: 0.12, armor: true,
+    variant: (e) => (e.blocked != null ? 1 : 0) + (e.breakT > 0 ? 2 : 0),
+    fake: (v) => ({ seed: 0.5, blocked: v & 1 ? 1 : null, breakT: v & 2 ? 1 : 0 }),
+    rateOf: (e) => (e.blocked != null ? 2.4 : 1.4),
+    motion: (a, e) => (e.blocked != null ? mo(0, Math.sin(a) * 0.05) : mo(-Math.abs(Math.sin(a)) * 0.05, Math.sin(a) * 0.04)),
+  },
+  kasaobake: {
+    box: [-0.95, -1.2, 0.95, 1.12], frames: 8, rate: 1.7, head: [0.2, -0.44], top: -1.06, foot: 0.96, shadow: 0.5, core: -0.35,
+    motion: (a) => mo(-(1 - Math.cos(a)) * 0.14, Math.sin(a) * 0.05),
+  },
+  tokihami: {
+    box: [-0.95, -1.0, 1.15, 1.1], frames: 8, rate: 0.7, head: [0.04, -0.5], top: -0.92, foot: 0.95, shadow: 0.5, core: 0.25, glitch: true,
+    motion: (a) => mo(Math.sin(a) * 0.06 - 0.05, Math.sin(a) * 0.03),
+    under: timeRing,
   },
 };
 // Look ajouté sans métadonnées : dessiné en vectoriel à chaque frame.
@@ -883,6 +1210,11 @@ export function enemyFrame(def) {
 // résolution de l'écran et posés au pixel physique près, sans transformation.
 
 let SC = 1; // échelle courante (px physiques par px CSS)
+let reduced = false; // prefers-reduced-motion : pas de salves de glitch
+
+export function setReducedMotion(v) {
+  reduced = !!v;
+}
 let TX = 0; // translation courante en px physiques
 let TY = 0;
 
@@ -946,6 +1278,26 @@ function oniClub(ctx, e, R, st, time, scale) {
   ctx.rotate(ang);
   ctx.drawImage(spr.c, -spr.w / 2, -spr.h / 2, spr.w, spr.h);
   ctx.restore();
+}
+
+// Tokihami : halo d'encre froide et cadran au sol dont les graduations tournent
+// à rebours (le détache du papier pâle et de la neige).
+function timeRing(ctx, e, x, y, by, r, ts, scale, st, time) {
+  blit(ctx, auraSprite(COL.indigoLight, COL.timePale, r * 1.25, scale), x, by + 0.1 * r);
+  const gy = y + 0.9 * r;
+  const rx = r * 1.05;
+  const ry = rx * 0.32;
+  const a0 = -time * 0.9 + st.seed * 6;
+  ctx.strokeStyle = withAlpha(COL.indigoInk, 0.55);
+  ctx.lineWidth = Math.max(1, r * 0.06);
+  ctx.beginPath();
+  for (let i = 0; i < 12; i++) {
+    const a = a0 + (i / 12) * TAU;
+    const k = i % 3 ? 0.86 : 0.74;
+    ctx.moveTo(x + Math.cos(a) * rx * k, gy + Math.sin(a) * ry * k);
+    ctx.lineTo(x + Math.cos(a) * rx, gy + Math.sin(a) * ry);
+  }
+  ctx.stroke();
 }
 
 // Orbites du gashadokuro : lueur de l'élément absorbé, avivée avant une invocation.
@@ -1257,23 +1609,52 @@ function crackSprite(R, scale) {
 }
 
 // Éclat d'armure qui tombe.
-function chipSprite(sz, scale) {
-  return sprite(`cp${q2(sz)}`, sz * 1.4, sz * 1.4, scale, (g) => {
-    shape(g, [[-0.5 * sz, -0.2 * sz], [0.1 * sz, -0.5 * sz], [0.5 * sz, 0.3 * sz], [-0.2 * sz, 0.4 * sz]], COL.paper, Math.max(0.8, sz * 0.18), null, null);
+function chipSprite(sz, scale, col = COL.paper) {
+  return sprite(`cp${q2(sz)}${col}`, sz * 1.4, sz * 1.4, scale, (g) => {
+    shape(g, [[-0.5 * sz, -0.2 * sz], [0.1 * sz, -0.5 * sz], [0.5 * sz, 0.3 * sz], [-0.2 * sz, 0.4 * sz]], col, Math.max(0.8, sz * 0.18), null, null);
   });
 }
 
+// Petit écusson d'armure (looks sans plaques dessinées) : trois lamelles d'acier,
+// fendu quand l'armure est brisée.
+function armorBadge(sz, scale, broken) {
+  return sprite(`ab${q2(sz)}${broken ? 1 : 0}`, sz * 1.5, sz * 1.6, scale, (g) => {
+    kozane(g, sz, [[-0.28, -0.12], [0.0, -0.16], [0.28, -0.12]], 0.3, 0.42, broken, sz * 0.09);
+  });
+}
+
+// Sceau de l'élément absorbé : la FORME de l'élément (▲ goutte ◆ ■, lisible sans
+// la couleur), cernée d'encre et liserée de crème, teinte de l'élément, kanji crème.
 function sealSprite(el, d, scale) {
-  return sprite(`se${el}${q2(d)}${fontOk ? 1 : 0}`, d + 3, d + 3, scale, (g) => {
+  const look = elementLook(el) || { shape: 'circle', kanji: '' };
+  return sprite(`se${el}${look.shape}${q2(d)}${fontOk ? 1 : 0}`, d * 1.3 + 4, d * 1.3 + 4, scale, (g) => {
     const c = elemCol(el);
-    dot(g, 0, 0, d / 2 + 0.6, INK);
-    dot(g, 0, 0, d / 2 - 0.3, c.main);
-    dot(g, 0, 0, d / 2 - Math.max(1.2, d * 0.13), c.dark);
+    const R = d * 0.56;
+    const oy = shapeCenterY(look.shape) * R;
+    g.translate(0, -oy * 0.5);
+    g.lineJoin = 'round';
+    g.beginPath();
+    shapePath(g, look.shape, 0, 0, R);
+    g.lineWidth = Math.max(2.6, d * 0.22);
+    g.strokeStyle = COL.paper;
+    g.stroke();
+    g.lineWidth = Math.max(1.4, d * 0.11);
+    g.strokeStyle = INK;
+    g.stroke();
+    g.fillStyle = c.main;
+    g.fill();
+    g.beginPath();
+    shapePath(g, look.shape, 0, 0, R * 0.72);
+    g.fillStyle = c.dark;
+    g.globalAlpha = 0.45;
+    g.fill();
+    g.globalAlpha = 1;
+    const k = look.shape === 'triangle' || look.shape === 'triangle-down' ? 0.5 : 0.62;
     g.fillStyle = COL.paper;
-    g.font = `800 ${Math.round(d * 0.66)}px "Shippori Mincho", "Hiragino Mincho ProN", serif`;
+    g.font = `800 ${Math.round(d * k)}px "Shippori Mincho", "Hiragino Mincho ProN", serif`;
     g.textAlign = 'center';
     g.textBaseline = 'middle';
-    g.fillText(KANJI[el] || '?', 0, d * 0.05);
+    g.fillText(look.kanji || KANJI[el] || '?', 0, oy + d * 0.04);
   });
 }
 
@@ -1311,7 +1692,7 @@ function stateOf(e, def, meta, time) {
   st.lt = time;
   if (!(dt > 0)) dt = 0;
   else if (dt > 0.25) dt = 0.25;
-  let rate = meta.rate;
+  let rate = meta.rateOf ? meta.rateOf(e) : meta.rate;
   if (e.stunT > 0) rate = 0;
   else if (e.slowT > 0 && e.slowF < 1) rate *= Math.max(0.3, e.slowF);
   if (e.enraged) rate *= 1.5;
@@ -1356,14 +1737,16 @@ export function drawEnemy(ctx, e, def, x, y, ts, time) {
   }
   const bob = meta.motion ? meta.motion(st.ph * TAU, e).bob * r : 0;
   const lift = e.flying ? (meta.lift ?? 0.75) * r : 0;
-  const by = y - lift + bob; // origine du corps
+  // grand saut par-dessus une barrière (kasa-obake) : arc de 0,5 s
+  const hop = e.hopT > 0 ? Math.sin(Math.PI * clamp01(1 - e.hopT / 0.5)) * r * 2.6 : 0;
+  const by = y - lift + bob - hop; // origine du corps
   const groundY = y + meta.foot * r;
   const hk = e.hitT > 0 ? clamp01(e.hitT / 0.12) : 0;
   const ab = def.abilities;
 
   // Ombre portée (les volants : plus pâle, détachée du corps).
   const sh = shadowSprite(r * meta.shadow, scale);
-  ctx.globalAlpha = prevAlpha * (e.flying ? 0.5 : 1) * (0.3 + 0.7 * p);
+  ctx.globalAlpha = prevAlpha * (e.flying ? 0.5 : 1) * (0.3 + 0.7 * p) * (1 - 0.5 * (hop / (r * 2.6)));
   blit(ctx, sh, x, e.flying ? y + r * 0.85 : groundY);
   ctx.globalAlpha = prevAlpha;
 
@@ -1418,6 +1801,7 @@ export function drawEnemy(ctx, e, def, x, y, ts, time) {
     const img = flip > 0 ? fr.c : mirrorOf(fr);
     const px = flip > 0 ? set.ox : set.W - set.ox;
     put(ctx, img, px, set.oy, x, by);
+    if (meta.glitch && !reduced) glitch(ctx, fr, img, set, px, x, by, r, flip, time, seed, prevAlpha);
     if (e.slowT > 0 && e.slowF < 1) {
       ctx.globalAlpha = prevAlpha * (0.2 + 0.2 * clamp01((1 - e.slowF) * 1.6));
       put(ctx, silhouette(fr, ICE, flip), px, set.oy, x, by);
@@ -1454,6 +1838,11 @@ export function drawEnemy(ctx, e, def, x, y, ts, time) {
   const topY = by + meta.top * r;
   const cy = by + meta.core * r;
   if (e.shredT > 0) drawShred(ctx, x, cy, r, scale, time, seed);
+  if ((e.armor ?? def.armor ?? 0) > 0) {
+    const broken = e.breakT > 0;
+    if (!meta.armor) blit(ctx, armorBadge(Math.max(6, r * 0.5), scale, broken), x - flip * r * 0.55, cy - r * 0.15);
+    if (broken) drawBreak(ctx, x, cy, r, scale, time, seed);
+  }
   if (e.burnT > 0) drawBurn(ctx, x, cy, r, scale, time, seed);
   if (e.slowT > 0 && e.slowF < 1) drawSlow(ctx, x, by, e.flying ? by + 0.6 * r : groundY, r, scale, time, seed);
   if (e.blindT > 0) drawBlind(ctx, hx, hy, r, scale, time, seed);
@@ -1543,6 +1932,41 @@ function drawShred(ctx, x, cy, r, scale, time, seed) {
   ctx.globalAlpha = prev * (1 - ph);
   blit(ctx, chipSprite(Math.max(2.5, r * 0.18), scale), x + (seed - 0.5) * 0.8 * r + ph * 0.15 * r, cy + ph * 0.7 * r);
   ctx.globalAlpha = prev;
+}
+
+// Armure brisée : éclats d'acier qui se détachent et tombent.
+function drawBreak(ctx, x, cy, r, scale, time, seed) {
+  const prev = ctx.globalAlpha;
+  const chip = chipSprite(Math.max(2.5, r * 0.2), scale, COL.plate);
+  for (let i = 0; i < 2; i++) {
+    const ph = (time * 1.1 + seed * 3 + i * 0.5) % 1;
+    ctx.globalAlpha = prev * (1 - ph);
+    blit(ctx, chip, x + (i ? 0.35 : -0.3) * r + ph * 0.12 * r, cy - 0.2 * r + ph * 0.8 * r);
+  }
+  ctx.globalAlpha = prev;
+}
+
+// Tokihami : le temps se déchire autour de lui. Par brèves salves, l'image se
+// dédouble (indigo / vermillon) et une tranche glisse de côté ; grain d'encre.
+function glitch(ctx, fr, img, set, px, x, by, r, flip, time, seed, prevAlpha) {
+  const gp = (time * 1.25 + seed * 5) % 1;
+  if (gp > 0.16) return;
+  const gk = Math.sin((gp / 0.16) * Math.PI);
+  ctx.globalAlpha = prevAlpha * 0.5 * gk;
+  put(ctx, silhouette(fr, COL.indigoLight, flip), px, set.oy, x - r * 0.14 * gk, by);
+  put(ctx, silhouette(fr, COL.verm, flip), px, set.oy, x + r * 0.12 * gk, by);
+  ctx.globalAlpha = prevAlpha;
+  // tranche décalée (pixels physiques)
+  const band = Math.max(2, Math.round(set.H * 0.12));
+  const sy = Math.floor(((seed * 7 + Math.floor(time * 9)) % 5) / 5 * (set.H - band));
+  const X = Math.round(TX + x * SC) - px;
+  const Y = Math.round(TY + by * SC) - set.oy;
+  const shiftPx = Math.round((gp < 0.08 ? 1 : -1) * r * 0.22 * SC);
+  ctx.drawImage(img, 0, sy, set.W, band, (X + shiftPx - TX) / SC, (Y + sy - TY) / SC, set.W / SC, band / SC);
+  // grain
+  const rnd = seeded(Math.floor(time * 30) + 7);
+  ctx.fillStyle = withAlpha(COL.timeFrame, 0.8);
+  for (let i = 0; i < 6; i++) ctx.fillRect(x + (rnd() - 0.5) * r * 2, by + (rnd() - 0.7) * r * 2, Math.max(1, r * 0.08), Math.max(1, r * 0.04));
 }
 
 function drawBurn(ctx, x, cy, r, scale, time, seed) {

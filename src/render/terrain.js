@@ -8,6 +8,7 @@
 // plutôt que case par case : les zones contiguës forment des formes cohérentes.
 import { T } from '../core/grid.js';
 import { makeCanvas, seeded, brushStroke, quadPts, withAlpha, mix, wash, PALETTE, INK } from './brush.js';
+import { elementLook, shapePath, shapeCenterY } from './glyphs.js';
 
 const WALK = new Set([T.PATH, T.OPEN, T.SPAWN, T.GOAL, T.BRIDGE]);
 const TAU = Math.PI * 2;
@@ -1102,14 +1103,17 @@ function drawSlots(ctx, k) {
   for (let r = 0; r < grid.rows; r++) {
     for (let cc = 0; cc < grid.cols; cc++) {
       if (typeAt(cc, r) !== T.SLOT) continue;
-      drawSlab(ctx, cc * ts + ts / 2, r * ts + ts / 2, ts, rnd, th, snow);
+      const el = grid.slotElement ? grid.slotElement[grid.idx(cc, r)] : null;
+      drawSlab(ctx, cc * ts + ts / 2, r * ts + ts / 2, ts, rnd, th, snow, el);
     }
   }
 }
 
 // Dalle taillée vue de trois quarts : face claire, chant sombre, contour d'encre,
 // anneau gravé au centre (l'emplacement de la lanterne), mousse sur un coin.
-function drawSlab(ctx, x, y, ts, rnd, th, snow) {
+// Socle réservé à un élément (el) : lavis discret de sa couleur et sa FORME gravée
+// au centre (lisible sans la couleur) ; le socle universel reste neutre.
+function drawSlab(ctx, x, y, ts, rnd, th, snow, el = null) {
   const hw = ts * (0.38 + rnd() * 0.02);
   const hh = ts * (0.31 + rnd() * 0.02);
   const cy = y - ts * 0.03;
@@ -1163,6 +1167,18 @@ function drawSlab(ctx, x, y, ts, rnd, th, snow) {
   ctx.restore();
   // contour d'encre au pinceau (plus appuyé en bas)
   inkLoop(ctx, face, ts * 0.04, withAlpha(INK, 0.8), rnd, { seg: 12 });
+  const look = el ? elementLook(el) : null;
+  if (look) {
+    polyPath(ctx, face);
+    ctx.save();
+    ctx.clip();
+    ctx.fillStyle = withAlpha(look.color, 0.1);
+    ctx.fill();
+    wash(ctx, x, cy, hw * 1.1, look.color, 0.16);
+    ctx.restore();
+    engraveShape(ctx, look, x, cy + hh * 0.06, ts);
+    return finishSlab(ctx, x, cy, hw, hh, ts, rnd, th, snow);
+  }
   // anneau gravé : creux sombre puis lèvre claire décalée
   const ry = cy + hh * 0.08;
   ctx.lineWidth = Math.max(0.9, ts * 0.028);
@@ -1174,6 +1190,44 @@ function drawSlab(ctx, x, y, ts, rnd, th, snow) {
   ctx.beginPath();
   ctx.ellipse(x + ts * 0.012, ry + ts * 0.016, ts * 0.17, ts * 0.13, 0, 0.2, Math.PI - 0.2);
   ctx.stroke();
+  finishSlab(ctx, x, cy, hw, hh, ts, rnd, th, snow);
+}
+
+// Forme d'un élément gravée dans la dalle : creux teinté de la couleur de
+// l'élément, bord d'encre, lèvre claire décalée vers le bas (lumière d'en haut).
+function engraveShape(ctx, look, x, y, ts) {
+  const R = ts * 0.15;
+  const oy = -shapeCenterY(look.shape) * R * 0.6;
+  ctx.save();
+  ctx.lineJoin = 'round';
+  // lèvre claire (décalée)
+  ctx.beginPath();
+  shapePath(ctx, look.shape, x + ts * 0.014, y + oy + ts * 0.018, R);
+  ctx.strokeStyle = withAlpha('#fffaf0', 0.75);
+  ctx.lineWidth = Math.max(1, ts * 0.03);
+  ctx.stroke();
+  // creux peint
+  ctx.beginPath();
+  shapePath(ctx, look.shape, x, y + oy, R);
+  ctx.fillStyle = withAlpha(mix(look.color, PALETTE.stoneDark, 0.25), 0.78);
+  ctx.fill();
+  ctx.strokeStyle = withAlpha(INK, 0.75);
+  ctx.lineWidth = Math.max(1, ts * 0.032);
+  ctx.stroke();
+  // ombre intérieure en haut du creux
+  ctx.save();
+  ctx.clip();
+  ctx.beginPath();
+  shapePath(ctx, look.shape, x + ts * 0.02, y + oy + ts * 0.03, R);
+  ctx.rect(x - R * 3, y - R * 3, R * 6, R * 6);
+  ctx.fillStyle = withAlpha(INK, 0.3);
+  ctx.fill('evenodd');
+  ctx.restore();
+  ctx.restore();
+}
+
+// Finitions communes : fissure, mousse ou neige sur le bord arrière.
+function finishSlab(ctx, x, cy, hw, hh, ts, rnd, th, snow) {
   // fissure fine, parfois
   if (rnd() < 0.4) {
     const sx = x + (rnd() < 0.5 ? -hw : hw) * 0.95;

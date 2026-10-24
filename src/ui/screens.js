@@ -293,11 +293,13 @@ export class TitleScreen {
   }
 
   // Mise en page de la scène : tout se cale entre le bas du titre et le haut
-  // des boutons, pour que le soleil ne passe jamais sous le texte.
+  // des boutons — ou du salon, s'il est affiché au-dessus d'eux —, pour que le
+  // soleil ne passe jamais sous le texte et que le torii reste visible.
   layoutScene(w, h) {
     const box = this.el.getBoundingClientRect();
     const tw = this.el.querySelector('.title-wrap')?.getBoundingClientRect();
-    const act = this.el.querySelector('.title-actions')?.getBoundingClientRect();
+    const lobby = this.el.querySelector('.title-lobby')?.getBoundingClientRect();
+    const act = lobby && lobby.height ? lobby : this.el.querySelector('.title-actions')?.getBoundingClientRect();
     const tb = tw && tw.height ? tw.bottom - box.top : h * 0.32;
     const kj = this.el.querySelector('.title-kanji')?.getBoundingClientRect();
     const skyH = kj && kj.height ? kj.bottom - box.top + 26 : h * 0.12;
@@ -570,6 +572,12 @@ export class MapScreen {
     this.render();
   }
 
+  // Données des niveaux (chargées à part) : leçon de chaque niveau sur la carte.
+  setLevels(levels) {
+    this.levels = levels;
+    if (this.el.classList.contains('active') && this.pts) this.buildNodes(this.pts, this.bands);
+  }
+
   hide() {
     this.el.classList.remove('active');
   }
@@ -620,6 +628,8 @@ export class MapScreen {
       kasumi(ctx, w * 0.38, y + 6, w * 0.7, 9);
     }
     this.paintPath(ctx, pts);
+    this.pts = pts;
+    this.bands = bands;
     this.buildNodes(pts, bands);
   }
 
@@ -746,20 +756,39 @@ export class MapScreen {
       lab.innerHTML = `<span class="mw-seal">${wd.kanji}</span><span class="mw-text"><b>${wd.name}</b><small>${wd.subtitle || ''}<span class="mw-stars"><i></i>${got}/${wd.levels.length * 3}</span></small></span>`;
       frag.appendChild(lab);
     }
+    const W = this.nodesEl.clientWidth || this.el.clientWidth;
     for (const p of pts) {
       const entry = this.order[p.i];
       const unlocked = this.save.isUnlocked(this.order, p.i);
-      const stars = this.save.stars(entry.id);
+      const rec = this.save.level ? this.save.level(entry.id) : { stars: this.save.stars(entry.id), hard: 0, challenge: false };
+      const stars = rec.stars;
+      const level = this.levels?.[entry.id];
       const b = document.createElement('button');
-      b.className = `map-node${unlocked ? '' : ' locked'}${p.boss ? ' boss' : ''}${unlocked && !stars ? ' next' : ''}${stars ? ' cleared' : ''}`;
+      b.className = `map-node${unlocked ? '' : ' locked'}${p.boss ? ' boss' : ''}${unlocked && !stars ? ' next' : ''}${stars ? ' cleared' : ''}${rec.hard ? ' hard' : ''}`;
       b.style.left = `${p.x}px`;
       b.style.top = `${p.y}px`;
-      b.setAttribute('aria-label', `Niveau ${p.i + 1}${p.boss ? ' (boss)' : ''}${unlocked ? `, ${stars} étoile${stars > 1 ? 's' : ''}` : ' (verrouillé)'}`);
+      const marks = [rec.hard ? 'gagné en Difficile' : '', rec.challenge ? 'défi réussi' : ''].filter(Boolean).join(', ');
+      b.setAttribute('aria-label', `Niveau ${p.i + 1}${level?.concept ? ` : ${level.concept}` : ''}${p.boss ? ' (boss)' : ''}${unlocked ? `, ${stars} étoile${stars > 1 ? 's' : ''}${marks ? `, ${marks}` : ''}` : ' (verrouillé)'}`);
       b.innerHTML = `<span class="face"><span class="num">${unlocked ? NUMERALS[p.i] ?? p.i + 1 : '封'}</span></span><span class="latin">${p.i + 1}</span>
         ${p.boss ? '<span class="boss-tag">Boss</span>' : ''}
+        ${rec.hard ? '<span class="node-mark hard" aria-hidden="true">難</span>' : ''}
+        ${rec.challenge ? '<span class="node-mark ch" aria-hidden="true">挑</span>' : ''}
         <span class="stars">${[0, 1, 2].map((k) => `<i class="${k < stars ? 'on' : ''}"></i>`).join('')}</span>`;
       b.addEventListener('click', () => this.onSelect(entry, unlocked));
       frag.appendChild(b);
+      // Leçon du niveau, à côté du nœud (côté intérieur de la carte).
+      if (level?.concept) {
+        const lab = document.createElement('span');
+        const right = p.x < W / 2 || (p.boss && p.x <= W / 2);
+        lab.className = `map-concept${unlocked ? '' : ' locked'}${right ? ' right' : ' left'}`;
+        lab.setAttribute('aria-hidden', 'true');
+        lab.textContent = level.concept;
+        const half = (p.boss ? 36 : 31) + 10;
+        if (right) lab.style.left = `${Math.round(p.x + half)}px`;
+        else lab.style.right = `${Math.round(W - p.x + half)}px`;
+        lab.style.top = `${Math.round(p.y - 2)}px`;
+        frag.appendChild(lab);
+      }
     }
     this.nodesEl.innerHTML = '';
     this.nodesEl.appendChild(frag);

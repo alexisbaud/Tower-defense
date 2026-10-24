@@ -137,7 +137,7 @@ python3 -m http.server 8080
 # puis http://localhost:8080
 ```
 
-Raccourcis de test : `?level=2-4` lance directement un niveau ; `?salon=ABCD` rejoint un salon ; `?broker=ws://localhost:8883/mqtt` remplace les relais publics (tests du multijoueur hors ligne).
+Raccourcis de test : `?level=2-4` lance directement un niveau ; `?salon=ABCD` rejoint un salon ; `?broker=ws://localhost:8883/mqtt` remplace les relais publics (plusieurs adresses séparées par des virgules) et `?broker=off` coupe tout réseau (salon « hors ligne »).
 
 Relais MQTT local pour tester le multijoueur sans Internet (facultatif) :
 
@@ -432,7 +432,7 @@ Tous les outils tournent avec Node ≥ 22 (aucune dépendance npm dans le jeu ; 
 | `node tools/sim.mjs [ids] --bots=balanced,random,mono --seeds=1,2,3 --players=2 --verbose` | Simulations détaillées (bots : `balanced`, `random`, `mono` = une partie par lanterne) |
 | `node tools/balance-md.mjs > BALANCE.md` | Régénère les tableaux d'équilibrage depuis les données |
 | `node tools/net-test.mjs ws://localhost:8883/mqtt` | Multijoueur sans navigateur : salon, élément, salon plein, partie à 3, poses, annulation, débit |
-| `node tools/mp-test.mjs` | Multijoueur dans de vrais navigateurs (2 à 4 joueurs au doigt simulé) |
+| `node tools/mp-test.mjs` | Multijoueur dans de vrais navigateurs (2 à 4 joueurs au doigt simulé) : salon, code et lien, élément unique, poses, or séparé, vies communes, pause de l'hôte, coupures, rechargement, fin de partie ; synchronisation avec gigue simulée. Les outils navigateur passent au jeu le relais local (`tools/relay.mjs`, variable `JDE_RELAY`) s'il répond, sinon `?broker=off` |
 | `node tools/ui-test.mjs` | Gestes au doigt simulé : pose soulevée, annuler, fiches, fusion, pierres, palette, jauge… |
 | `node tools/play-browser.mjs [ids]` | Joue chaque niveau en entier dans le vrai jeu et vérifie victoire + console propre |
 | `node tools/qa.mjs`, `node tools/layout-check.mjs` | QA navigateur, mise en page 390×844, 375×667, 430×932 avec zones sûres |

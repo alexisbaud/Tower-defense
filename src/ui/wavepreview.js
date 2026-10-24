@@ -7,6 +7,15 @@ import { elementBadge, elementInfo } from './elements.js';
 const CHIP = 44; // zone tactile minimale (pt)
 const GAP = 8;
 
+// Charge de Rembobinage que rapporterait l'appel anticipé (aperçu du moteur), bornée
+// à la place libre dans la jauge : pleine, l'appel n'apporte plus rien (« +58 巻 »
+// s'affichait quand même).
+export function earlyCharge(g, pv) {
+  if (!pv || !(pv.charge > 0)) return 0;
+  const cost = g.rules?.rewindCost ?? 100;
+  return Math.max(0, Math.min(pv.charge, Math.floor(cost - (g.rewindCharge ?? 0))));
+}
+
 export class WavePreview {
   constructor(el, h) {
     this.el = el;

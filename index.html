@@ -24,6 +24,7 @@
       href="https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@500;700;800&family=Zen+Kaku+Gothic+New:wght@500;700&display=swap"
     />
     <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="lobby.css" />
   </head>
   <body>
     <div id="app">
@@ -34,8 +35,10 @@
           <h1>Jardin<br />des Esprits</h1>
           <p class="tagline">Allumez les lanternes,<br />protégez le sanctuaire.</p>
         </div>
+        <div id="title-lobby" class="title-lobby" aria-label="Salon multijoueur"></div>
         <div class="title-actions">
           <button id="btn-play" class="btn primary big"><span class="btn-kanji" aria-hidden="true">遊</span>Jouer</button>
+          <p id="title-wait" class="title-wait hidden" role="status"></p>
           <button id="btn-title-sound" class="icon-btn light" aria-label="Son"><span>音</span></button>
         </div>
         <p class="title-foot" id="title-foot">Partager ▸ « Sur l'écran d'accueil » pour jouer en plein écran</p>
@@ -62,11 +65,22 @@
             <button class="icon-btn" id="btn-pause" aria-label="Pause"><span class="ico-pause" aria-hidden="true"></span></button>
           </div>
         </header>
+        <div id="coop-roster" class="coop-roster hidden" aria-label="Coéquipiers"></div>
         <div id="stage">
           <canvas id="board"></canvas>
           <div id="bossbar" class="bossbar hidden"><span class="boss-name"></span><div class="boss-track"><div class="boss-fill"></div></div></div>
           <div id="intro" class="intro hidden" role="button" aria-label="Fiche du yokai"></div>
           <div id="tower-bar" class="tower-bar hidden" role="toolbar" aria-label="Actions de la lanterne"></div>
+          <div id="last-chance" class="last-chance hidden" role="alert" aria-live="assertive">
+            <div class="lc-card">
+              <span class="lc-kanji" aria-hidden="true">巻</span>
+              <b class="lc-title">Rembobinez !</b>
+              <span class="lc-count" id="lc-count">4</span>
+              <small class="lc-text">Le sanctuaire tombe : glissez la jauge ◀◀ pour remonter le temps</small>
+            </div>
+            <span class="lc-arrow" id="lc-arrow" aria-hidden="true"></span>
+          </div>
+          <div id="coop-wait" class="coop-wait hidden" role="status" aria-live="polite"></div>
         </div>
         <footer id="hud-bottom" class="hud-bottom">
           <div class="action-row">
@@ -80,6 +94,7 @@
             <div id="wave-preview" class="wave-preview" aria-label="Prochaine vague"></div>
             <button id="btn-wave" class="wave-btn"><span class="wave-btn-kanji" id="btn-wave-kanji">波</span><span class="wave-btn-text"><span id="btn-wave-label">Vague</span><small id="btn-wave-sub"></small></span></button>
           </div>
+          <div id="palette-tabs" class="palette-tabs hidden" role="tablist" aria-label="Éléments"></div>
           <div id="palette" class="palette"></div>
         </footer>
         <button id="btn-undo" class="undo-pill hidden" aria-label="Annuler la pose"><span class="undo-ico" aria-hidden="true">↶</span>Annuler<i class="undo-bar"></i></button>
@@ -90,6 +105,7 @@
         <div id="hold" class="hold hidden" aria-hidden="true"><svg viewBox="0 0 80 80"><circle class="hold-bg" cx="40" cy="40" r="31"/><circle class="hold-ink" cx="40" cy="40" r="31"/><circle class="hold-fill" cx="40" cy="40" r="31"/></svg></div>
       </section>
       <div id="modal" class="modal hidden"><div class="modal-card"></div></div>
+      <div id="app-toast" class="toast app-toast" role="status" aria-live="polite"></div>
     </div>
     <div id="rotate" class="rotate"><div><span class="rotate-seal">縦</span><p>Tournez votre téléphone<br />en portrait</p></div></div>
     <script type="module" src="src/main.js"></script>

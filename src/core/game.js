@@ -1193,16 +1193,29 @@ export class Game {
 
   // Case de chemin où dresser la barrière d'une tour : le point de ralliement choisi
   // s'il est valide, sinon la case marchable libre la plus proche dans la portée.
+  barrierTileOk(t, range, i) {
+    const g = this.grid;
+    const ty = g.type(i);
+    if (ty !== T.PATH && ty !== T.OPEN && ty !== T.BRIDGE) return false;
+    if (g.stone[i] || this.flow.dist[i] < 0) return false;
+    if (Math.hypot(g.cx(i) - t.x, g.cy(i) - t.y) > range + 0.01) return false;
+    return !this.barriers.some((b) => b.tile === i && b.towerId !== t.id);
+  }
+
+  // Cases où le Gardien `id` peut dresser son mur (pour l'interface « Déplacer le mur »).
+  rallyTiles(id) {
+    const t = this.towerById(id);
+    if (!t || this.defs.towers[t.type].attack !== 'barrier') return [];
+    const range = this.towerStats(t).range;
+    const out = [];
+    for (let i = 0; i < this.grid.size; i++) if (this.barrierTileOk(t, range, i)) out.push(i);
+    return out;
+  }
+
   barrierTileFor(t, range) {
     const g = this.grid;
     const route = this.routeTiles();
-    const ok = (i) => {
-      const ty = g.type(i);
-      if (ty !== T.PATH && ty !== T.OPEN && ty !== T.BRIDGE) return false;
-      if (g.stone[i] || this.flow.dist[i] < 0) return false;
-      if (Math.hypot(g.cx(i) - t.x, g.cy(i) - t.y) > range + 0.01) return false;
-      return !this.barriers.some((b) => b.tile === i && b.towerId !== t.id);
-    };
+    const ok = (i) => this.barrierTileOk(t, range, i);
     if (t.rally != null && ok(t.rally)) return t.rally;
     let best = -1;
     let bestD = Infinity;
@@ -1808,16 +1821,21 @@ export class Game {
 
   // Le défi optionnel du niveau est-il réussi ? (à appeler en fin de partie)
   challengeMet() {
-    const ch = this.level.challenge;
-    if (!ch || !this.challenge || this.state !== 'won') return false;
-    const r = ch.rule || {};
-    if (r.noLeak && this.stats.leaks > 0) return false;
-    if (r.noStones && this.stats.stones > 0) return false;
-    if (r.noRewind && this.rewindsUsed > 0) return false;
-    if (r.maxTowers != null && this.stats.towersBuilt > r.maxTowers) return false;
-    if (r.forbidTowers && this.towers.some((t) => r.forbidTowers.includes(t.type))) return false;
-    if (r.minLives != null && this.lives < r.minLives) return false;
-    return true;
+    if (!this.level.challenge || !this.challenge || this.state !== 'won') return false;
+    return !this.challengeBroken();
+  }
+
+  // Le défi actif est-il déjà manqué ? (consultable en cours de partie)
+  challengeBroken() {
+    const r = this.challengeRule;
+    if (!r) return false;
+    if (r.noLeak && this.stats.leaks > 0) return true;
+    if (r.noStones && this.stats.stones > 0) return true;
+    if (r.noRewind && this.rewindsUsed > 0) return true;
+    if (r.maxTowers != null && this.stats.towersBuilt > r.maxTowers) return true;
+    if (r.forbidTowers && this.towers.some((t) => r.forbidTowers.includes(t.type))) return true;
+    if (r.minLives != null && this.lives < r.minLives) return true;
+    return false;
   }
 }
 

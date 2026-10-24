@@ -33,12 +33,21 @@ function towerOfElement(el, defs) {
 
 const infoCache = new Map();
 
-// { id, shape, glyph, label, kanji, color, ink } — `ink` : teinte foncée de la
-// couleur, lisible sous un texte crème (contraste ≥ 4,5).
+// { id, shape, glyph, label, kanji, color, ink, style, desc } — `ink` : teinte
+// foncée de la couleur, lisible sous un texte crème (contraste ≥ 4,5).
+// Source : data/elements.js (defs.elements) ; à défaut, la première tour de l'élément.
 export function elementInfo(el, defs) {
   const key = el;
   const cached = infoCache.get(key);
   if (cached && cached.defs === defs) return cached.info;
+  const ed = defs?.elements?.[el];
+  if (ed) {
+    const shape = ed.shape || FALLBACK[el]?.shape || 'circle';
+    const color = ed.color || towerOfElement(el, defs)?.color || '#7d7a70';
+    const info = { id: el, shape, glyph: SHAPE_GLYPH[shape] || '●', label: ed.name || FALLBACK[el]?.label || el, kanji: ed.kanji || '?', color, ink: readable(color), style: ed.style || '', desc: ed.desc || '' };
+    infoCache.set(key, { defs, info });
+    return info;
+  }
   const def = towerOfElement(el, defs) || {};
   const fb = FALLBACK[el];
   let shape = def.shape || fb?.shape;
@@ -59,9 +68,49 @@ export function elementInfo(el, defs) {
     kanji: def.kanji || '?',
     color,
     ink: readable(color),
+    style: '',
+    desc: '',
   };
   infoCache.set(key, { defs, info });
   return info;
+}
+
+// Article français devant un élément : « l'Eau », « le Feu », « la Terre » ;
+// après « à » : « à l'Eau », « au Feu », « à la Terre ».
+const FEMININE = new Set(['Terre']);
+export function elementWithArticle(el, defs) {
+  const label = elementInfo(el, defs).label;
+  if (/^[aeiouyéèêàâîïôûh]/i.test(label)) return `l’${label}`;
+  return FEMININE.has(label) ? `la ${label}` : `le ${label}`;
+}
+
+export function toElement(el, defs) {
+  const a = elementWithArticle(el, defs);
+  return a.startsWith('le ') ? `au ${a.slice(3)}` : `à ${a}`;
+}
+
+// Nom court d'une lanterne (palette) : `def.short`, sinon le nom s'il est court,
+// sinon son premier mot (« Mortier hanabi » → « Mortier »).
+const SHORT_FALLBACK = { fire_wisp: 'Follets', earth_quake: 'Séisme' };
+export function shortName(type, defs) {
+  const def = defs?.towers?.[type];
+  if (!def) return type;
+  if (def.short) return def.short;
+  if (SHORT_FALLBACK[type]) return SHORT_FALLBACK[type];
+  const name = def.name || type;
+  return name.length <= 10 ? name : name.split(/[\s-]+/)[0];
+}
+
+// Rôle en un mot : `def.roleShort`, sinon le premier mot de `def.role` (abrégé).
+const ROLE_ABBR = { ralentissement: 'Ralentit' };
+export function roleWord(type, defs) {
+  const def = defs?.towers?.[type];
+  if (!def) return '';
+  if (def.roleShort) return def.roleShort;
+  const first = String(def.role || '').split(/\s+/)[0].replace(/[,.;:]$/, '');
+  const abbr = ROLE_ABBR[first.toLowerCase()];
+  if (abbr && abbr.length <= 10) return abbr;
+  return first.length > 10 ? first.slice(0, 9) + '.' : first;
 }
 
 // « Lanterne du Feu » → « Feu » (repli quand les données ne donnent pas de libellé).

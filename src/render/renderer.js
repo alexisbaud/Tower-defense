@@ -3,7 +3,9 @@
 import { makePaper, makeVignette } from './paper.js';
 import { renderTerrain } from './terrain.js';
 import { drawTower } from './towers.js';
-import { drawEnemy } from './enemies.js';
+import { drawEnemy, setReducedMotion } from './enemies.js';
+import { drawBarrier, drawBarrierThread, noteBarrierUp } from './barriers.js';
+import { setElementDefs } from './glyphs.js';
 import { Fx, ELEMENT_COLORS, drawPortal, drawEnso, drawInkCross, drawRouteMarks } from './fx.js';
 import { INK, PALETTE, withAlpha, wash, brushStroke, mix, makeCanvas } from './brush.js';
 import { T } from '../core/grid.js';
@@ -50,12 +52,14 @@ export class Renderer {
     this.canvas.height = ch;
     this.canvas.style.width = `${this.w}px`;
     this.canvas.style.height = `${this.h}px`;
+    this.edge = null;
     if (this.game) this.layout();
   }
 
   setGame(game, theme) {
     this.game = game;
     this.theme = theme;
+    setElementDefs(game.defs?.elements);
     this.fx.reset({ w: game.grid.cols, h: game.grid.rows }, theme.ambient);
     this.routeVersion = -1;
     this.layout();
@@ -65,6 +69,7 @@ export class Renderer {
     const g = this.game.grid;
     const ts = Math.floor(Math.min(this.w / g.cols, this.h / g.rows));
     this.ts = ts;
+    this.fx.textTs = ts; // les textes flottants s'empilent selon leur taille réelle
     this.ox = Math.round((this.w - g.cols * ts) / 2);
     this.oy = Math.round((this.h - g.rows * ts) / 2);
     this.terrain = renderTerrain(g, ts, this.dpr, this.theme);
@@ -111,14 +116,21 @@ export class Renderer {
   }
 
   onEvents(events) {
-    for (const ev of events) this.fx.onEvent(ev, this.game);
+    for (const ev of events) {
+      if (ev.type === 'barrierUp' && ev.barrier) noteBarrierUp(ev.barrier.id, this.time);
+      this.fx.onEvent(ev, this.game);
+    }
   }
 
   render(dt, alpha, ui = {}) {
     const { ctx, game, ts } = this;
     if (!game) return;
+    if (!(dt > 0)) dt = 0; // le temps du rendu ne recule jamais (rayons des ondes ≥ 0)
     this.time += dt;
-    this.fx.update(dt);
+    // Dernière chance : le monde se fige (les particules ralentissent presque à l'arrêt).
+    const frozen = game.lastChanceT > 0 && !game.rewindAnim;
+    this.fx.update(frozen ? dt * 0.12 : dt);
+    setReducedMotion(!!ui.reducedMotion);
     const time = this.time;
     const dpr = this.dpr;
 
@@ -145,6 +157,8 @@ export class Renderer {
     this.drawGoalGlow(ctx, ts, time);
     drawZones(ctx, game, ts, time);
     this.drawFlyerPaths(ctx, ts, time, ui);
+    this.drawSupportLinks(ctx, ts, time);
+    this.drawBarrierThreads(ctx, ts, time);
     if (this.drawUnderlay) this.drawUnderlay(ctx, ts, time, ui);
 
     // Aperçus de pose / portée sous les entités.
@@ -154,10 +168,15 @@ export class Renderer {
     const anim = game.rewindAnim;
     const ak = anim ? Math.min(1, anim.t / anim.dur) : 0;
     let enemies = game.enemies;
+    let timeless = null;
     if (anim) {
-      // Lecture accélérée de l'historique, à l'envers.
+      // Lecture accélérée de l'historique, à l'envers. Les yokai hors du temps ne
+      // reculent pas : ils restent à leur place (et en couleur, voir plus bas).
       const f = Math.min(anim.frames.length - 1, Math.floor(easeInOut(ak) * (anim.frames.length - 1)));
-      enemies = anim.frames[f].enemies;
+      const isTimeless = (e) => e.timeless || !!game.defs.enemies[e.type]?.abilities?.timeless;
+      enemies = anim.frames[f].enemies.filter((e) => !isTimeless(e));
+      timeless = game.enemies.filter((e) => e.alive !== false && isTimeless(e));
+      this.drawRewindTrails(ctx, ts, anim, f, isTimeless);
     }
     const items = [];
     for (const t of game.towers) items.push({ y: t.y, k: 0, o: t });
@@ -176,6 +195,12 @@ export class Renderer {
       items.push({ y: g.cy(i) - 0.1, k: 2, draw: (c) => drawStone(c, sx, sy, ts, i * 17 + 3, snow) });
     }
     for (const t of game.tornadoes) items.push({ y: t.y + 0.2, k: 2, draw: (c, s, tm) => drawTornado(c, t, s, tm) });
+    for (const b of game.barriers || []) {
+      const bt = game.towerById(b.towerId);
+      let respawnMax = 6;
+      if (bt) respawnMax = game.towerStats(bt).respawn ?? 6;
+      items.push({ y: g.cy(b.tile) + 0.12, k: 2, draw: (c, s, tm) => drawBarrier(c, b, game, s, tm, { respawnMax, reduced: !!ui.reducedMotion }) });
+    }
     if (this.extraDrawables) this.extraDrawables(items);
     items.sort((a, b) => a.y - b.y);
     for (const it of items) {
@@ -186,14 +211,16 @@ export class Renderer {
           continue;
         }
         if (anim && anim.ghosts.includes(t.id)) {
-          // Lanterne posée après l'instant cible : elle se change en écho.
-          drawTower(ctx, t.x * ts, t.y * ts, ts, game.defs.towers[t.type], t.level, time, { alpha: 1 - ak });
-          drawTower(ctx, t.x * ts, t.y * ts, ts, game.defs.towers[t.type], t.level, time, { echo: 1, alpha: ak });
+          // Lanterne posée après l'instant cible : elle se dissout en bandes d'encre
+          // qui glissent et s'effacent, pendant que son écho se forme.
+          this.drawDissolve(ctx, t, ts, time, ak);
+          drawTower(ctx, t.x * ts, t.y * ts, ts, game.defs.towers[t.type], t.level, time, { echo: 1, alpha: ak * ak });
           continue;
         }
         drawTower(ctx, t.x * ts, t.y * ts, ts, game.defs.towers[t.type], t.level, time, {
           shot: t.shotT > 0,
           stunned: t.stunT > 0,
+          tower: t,
         });
       } else if (it.k === 3) {
         const t = it.o;
@@ -207,6 +234,7 @@ export class Renderer {
     }
 
     drawComboLinks(ctx, game, ts, time);
+    this.drawBeams(ctx, ts, time);
     this.drawProjectiles(ctx, ts, time);
     this.fx.drawParts(ctx, ts);
     if (this.drawOverlayExtra) this.drawOverlayExtra(ctx, ts, time, ui);
@@ -214,6 +242,11 @@ export class Renderer {
     this.drawSelection(ctx, ts, time, ui);
     ctx.restore();
 
+    // Rembobinage : négatif d'encre ; les yokai hors du temps restent en couleur.
+    if (anim) {
+      this.drawRewindNegative(ctx, ak);
+      if (timeless?.length) this.drawTimeless(ctx, timeless, ak, time, sx, sy);
+    } else if (frozen) this.drawLastChance(ctx, time, ui);
     // Vignettage + flash.
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     if (anim) this.drawRewindOverlay(ctx, ak, anim, time);
@@ -239,6 +272,225 @@ export class Renderer {
       this.drawPressCombos(ctx, ui.press, time);
     }
     if (ui.flash) this.drawFlash(ctx, ui);
+  }
+
+  // Carillon : fil d'or discret et ondes sonores qui voyagent vers chaque lanterne
+  // accélérée (dans sa portée, hors soutiens et gardiens qui n'ont pas de cadence).
+  drawSupportLinks(ctx, ts, time) {
+    const game = this.game;
+    const towers = game.towers;
+    let started = false;
+    for (const s of towers) {
+      const def = game.defs.towers[s.type];
+      if (def?.attack !== 'support') continue;
+      const st = game.towerStats(s);
+      if (!st?.rateBonus) continue;
+      for (const t of towers) {
+        if (t === s || Math.hypot(t.x - s.x, t.y - s.y) > st.range + 0.01) continue;
+        const ta = game.defs.towers[t.type]?.attack;
+        if (ta === 'support' || ta === 'barrier') continue;
+        if (!started) {
+          started = true;
+          ctx.save();
+          ctx.lineCap = 'round';
+        }
+        const x0 = s.x * ts;
+        const y0 = (s.y - 0.35) * ts;
+        const x1 = t.x * ts;
+        const y1 = (t.y - 0.3) * ts;
+        ctx.globalAlpha = 0.4;
+        ctx.strokeStyle = PALETTE.gold;
+        ctx.lineWidth = Math.max(1, ts * 0.022);
+        ctx.beginPath();
+        ctx.moveTo(x0, y0);
+        ctx.lineTo(x1, y1);
+        ctx.stroke();
+        const ang = Math.atan2(y1 - y0, x1 - x0);
+        ctx.lineWidth = Math.max(1.4, ts * 0.035);
+        for (let k = 0; k < 2; k++) {
+          const q = (time * 0.7 + k * 0.5 + s.x * 0.13) % 1;
+          const px = x0 + (x1 - x0) * q;
+          const py = y0 + (y1 - y0) * q;
+          ctx.globalAlpha = 0.85 * Math.sin(Math.PI * q);
+          ctx.strokeStyle = k ? PALETTE.goldLight : PALETTE.gold;
+          ctx.beginPath();
+          ctx.arc(px, py, ts * (0.09 + 0.06 * q), ang - 0.9, ang + 0.9);
+          ctx.stroke();
+        }
+      }
+    }
+    if (started) ctx.restore();
+  }
+
+  // Fils entre chaque barrière et son Gardien de pierre.
+  drawBarrierThreads(ctx, ts, time) {
+    const game = this.game;
+    if (!game.barriers?.length) return;
+    for (const b of game.barriers) {
+      const t = game.towerById(b.towerId);
+      if (t) drawBarrierThread(ctx, b, t, game, ts, time);
+    }
+  }
+
+  // Rembobinage : chaque yokai qui recule laisse une traînée d'encre (ses positions
+  // dans les images d'historique qui viennent d'être rejouées).
+  drawRewindTrails(ctx, ts, anim, f, isTimeless) {
+    if (f < 1) return;
+    const maps = anim._maps || (anim._maps = []);
+    const mapOf = (i) => maps[i] || (maps[i] = new Map(anim.frames[i].enemies.map((e) => [e.uid ?? e.id, e])));
+    for (const e of anim.frames[f].enemies) {
+      if (isTimeless(e)) continue;
+      const key = e.uid ?? e.id;
+      const pts = [[e.x * ts, e.y * ts]];
+      for (let j = 1; j <= 7 && f - j >= 0; j++) {
+        const o = mapOf(f - j).get(key);
+        if (!o) break;
+        pts.push([o.x * ts, o.y * ts]);
+      }
+      if (pts.length < 2) continue;
+      const span = Math.abs(pts[pts.length - 1][0] - pts[0][0]) + Math.abs(pts[pts.length - 1][1] - pts[0][1]);
+      if (span < ts * 0.05) continue;
+      brushStroke(ctx, pts, ts * (e.size ?? 0.3) * 0.7, withAlpha(INK, 0.5), { taperIn: 0.05, taperOut: 0.95 });
+    }
+  }
+
+  // Lanterne effacée par le rembobinage : bandes horizontales qui glissent de
+  // côté et pâlissent, gouttes d'encre qui s'en échappent.
+  drawDissolve(ctx, t, ts, time, ak) {
+    const def = this.game.defs.towers[t.type];
+    const n = 5;
+    const top = t.y * ts - ts * 0.95;
+    const band = (ts * 1.35) / n;
+    for (let i = 0; i < n; i++) {
+      const y0 = top + i * band;
+      const off = Math.sin(i * 2.3 + time * 7) * ts * 0.28 * ak * (0.4 + (n - i) / n);
+      const a = (1 - ak) * (1 - (i / n) * 0.3 * ak);
+      if (a <= 0.02) continue;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(t.x * ts - ts, y0, ts * 2, band + 0.5);
+      ctx.clip();
+      drawTower(ctx, t.x * ts + off, t.y * ts, ts, def, t.level, time, { alpha: a });
+      ctx.restore();
+    }
+    if (ak < 0.9 && Math.random() < 0.35) {
+      this.fx.add({ x: t.x + (Math.random() - 0.5) * 0.6, y: t.y - Math.random() * 0.8, vx: (Math.random() - 0.5) * 0.6, vy: -0.6, kind: 'blot', color: INK, life: 0.6, size: 0.04, g: -0.6, drag: 0.95, alpha: 0.8 });
+    }
+  }
+
+  // Jets du Torrent : jet d'eau épais qui s'amenuise vers le bout, bords qui ondulent.
+  drawBeams(ctx, ts, time) {
+    const beams = this.game.beams;
+    if (!beams?.length) return;
+    const c = ELEMENT_COLORS.water;
+    for (const b of beams) {
+      const k = Math.max(0, Math.min(1, b.life / 0.25));
+      if (k <= 0) continue;
+      const grow = Math.min(1, (1 - k) / 0.18 + 0.2);
+      const dx = (b.x1 - b.x0) * grow;
+      const dy = (b.y1 - b.y0) * grow;
+      const len = Math.hypot(dx, dy) || 1;
+      const nx = -dy / len;
+      const ny = dx / len;
+      const pts = [];
+      const n = 10;
+      for (let i = 0; i <= n; i++) {
+        const u = i / n;
+        const wob = Math.sin(u * 9 - time * 40) * 0.035 * u;
+        pts.push([(b.x0 + dx * u + nx * wob) * ts, (b.y0 + dy * u + ny * wob) * ts]);
+      }
+      const w = ts * 0.3 * Math.sqrt(k);
+      ctx.save();
+      ctx.globalAlpha = (b.echo ? 0.55 : 1) * Math.min(1, k * 3);
+      brushStroke(ctx, pts, w * 1.3, withAlpha(PALETTE.indigo, 0.55), { taperIn: 0.02, taperOut: 0.85 });
+      brushStroke(ctx, pts, w, c.main, { taperIn: 0.02, taperOut: 0.85 });
+      brushStroke(ctx, pts, w * 0.55, c.light, { taperIn: 0.02, taperOut: 0.8 });
+      brushStroke(ctx, pts, w * 0.18, '#ffffff', { taperIn: 0.05, taperOut: 0.7 });
+      wash(ctx, b.x0 * ts, b.y0 * ts, ts * 0.3, c.light, 0.6 * k);
+      ctx.restore();
+    }
+  }
+
+  // Négatif d'encre (sans ctx.filter, absent de Safari < 18) : « difference » avec
+  // un crème chaud inverse le papier (qui devient nuit) et l'encre (qui devient
+  // claire, virée sépia par la teinte du crème). Une seule passe ; fondu d'entrée et de sortie.
+  drawRewindNegative(ctx, k) {
+    const env = Math.max(0, Math.min(1, k / 0.12, (1 - k) / 0.12));
+    if (env <= 0.01) return;
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalCompositeOperation = 'difference';
+    ctx.globalAlpha = env;
+    ctx.fillStyle = '#f4e6c4';
+    ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+    ctx.restore();
+  }
+
+  // Yokai hors du temps pendant le rembobinage : immobiles, en couleur, cernés
+  // d'un halo crème (seuls à échapper au négatif).
+  drawTimeless(ctx, list, k, time, sx, sy) {
+    const ts = this.ts;
+    const env = Math.max(0, Math.min(1, k / 0.12, (1 - k) / 0.12));
+    ctx.save();
+    ctx.translate(this.ox + sx, this.oy + sy);
+    for (const e of list) {
+      wash(ctx, e.x * ts, e.y * ts, ts * 0.7, PALETTE.cream, 0.55 * env);
+      drawEnemy(ctx, e, this.game.defs.enemies[e.type], e.x * ts, e.y * ts, ts, time);
+    }
+    ctx.restore();
+  }
+
+  // Liseré vermillon des bords de l'écran (dernière chance), rendu une fois en petit.
+  edgeGlow() {
+    if (this.edge) return this.edge;
+    const w = 96;
+    const h = Math.max(96, Math.round((96 * this.h) / Math.max(1, this.w)));
+    const c = makeCanvas(w, h);
+    const g = c.getContext('2d');
+    const vg = g.createRadialGradient(w / 2, h / 2, Math.min(w, h) * 0.38, w / 2, h / 2, Math.hypot(w / 2, h / 2));
+    vg.addColorStop(0, withAlpha(PALETTE.vermillion, 0));
+    vg.addColorStop(1, withAlpha(PALETTE.vermillion, 0.6));
+    g.fillStyle = vg;
+    g.fillRect(0, 0, w, h);
+    this.edge = c;
+    return c;
+  }
+
+  // Dernière chance : le monde se fige (désaturation légère), le sanctuaire bat
+  // en vermillon, un liseré vermillon pulse au bord de l'écran.
+  drawLastChance(ctx, time, ui) {
+    const W = this.canvas.width;
+    const H = this.canvas.height;
+    const reduced = !!ui.reducedMotion;
+    // battement : deux pulsations rapprochées par seconde
+    const ph = (time * 1.1) % 1;
+    const beat = reduced ? 0.6 : Math.max(Math.exp(-((ph - 0.08) ** 2) / 0.008), 0.75 * Math.exp(-((ph - 0.32) ** 2) / 0.008));
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    // désaturation légère : voile gris de papier (mélange normal, peu coûteux sur
+    // mobile ; un mode « saturation » plein écran coûte cher sans GPU)
+    ctx.fillStyle = withAlpha('#8d8a80', 0.36);
+    ctx.fillRect(0, 0, W, H);
+    // liseré vermillon pré-rendu (petite image étirée), qui bat avec le sanctuaire
+    ctx.globalAlpha = 0.45 + 0.55 * beat;
+    ctx.drawImage(this.edgeGlow(), 0, 0, W, H);
+    ctx.restore();
+    const g = this.game.grid;
+    const ts = this.ts;
+    ctx.save();
+    ctx.translate(this.ox, this.oy);
+    for (const gi of g.goals) {
+      const x = g.cx(gi) * ts;
+      const y = g.cy(gi) * ts;
+      wash(ctx, x, y - ts * 0.2, ts * 1.4, PALETTE.vermillion, 0.25 + 0.45 * beat);
+      const q = reduced ? 0.5 : ph;
+      ctx.strokeStyle = withAlpha(PALETTE.vermillion, 0.8 * (1 - q));
+      ctx.lineWidth = Math.max(2, ts * 0.07 * (1 - q * 0.5));
+      ctx.beginPath();
+      ctx.ellipse(x, y + ts * 0.2, ts * (0.4 + q * 1.1), ts * (0.2 + q * 0.55), 0, 0, TAU);
+      ctx.stroke();
+    }
+    ctx.restore();
   }
 
   // Pose en cours : combos qui naîtraient avec les voisines (échos compris), liens
@@ -268,13 +520,8 @@ export class Renderer {
     const cy = H / 2;
     const R = Math.min(W, H) * 0.34;
     ctx.save();
-    ctx.fillStyle = withAlpha(PALETTE.indigo, 0.36 * env);
+    ctx.fillStyle = withAlpha(PALETTE.indigo, 0.16 * env);
     ctx.fillRect(0, 0, W, H);
-    // virage sépia de vieille estampe
-    ctx.globalCompositeOperation = 'multiply';
-    ctx.fillStyle = withAlpha('#c9b48a', 0.28 * env);
-    ctx.fillRect(0, 0, W, H);
-    ctx.globalCompositeOperation = 'source-over';
     // vignettage indigo (un seul dégradé par frame, le temps de l'animation)
     const vg = ctx.createRadialGradient(cx, cy, R * 0.7, cx, cy, Math.hypot(cx, cy));
     vg.addColorStop(0, withAlpha(PALETTE.indigo, 0));
@@ -470,9 +717,83 @@ export class Renderer {
           }
           break;
         }
+        case 'arrow': {
+          // flèche de vent : sillage de deux filets clairs, hampe d'encre, plumes
+          const tr = fx.trailPts(p, 6, ts);
+          if (tr.length > 1) {
+            brushStroke(ctx, tr, ts * 0.09, withAlpha(c.light, 0.75), { taperIn: 0.95, taperOut: 0.05 });
+            brushStroke(ctx, tr, ts * 0.03, withAlpha(c.dark, 0.6), { taperIn: 0.9, taperOut: 0.1 });
+          }
+          ctx.translate(x, y);
+          ctx.rotate(p.angle || 0);
+          ctx.lineCap = 'round';
+          ctx.strokeStyle = INK;
+          ctx.lineWidth = Math.max(1.2, ts * 0.028);
+          ctx.beginPath();
+          ctx.moveTo(-ts * 0.24, 0);
+          ctx.lineTo(ts * 0.12, 0);
+          ctx.stroke();
+          ctx.fillStyle = '#dfe6ec';
+          ctx.lineWidth = Math.max(1, ts * 0.018);
+          ctx.beginPath();
+          ctx.moveTo(ts * 0.2, 0);
+          ctx.lineTo(ts * 0.1, -ts * 0.045);
+          ctx.lineTo(ts * 0.1, ts * 0.045);
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+          ctx.fillStyle = PALETTE.cream;
+          for (const s of [-1, 1]) {
+            ctx.beginPath();
+            ctx.moveTo(-ts * 0.24, 0);
+            ctx.lineTo(-ts * 0.17, s * ts * 0.05);
+            ctx.lineTo(-ts * 0.1, s * ts * 0.012);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+          }
+          break;
+        }
         case 'boulder': {
           // ombre au sol (pâlit avec la hauteur), sillage de poussière, rocher qui roule
           const hk = Math.max(0, 1 - (p.h || 0) * 0.45);
+          if (fx.styleOf(p.element) === 'ember') {
+            // obus incandescent du mortier : fumée, braise qui rougeoie, mèche qui crépite
+            ctx.fillStyle = withAlpha(INK, 0.28 * hk);
+            ctx.beginPath();
+            ctx.ellipse(x, p.y * ts + ts * 0.1, ts * 0.12 * (0.6 + 0.4 * hk), ts * 0.045 * (0.6 + 0.4 * hk), 0, 0, Math.PI * 2);
+            ctx.fill();
+            const tr = fx.trailPts(p, 7, ts);
+            if (tr.length > 1) {
+              brushStroke(ctx, tr, ts * 0.13, withAlpha('#6b625a', 0.35), { taperIn: 0.95, taperOut: 0.15 });
+              brushStroke(ctx, tr, ts * 0.05, withAlpha(c.light, 0.7), { taperIn: 0.9, taperOut: 0.1 });
+            }
+            wash(ctx, x, y, ts * 0.34, c.light, 0.75);
+            ctx.translate(x, y);
+            ctx.fillStyle = '#3a2a24';
+            ctx.strokeStyle = INK;
+            ctx.lineWidth = Math.max(1, ts * 0.025);
+            ctx.beginPath();
+            ctx.arc(0, 0, ts * 0.095, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+            ctx.rotate(time * 5);
+            ctx.strokeStyle = '#ffb35c';
+            ctx.lineWidth = Math.max(1, ts * 0.02);
+            ctx.beginPath();
+            ctx.moveTo(-ts * 0.06, -ts * 0.02);
+            ctx.lineTo(0, ts * 0.01);
+            ctx.lineTo(ts * 0.05, -ts * 0.05);
+            ctx.moveTo(0, ts * 0.01);
+            ctx.lineTo(ts * 0.02, ts * 0.07);
+            ctx.stroke();
+            ctx.fillStyle = '#fff3cf';
+            ctx.beginPath();
+            ctx.arc(-ts * 0.03, -ts * 0.03, ts * 0.022, 0, Math.PI * 2);
+            ctx.fill();
+            if (Math.random() < 0.35) fx.add({ x: p.x, y: p.y - (p.h || 0), vx: (Math.random() - 0.5) * 0.6, vy: -0.3, kind: 'ember', color: c.light, life: 0.35, size: 0.035, alpha: p.echo ? 0.5 : 1 });
+            break;
+          }
           ctx.fillStyle = withAlpha(INK, 0.28 * hk);
           ctx.beginPath();
           ctx.ellipse(x, p.y * ts + ts * 0.1, ts * 0.13 * (0.6 + 0.4 * hk), ts * 0.05 * (0.6 + 0.4 * hk), 0, 0, Math.PI * 2);
@@ -583,11 +904,18 @@ export class Renderer {
     if (ui.tool && ui.tool !== 'stone' && !ui.drag) {
       const g = game.grid;
       const a = 0.75 + Math.sin(time * 4) * 0.2;
+      const el = game.defs.towers[ui.tool]?.element ?? ui.tool;
       for (let i = 0; i < g.size; i++) {
         if (g.type(i) !== T.SLOT) continue;
         if (game.towerAt(g.col(i), g.row(i))) continue;
         const x = g.cx(i) * ts;
         const y = g.cy(i) * ts - ts * 0.01;
+        const se = g.slotElement?.[i];
+        if (se && se !== el) {
+          // socle réservé à un autre élément : voilé d'encre, pas d'ensō
+          wash(ctx, x, y, ts * 0.42, INK, 0.22);
+          continue;
+        }
         // lueur dorée puis ensō doublé d'une ombre d'encre : lisible sur la pierre claire
         wash(ctx, x, y, ts * 0.42, PALETTE.goldLight, 0.32 * a);
         drawEnso(ctx, x, y + ts * 0.02, ts * 0.34, INK, 0.3 * a, i * 1.7, 0.8);
