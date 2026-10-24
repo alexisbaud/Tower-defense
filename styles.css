@@ -4,7 +4,7 @@
    au démarrage (src/ui/screens.js) ; sans elles, l'interface reste lisible. */
 :root {
   --ink: #1d1b22;
-  --ink-soft: rgba(29, 27, 34, 0.62);
+  --ink-soft: rgba(29, 27, 34, 0.74);
   --indigo: #1f2f4f;
   --indigo-deep: #16223a;
   --indigo-2: #2d4270;
@@ -12,6 +12,8 @@
   --vermillion: #c8402a;
   --vermillion-2: #e05a3c;
   --vermillion-dark: #9a2f1d;
+  /* vermillion des aplats qui portent du texte crème (contraste AA ≥ 4,5) */
+  --vermillion-ui: #b0361f;
   --cream: #f2e8d0;
   --cream-2: #e6d9b8;
   --cream-3: #d9ccaa;
@@ -42,6 +44,8 @@
   --action-h: 46px;
   --palette-h: 78px;
   --icon: 52px;
+  --footer-h: 146px;
+  --sheet-h: 220px;
 }
 
 * {
@@ -178,7 +182,7 @@ h4 {
 }
 
 .btn.primary {
-  background-color: var(--vermillion);
+  background-color: var(--vermillion-ui);
   color: var(--cream);
 }
 
@@ -431,7 +435,7 @@ h4 {
   padding: 3px 12px;
   border-radius: 10px;
   background: rgba(22, 28, 18, 0.62);
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 500;
   line-height: 1.35;
   color: var(--cream);
@@ -566,7 +570,7 @@ h4 {
   align-items: center;
   gap: 8px;
   margin-top: 2px;
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.03em;
   color: var(--ink-soft);
@@ -723,10 +727,10 @@ h4 {
   border-radius: 8px;
   background: var(--ink);
   color: var(--gold-2);
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 700;
   line-height: 16px;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
   white-space: nowrap;
   box-shadow: 0 0 0 2px var(--paper);
@@ -808,7 +812,7 @@ h4 {
 
 .stats {
   display: flex;
-  gap: 5px;
+  gap: 8px;
   min-width: 0;
 }
 
@@ -881,9 +885,9 @@ h4 {
 }
 
 .wave-label small {
-  font-size: 9.5px;
+  font-size: 12px;
   font-weight: 700;
-  letter-spacing: 0.16em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   opacity: 0.7;
   margin-bottom: 3px;
@@ -905,7 +909,7 @@ h4 {
 
 .hud-buttons {
   display: flex;
-  gap: 4px;
+  gap: 8px;
 }
 
 #stage {
@@ -927,7 +931,7 @@ h4 {
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 10px;
   padding: 8px 8px 7px;
   background-color: var(--indigo);
   background-image: var(--washi);
@@ -967,8 +971,8 @@ h4 {
   align-items: center;
   justify-content: center;
   gap: 9px;
-  padding: 0 18px 0 5px;
-  background-color: var(--vermillion);
+  padding: 0 14px 0 5px;
+  background-color: var(--vermillion-ui);
   background-image: var(--washi);
   background-size: var(--washi-size);
   color: var(--cream);
@@ -1015,14 +1019,14 @@ h4 {
 .wave-btn.disabled {
   pointer-events: none;
   background-color: var(--indigo-2);
-  color: rgba(242, 232, 208, 0.62);
+  color: rgba(242, 232, 208, 0.82);
   border-color: rgba(10, 14, 26, 0.7);
   box-shadow: 0 2px 0 rgba(10, 14, 26, 0.6);
 }
 
 .wave-btn.disabled .wave-btn-kanji {
   background: rgba(242, 232, 208, 0.14);
-  color: rgba(242, 232, 208, 0.62);
+  color: rgba(242, 232, 208, 0.82);
   box-shadow: inset 0 0 0 1.5px rgba(242, 232, 208, 0.22);
 }
 
@@ -1051,7 +1055,7 @@ h4 {
 .palette {
   display: flex;
   justify-content: center;
-  gap: 6px;
+  gap: 8px;
   height: var(--palette-h);
 }
 
@@ -1137,14 +1141,13 @@ h4 {
 
 .tool.selected {
   background-color: #f6dc8c;
-  transform: translateY(-4px);
-  box-shadow: 0 7px 0 var(--ink), inset 0 0 0 2px var(--vermillion);
+  box-shadow: 0 3px 0 var(--ink), inset 0 0 0 3px var(--vermillion);
 }
 
 .tool.selected::after {
   content: '';
   position: absolute;
-  top: -8px;
+  top: -7px;
   left: 50%;
   width: 10px;
   height: 10px;
@@ -1167,7 +1170,7 @@ h4 {
 }
 
 .tool.poor .cost {
-  color: var(--vermillion);
+  color: var(--vermillion-dark);
   background: rgba(242, 232, 208, 0.7);
 }
 
@@ -1285,7 +1288,7 @@ h4 {
 }
 
 .rewind.used {
-  opacity: 0.42;
+  opacity: 0.8;
 }
 
 /* ───────────── Messages ───────────── */
@@ -1293,8 +1296,8 @@ h4 {
 .toast {
   position: absolute;
   left: 50%;
-  top: calc(var(--sat) + var(--hud-top-h) + 12px);
-  transform: translate(-50%, -8px);
+  bottom: calc(var(--sab) + var(--footer-h) + 10px);
+  transform: translate(-50%, 8px);
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1325,7 +1328,7 @@ h4 {
 }
 
 .toast.bad {
-  background-color: var(--vermillion);
+  background-color: var(--vermillion-ui);
   border-color: var(--ink);
   box-shadow: 0 4px 0 var(--ink), 0 10px 22px rgba(0, 0, 0, 0.25);
 }
@@ -1402,7 +1405,7 @@ h4 {
   max-width: calc(100% - 32px);
   width: fit-content;
   line-height: 1.3;
-  background-color: var(--vermillion);
+  background-color: var(--vermillion-ui);
   background-image: var(--washi);
   background-size: var(--washi-size);
   border: 1.5px solid var(--ink);
@@ -1679,7 +1682,7 @@ h4 {
   letter-spacing: 0.04em;
   white-space: nowrap;
   color: var(--cream);
-  background-color: var(--vermillion);
+  background-color: var(--vermillion-ui);
   background-image: var(--washi);
   background-size: var(--washi-size);
   border: 2px solid var(--ink);
@@ -1752,9 +1755,9 @@ h4 {
   display: inline-block;
   padding: 0 7px;
   border-radius: 4px;
-  background: var(--vermillion);
+  background: var(--vermillion-ui);
   color: var(--cream);
-  font-size: 10.5px;
+  font-size: 12px;
   font-weight: 700;
   line-height: 17px;
   letter-spacing: 0.1em;
@@ -2158,7 +2161,7 @@ h4 {
   .tool .kanji {
     width: 17px;
     height: 17px;
-    font-size: 11.5px;
+    font-size: 12px;
     top: 3px;
     left: 3px;
   }
@@ -2253,5 +2256,1116 @@ h4 {
   }
   100% {
     opacity: 0;
+  }
+}
+
+/* ═════════════ UX mobile : pose, fiches, aperçus, accessibilité ═════════════ */
+
+/* ───────────── Pastilles d'élément : forme + couleur + kanji ───────────── */
+
+.el-badge {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: var(--s, 24px);
+  height: var(--s, 24px);
+  vertical-align: middle;
+}
+
+.el-badge > svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  filter: drop-shadow(0 1px 0 rgba(0, 0, 0, 0.3));
+}
+
+.el-badge > b {
+  position: relative;
+  font-family: var(--font-title);
+  font-weight: 800;
+  font-size: max(12px, calc(var(--s, 24px) * 0.5));
+  line-height: 1;
+  color: var(--cream);
+}
+
+/* le kanji se cale dans la partie large de la forme */
+.el-badge.el-triangle > b {
+  top: calc(var(--s, 24px) * 0.13);
+  font-size: max(12px, calc(var(--s, 24px) * 0.44));
+}
+
+.el-badge.el-drop > b {
+  top: calc(var(--s, 24px) * 0.1);
+}
+
+.el-badge.el-diamond > b {
+  font-size: max(12px, calc(var(--s, 24px) * 0.46));
+}
+
+.el-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-weight: 700;
+  color: var(--el-ink, var(--ink));
+  white-space: nowrap;
+}
+
+/* ───────────── Palette : forme + kanji, libellé français, pierres restantes ───────────── */
+
+.tool canvas {
+  left: calc(50% + 7px);
+}
+
+.tool-id {
+  position: absolute;
+  z-index: 1;
+  top: 3px;
+  left: 3px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  pointer-events: none;
+}
+
+.tool-id .el-badge {
+  --s: 26px !important;
+  width: 26px;
+  height: 26px;
+}
+
+.tool-name {
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.05;
+  color: var(--ink);
+  text-shadow: 0 0 2px var(--cream), 0 0 3px var(--cream), 0 0 4px var(--cream);
+}
+
+.tool-count {
+  position: absolute;
+  z-index: 1;
+  top: 3px;
+  right: 3px;
+  min-width: 28px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 10px;
+  background: var(--indigo);
+  color: var(--cream);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 20px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+.tool.empty {
+  background-color: var(--cream-3);
+}
+
+.tool.empty canvas {
+  opacity: 0.32;
+}
+
+.tool.empty .tool-count {
+  background: var(--vermillion-ui);
+}
+
+.palette.scroll {
+  justify-content: flex-start;
+  overflow-x: auto;
+  overflow-y: visible;
+  touch-action: pan-x;
+  scrollbar-width: none;
+}
+
+.palette.scroll .tool {
+  flex: 0 0 62px;
+}
+
+/* petit rebond d'un bouton (retour d'action) */
+.pop {
+  animation: pop 0.3s cubic-bezier(0.3, 1.6, 0.5, 1);
+}
+
+@keyframes pop {
+  40% {
+    transform: scale(1.09);
+  }
+}
+
+.stat b.spend {
+  transform: scale(0.86);
+  color: #ffb39c;
+}
+
+/* ───────────── Rangée d'actions : jauge, aperçu de vague, bouton de vague ───────────── */
+
+.action-row {
+  gap: 8px;
+}
+
+.wave-btn {
+  margin-left: 0;
+  min-width: 124px;
+  gap: 8px;
+}
+
+.action-row:not(.has-preview) .wave-btn {
+  flex: 1 1 auto;
+}
+
+.action-row:not(.has-preview) .rewind:not(.compact):not(.hidden) ~ .wave-btn {
+  flex: 0 0 auto;
+}
+
+.wave-btn-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
+  line-height: 1.05;
+}
+
+.wave-btn-text > span {
+  white-space: nowrap;
+}
+
+.wave-btn-text small {
+  margin-top: 2px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+.wave-btn.climax {
+  border-color: var(--ink);
+  box-shadow: 0 3px 0 var(--ink), 0 0 0 3px var(--gold-2);
+}
+
+.wave-btn.climax .wave-btn-kanji {
+  background: var(--gold-2);
+  color: var(--vermillion-dark);
+}
+
+.wave-btn[data-mode='call'] .wave-btn-kanji {
+  background: var(--gold-2);
+  color: var(--ink);
+}
+
+.wave-preview {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.action-row:not(.has-preview) .wave-preview {
+  display: none;
+}
+
+.wchip {
+  position: relative;
+  flex: 0 0 44px;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  background-color: var(--cream);
+  background-image: var(--washi);
+  background-size: var(--washi-size);
+  border: 2px solid var(--ink);
+  box-shadow: 0 2px 0 var(--ink);
+}
+
+.wchip:active {
+  transform: translateY(1px);
+  box-shadow: 0 1px 0 var(--ink);
+}
+
+.wchip img {
+  width: 38px;
+  height: 38px;
+  pointer-events: none;
+}
+
+.wchip b {
+  position: absolute;
+  right: -3px;
+  bottom: -4px;
+  min-width: 20px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 9px;
+  background: var(--ink);
+  color: var(--cream);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.wchip .el-badge {
+  position: absolute;
+  top: -6px;
+  left: -6px;
+}
+
+.wchip.boss {
+  box-shadow: 0 2px 0 var(--ink), inset 0 0 0 2px var(--vermillion);
+}
+
+.wchip.more b {
+  position: static;
+  background: none;
+  color: var(--ink);
+  font-size: 15px;
+}
+
+.wave-preview.climax .wchip {
+  box-shadow: 0 2px 0 var(--ink), 0 0 0 2px var(--gold-2);
+}
+
+/* ───────────── Jauge de Rembobinage compacte (hors d'usage) ───────────── */
+
+.rewind {
+  transition: flex-basis 0.25s ease-out;
+}
+
+.rewind.compact {
+  flex: 0 0 var(--action-h);
+}
+
+.rewind.compact .rewind-label,
+.rewind.compact .rewind-fill {
+  display: none;
+}
+
+.rewind.compact .rewind-track {
+  border-color: rgba(242, 232, 208, 0.42);
+}
+
+/* déjà utilisé : 巻 barré d'un trait, contraste conservé */
+.rewind.used .rewind-knob::before {
+  content: '';
+  position: absolute;
+  left: 16%;
+  right: 16%;
+  top: 50%;
+  height: 3px;
+  margin-top: -1.5px;
+  border-radius: 2px;
+  background: var(--vermillion-ui);
+  transform: rotate(-38deg);
+}
+
+/* ───────────── Annuler (3 s après une pose) ───────────── */
+
+.undo-pill {
+  position: absolute;
+  z-index: 21;
+  left: calc(var(--sal) + 10px);
+  bottom: calc(var(--sab) + var(--footer-h) + 10px);
+  min-height: 44px;
+  min-width: 112px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 16px 0 12px;
+  border-radius: 22px;
+  overflow: hidden;
+  background-color: var(--ink);
+  background-image: var(--washi);
+  background-size: var(--washi-size);
+  color: var(--cream);
+  border: 2px solid var(--gold-2);
+  box-shadow: 0 3px 0 rgba(0, 0, 0, 0.45), 0 8px 16px rgba(0, 0, 0, 0.25);
+  font-size: 15px;
+  font-weight: 700;
+  animation: undoIn 0.22s cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+
+.undo-pill:active {
+  transform: scale(0.95);
+}
+
+.undo-ico {
+  font-size: 21px;
+  line-height: 1;
+  color: var(--gold-2);
+}
+
+.undo-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 4px;
+  background: var(--gold-2);
+  transform-origin: 0 50%;
+}
+
+@keyframes undoIn {
+  from {
+    transform: translateY(12px);
+    opacity: 0;
+  }
+}
+
+/* messages : au-dessus de « Annuler » et de la fiche ouverte */
+.has-undo .toast {
+  bottom: calc(var(--sab) + var(--footer-h) + 64px);
+}
+
+.sheet-open .toast {
+  bottom: calc(var(--sheet-h) + 10px);
+  z-index: 32;
+}
+
+.sheet-open .undo-pill {
+  display: none;
+}
+
+.toast {
+  white-space: normal;
+  text-align: center;
+  width: max-content;
+}
+
+/* ───────────── Anneau d'appui long (ensō qui se remplit) ───────────── */
+
+.hold {
+  position: absolute;
+  z-index: 46;
+  width: 84px;
+  height: 84px;
+  margin: -42px 0 0 -42px;
+  pointer-events: none;
+}
+
+.hold svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  transform: rotate(-80deg);
+}
+
+.hold circle {
+  fill: none;
+  stroke-linecap: round;
+}
+
+.hold-bg {
+  stroke: rgba(242, 232, 208, 0.5);
+  stroke-width: 10;
+}
+
+.hold-ink,
+.hold-fill {
+  stroke-dasharray: 195;
+  stroke-dashoffset: 195;
+  transition: stroke-dashoffset var(--hold-ms, 320ms) linear;
+}
+
+.hold-ink {
+  stroke: rgba(29, 27, 34, 0.6);
+  stroke-width: 9;
+}
+
+.hold-fill {
+  stroke: var(--gold-2);
+  stroke-width: 5;
+}
+
+/* l'ensō reste ouvert : il ne se referme jamais tout à fait */
+.hold.run .hold-ink,
+.hold.run .hold-fill {
+  stroke-dashoffset: 10;
+}
+
+/* ───────────── Barre d'actions de la lanterne sélectionnée ───────────── */
+
+.tower-bar {
+  position: absolute;
+  z-index: 8;
+  left: 0;
+  top: 0;
+  display: flex;
+  gap: 8px;
+  padding: 5px;
+  border-radius: 14px;
+  background-color: var(--ink);
+  background-image: var(--washi);
+  background-size: var(--washi-size);
+  border: 1.5px solid rgba(242, 232, 208, 0.3);
+  box-shadow: 0 4px 0 rgba(0, 0, 0, 0.35), 0 8px 18px rgba(0, 0, 0, 0.25);
+  animation: barIn 0.16s ease-out;
+}
+
+.tower-bar::after {
+  content: '';
+  position: absolute;
+  left: var(--ax, 50%);
+  bottom: -7px;
+  width: 12px;
+  height: 12px;
+  margin-left: -6px;
+  background: var(--ink);
+  border-right: 1.5px solid rgba(242, 232, 208, 0.3);
+  border-bottom: 1.5px solid rgba(242, 232, 208, 0.3);
+  transform: rotate(45deg);
+}
+
+.tower-bar.below::after {
+  top: -7px;
+  bottom: auto;
+  transform: rotate(225deg);
+}
+
+@keyframes barIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.96);
+  }
+}
+
+.tb-btn {
+  position: relative;
+  min-width: 66px;
+  height: 50px;
+  padding: 3px 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  border-radius: 10px;
+  background-color: var(--cream);
+  background-image: var(--washi);
+  background-size: var(--washi-size);
+  color: var(--ink);
+  border: 1.5px solid var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+
+.tb-btn:active {
+  transform: scale(0.94);
+}
+
+.tb-ico {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  background: var(--indigo);
+  color: var(--cream);
+  font-family: var(--font-title);
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+/* Vendre : bouton secondaire (contour), confirmé par un second toucher */
+.tb-sell {
+  background: transparent;
+  color: var(--cream);
+  border-color: rgba(242, 232, 208, 0.55);
+}
+
+.tb-sell .tb-ico {
+  background: var(--gold);
+  color: var(--ink);
+}
+
+.tb-sell.confirm {
+  background-color: var(--vermillion-ui);
+  border-color: var(--cream);
+  animation: pop 0.3s;
+}
+
+.tb-sell.confirm .tb-ico {
+  background: var(--cream);
+}
+
+/* ───────────── Fiches compactes (à la place de la barre du bas) ───────────── */
+
+.sheet {
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(var(--sab) + var(--footer-h) + 96px);
+  border-width: 2px 0 0;
+  border-radius: 16px 16px 0 0;
+  padding: 0 calc(12px + var(--sar)) calc(var(--sab) + 8px) calc(12px + var(--sal));
+  box-shadow: 0 -8px 22px rgba(0, 0, 0, 0.28), inset 0 3px 0 var(--cream), inset 0 4px 0 rgba(29, 27, 34, 0.12);
+}
+
+.sheet-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 0 6px;
+  border-bottom: 1px solid rgba(29, 27, 34, 0.16);
+}
+
+.sheet-pic {
+  flex: 0 0 44px;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 9px;
+  border: 2px solid var(--ink);
+  background: radial-gradient(circle at 50% 45%, #fff8e6, #e6d9b8 75%);
+  font-family: var(--font-title);
+  font-size: 22px;
+  font-weight: 800;
+}
+
+.sheet-pic img {
+  width: 40px;
+  height: 40px;
+}
+
+.sheet-pic.stone {
+  background: var(--indigo);
+  color: var(--cream);
+}
+
+.sheet-title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.sheet .sheet-title h3 {
+  display: block;
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.15;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sheet-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 5px;
+  margin-top: 2px;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.2;
+  color: var(--ink);
+}
+
+.sheet-tags .dot {
+  opacity: 0.6;
+}
+
+.tag {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: 5px;
+  background: var(--indigo);
+  color: var(--cream);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.tag.boss {
+  background: var(--vermillion-ui);
+}
+
+.sheet .h3-level {
+  margin-left: 0;
+}
+
+.sheet-close {
+  flex: 0 0 44px;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border: 2px solid var(--ink);
+  background: var(--cream-2);
+  font-size: 17px;
+  font-weight: 800;
+}
+
+.sheet-close:active {
+  transform: scale(0.92);
+}
+
+.sheet-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+  padding: 6px 0 2px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.sheet-desc {
+  margin: 0 0 6px;
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+.sheet .stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  margin: 4px 0 6px;
+}
+
+.sheet .stats span {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 3px 2px;
+  border-radius: 8px;
+  background: rgba(29, 27, 34, 0.06);
+  box-shadow: inset 0 0 0 1px rgba(29, 27, 34, 0.14);
+}
+
+.sheet .stats i {
+  font-style: normal;
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.sheet .stats b {
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sheet-row {
+  display: grid;
+  grid-template-columns: 72px 1fr;
+  gap: 8px;
+  padding: 4px 0;
+  border-top: 1px dotted rgba(29, 27, 34, 0.28);
+}
+
+.sheet-row > i {
+  font-style: normal;
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--indigo);
+  padding-top: 1px;
+}
+
+.sheet-row small {
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.fw {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin: 2px 0 6px;
+}
+
+.fw > span {
+  padding: 4px 7px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  line-height: 1.3;
+}
+
+.fw i {
+  display: block;
+  font-style: normal;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.fw-plus {
+  background: rgba(111, 127, 60, 0.16);
+  box-shadow: inset 3px 0 0 var(--moss);
+}
+
+.fw-plus i {
+  color: #3f4a1b;
+}
+
+.fw-minus {
+  background: rgba(200, 64, 42, 0.12);
+  box-shadow: inset 3px 0 0 var(--vermillion);
+}
+
+.fw-minus i {
+  color: var(--vermillion-dark);
+}
+
+.combo-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 1px 0 3px;
+}
+
+.combo-line .el-badge {
+  margin-top: 1px;
+}
+
+.combo-mini {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-right: 6px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.muted {
+  color: var(--ink-soft);
+}
+
+.sheet-actions {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 8px;
+  padding-top: 8px;
+}
+
+.sheet .sheet-actions .btn {
+  min-height: 46px;
+  font-size: 15px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.sheet .btn.sell {
+  background-color: transparent;
+}
+
+.sheet .btn.sell.confirm {
+  background-color: var(--vermillion-ui);
+  color: var(--cream);
+}
+
+.hpbar {
+  position: relative;
+  height: 22px;
+  margin: 2px 0 6px;
+  overflow: hidden;
+  border: 2px solid var(--ink);
+  border-radius: 11px;
+  background: rgba(29, 27, 34, 0.14);
+}
+
+.hpbar i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: linear-gradient(180deg, var(--vermillion-2), var(--vermillion-dark));
+  transition: width 0.15s linear;
+}
+
+.hpbar span {
+  position: relative;
+  display: block;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 18px;
+  text-align: center;
+  color: var(--cream);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.75);
+}
+
+.hpbar.dead {
+  opacity: 0.5;
+}
+
+.wave-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.wave-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: rgba(29, 27, 34, 0.06);
+  box-shadow: inset 0 0 0 1px rgba(29, 27, 34, 0.12);
+  text-align: left;
+  font-size: 14px;
+}
+
+.wave-line img {
+  width: 36px;
+  height: 36px;
+}
+
+.wave-line span {
+  flex: 1 1 auto;
+}
+
+/* ───────────── Carte « Nouveau yokai » compacte ───────────── */
+
+.intro {
+  right: auto;
+  width: min(64%, 260px);
+  gap: 8px;
+  padding: 5px 6px 5px 5px;
+  border-radius: 12px;
+  cursor: pointer;
+}
+
+.intro img {
+  flex: 0 0 46px;
+  width: 46px;
+  height: 46px;
+  border-radius: 9px;
+  border: 2px solid var(--ink);
+  background: radial-gradient(circle at 50% 45%, #fff8e6, #e6d9b8 75%);
+}
+
+.intro .intro-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.intro h4 {
+  font-size: 16px;
+}
+
+.intro p {
+  font-size: 12px;
+  line-height: 1.25;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.intro-more {
+  margin-left: auto;
+  font-size: 22px;
+  font-weight: 800;
+  color: var(--ink-soft);
+}
+
+/* ───────────── Pause : feuille du bas, sans voile ───────────── */
+
+.modal.as-sheet {
+  background: none;
+  pointer-events: none;
+  place-items: end stretch;
+  padding: 0;
+  animation: none;
+}
+
+.modal.as-sheet .modal-card {
+  pointer-events: auto;
+  width: 100%;
+  max-width: none;
+  max-height: calc(100% - var(--sat) - var(--hud-top-h) - 8px);
+  border-width: 2px 0 0;
+  border-radius: 16px 16px 0 0;
+  padding: 8px calc(12px + var(--sar)) calc(var(--sab) + 10px) calc(12px + var(--sal));
+  text-align: left;
+  box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.3), inset 0 3px 0 var(--cream), inset 0 4px 0 rgba(29, 27, 34, 0.12);
+  animation: sheetIn 0.22s cubic-bezier(0.2, 0.9, 0.3, 1.1);
+}
+
+.modal.as-sheet.peek .modal-card {
+  display: none;
+}
+
+.pause-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.pause-head .modal-kanji {
+  writing-mode: horizontal-tb;
+  margin: 0;
+  padding: 5px 7px;
+  font-size: 20px;
+  animation: none;
+  transform: rotate(-3deg);
+}
+
+.modal-card .pause-head h2 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.modal-card .pause-head h2::after {
+  display: none;
+}
+
+.modal-card .pause-head p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.3;
+  color: var(--ink-soft);
+}
+
+.modal-card .pause-hint {
+  margin: 6px 0 0;
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--ink-soft);
+}
+
+.modal-card .actions.pause-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.pause-grid .btn {
+  min-height: 46px;
+  padding: 0 6px;
+  font-size: 14px;
+}
+
+/* ───────────── Table des combos ───────────── */
+
+.combo-table {
+  display: grid;
+  grid-template-columns: 50px repeat(var(--n, 4), minmax(0, 1fr));
+  gap: 4px;
+  margin: 10px 0 8px;
+}
+
+.ct-head {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  min-height: 44px;
+  font-weight: 700;
+}
+
+.ct-head small {
+  font-size: 12px;
+  line-height: 1.1;
+}
+
+.ct-head.off {
+  opacity: 0.55;
+}
+
+.ct-cell {
+  min-height: 50px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 2px 3px;
+  border-radius: 8px;
+  border: 1.5px solid var(--ink);
+  background: var(--cream-2);
+  box-shadow: inset 0 -4px 0 var(--c, var(--gold));
+  line-height: 1.05;
+  text-align: center;
+}
+
+.ct-cell b {
+  font-family: var(--font-title);
+  font-size: 15px;
+}
+
+.ct-cell small {
+  font-size: 12px;
+  font-weight: 700;
+  hyphens: auto;
+  overflow-wrap: anywhere;
+}
+
+.ct-cell.on {
+  background: var(--gold-2);
+  box-shadow: inset 0 -4px 0 var(--c, var(--gold)), 0 0 0 2px var(--ink);
+}
+
+.ct-cell.empty {
+  display: grid;
+  place-items: center;
+  border: 1.5px dashed rgba(29, 27, 34, 0.3);
+  background: none;
+  box-shadow: none;
+  color: var(--ink-soft);
+}
+
+.ct-detail {
+  min-height: 64px;
+  padding: 6px 9px;
+  border-radius: 10px;
+  background: rgba(29, 27, 34, 0.06);
+  box-shadow: inset 0 0 0 1px rgba(29, 27, 34, 0.12);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.ct-detail .ct-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  font-size: 14px;
+}
+
+.modal-card .ct-detail p {
+  margin: 3px 0 0;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.ct-detail p i {
+  font-style: normal;
+  font-weight: 800;
+  color: var(--indigo);
+  margin-right: 4px;
+}
+
+.combos-card .actions {
+  margin-top: 10px;
+}
+
+/* l'anneau d'appui long garde sa durée même avec « réduire les animations » :
+   c'est une information (progression), pas un effet */
+@media (prefers-reduced-motion: reduce) {
+  .hold .hold-ink,
+  .hold .hold-fill {
+    transition-duration: var(--hold-ms, 320ms) !important;
   }
 }
