@@ -2240,4 +2240,18 @@ h4 {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+  /* Les bannières restent lisibles : simple fondu, sans déplacement. */
+  .banner.show {
+    animation: bannerStill 2.1s linear forwards !important;
+  }
+}
+
+@keyframes bannerStill {
+  0%,
+  85% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
 }

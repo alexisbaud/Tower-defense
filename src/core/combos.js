@@ -54,20 +54,18 @@ function inZone(z, e) {
   return Math.hypot(e.x - z.x, e.y - z.y) <= z.radius + e.size * 0.5;
 }
 
+// Statuts d'un combo : deux éléments mêlés, donc aucune immunité d'absorption
+// (seuls les dégâts typés, plus bas, peuvent être absorbés).
 export function applyStatus(game, e, status, mult, groundOnly, duration) {
   if (groundOnly && e.flying) return;
   if (status.blind) e.blindT = Math.max(e.blindT, Math.max(duration, status.blind));
   if (status.slow) {
     const f = 1 - (1 - status.slow) * Math.min(1.6, mult); // plancher appliqué par applySlow
-    game.applySlow(e, f, Math.max(duration, 0.3));
+    game.applySlow(e, f, Math.max(duration, 0.3), null);
   }
-  if (status.burn) game.applyBurn(e, status.burn.dps * mult, Math.max(duration, status.burn.duration));
-  if (status.stun) game.applyStun(e, status.stun * Math.sqrt(mult));
-  if (status.shred) {
-    const m = 1 + (status.shred.mult - 1) * mult;
-    e.shredM = Math.max(e.shredT > 0 ? e.shredM : 1, m);
-    e.shredT = Math.max(e.shredT, Math.max(duration, status.shred.duration));
-  }
+  if (status.burn) game.applyBurn(e, status.burn.dps * mult, Math.max(duration, status.burn.duration), null);
+  if (status.stun) game.applyStun(e, status.stun * Math.sqrt(mult), null);
+  if (status.shred) game.applyShred(e, 1 + (status.shred.mult - 1) * mult, Math.max(duration, status.shred.duration));
 }
 
 export function updateZones(game, dt) {
@@ -99,7 +97,8 @@ export function updateZones(game, dt) {
         if (!e.alive || e.spawnT > 0 || !inZone(z, e)) continue;
         if (fx.groundOnly && e.flying) continue;
         applyStatus(game, e, fx.status, z.mult, false, 0);
-        if (fx.damage) game.damage(e, fx.damage * z.mult, z.def.elements[1], {});
+        // dégâts typés par l'élément déclaré du combo (ex. Givre : eau)
+        if (fx.damage) game.damage(e, fx.damage * z.mult, fx.element ?? z.def.elements[0], {});
       }
       game.emit('pulse', { zone: z });
     } else if (fx.kind === 'tornado') {
@@ -143,7 +142,7 @@ export function updateTornadoes(game, dt) {
     for (const e of game.enemies) {
       if (!e.alive || e.spawnT > 0) continue;
       if (Math.hypot(e.x - t.x, e.y - t.y) > t.size + e.size * 0.5) continue;
-      game.applyBurn(e, t.dps * 0.25, 1);
+      game.applyBurn(e, t.dps * 0.25, 1, 'fire');
       game.damage(e, t.dps * dt, 'fire', { dot: true });
       if (t.knockback && e.knock <= 0) game.applyKnockback(e, t.knockback);
     }

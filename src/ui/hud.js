@@ -12,6 +12,8 @@ const REASONS = {
   level: 'Niveau maximum atteint',
   mismatch: 'Fusion : même élément et même niveau',
   over: 'La partie est terminée',
+  echo: 'Un écho occupe ce socle : posez ailleurs',
+  rewinding: 'Le temps recule…',
 };
 
 const STONE_COLOR = '#7d7a70';

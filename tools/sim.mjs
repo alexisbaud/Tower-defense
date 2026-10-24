@@ -4,6 +4,8 @@
 import { Game, STEP } from '../src/core/game.js';
 import { defs, loadLevel, levelOrder } from '../src/data.js';
 import { bot } from './bot.mjs';
+import { realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 const args = process.argv.slice(2);
 const verbose = args.includes('--verbose');
@@ -39,7 +41,16 @@ export async function simulate(id, strategy, seed = 1) {
   };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Lancé directement (y compris via un lien symbolique ou un chemin avec espaces) ?
+const isMain = (() => {
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1]);
+  } catch {
+    return false;
+  }
+})();
+
+if (isMain) {
   let failed = false;
   for (const id of list) {
     for (const s of strategies) for (const seed of seeds) {

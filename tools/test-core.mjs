@@ -212,8 +212,8 @@ console.log('Rendements décroissants');
   g.startNextWave();
   run(g, 4);
   const e = g.enemies[0];
-  e.x = g.grid.cx(e.cur);
-  e.y = g.grid.cy(e.cur);
+  e.x = e.mx = g.grid.cx(e.cur);
+  e.y = e.my = g.grid.cy(e.cur);
   const y0 = e.y;
   g.applyKnockback(e, 1.1);
   const amount = e.knock;
@@ -230,6 +230,86 @@ console.log('Rendements décroissants');
   check('recul sans aller-retour', !jitter);
   // le yokai est entre sa case de recul (devenue courante) et la case qu'il quittait
   check('case de recul = case courante', g.grid.cy(e.cur) <= e.y && e.y <= g.grid.cy(e.target), `${g.grid.cy(e.cur)} ≤ ${e.y} ≤ ${g.grid.cy(e.target)}`);
+}
+
+console.log('Correctifs de l’audit (bloc bugs)');
+{
+  // A1 : un effet faible ne prolonge plus un effet fort.
+  const g = new Game(base({ waves: [{ groups: [{ enemy: 'kodama', count: 1 }] }] }), defs);
+  g.startNextWave();
+  run(g, 1);
+  const e = g.enemies[0];
+  g.applySlow(e, 0.35, 0.3, null);
+  g.applySlow(e, 0.6, 1.4, 'water');
+  run(g, 0.5);
+  check('A1 ralentissement fort expiré, faible actif', Math.abs(e.slowF - 0.6) < 1e-6, `${e.slowF}`);
+  g.applyBurn(e, 20, 0.5, null);
+  g.applyBurn(e, 2.5, 3, 'fire');
+  const hp = e.hp;
+  run(g, 2);
+  const lost = hp - e.hp;
+  check('A1 brûlure forte non prolongée', lost < 20 * 0.5 + 2.5 * 2 + 1, `${lost.toFixed(1)}`);
+  // C15 : un étourdissement plus court que l'actuel ne coûte pas de fatigue
+  g.applyStun(e, 1);
+  const f = e.stunFatigue;
+  g.applyStun(e, 0.3);
+  check('C15 étourdissement court sans fatigue', e.stunFatigue === f);
+}
+{
+  // A2 : les enfants d'une division restent séparés.
+  const g = new Game(base({ waves: [{ groups: [{ enemy: 'nuppeppo', count: 1, hp: 2 }] }] }), defs);
+  g.startNextWave();
+  run(g, 3);
+  g.damage(g.enemies[0], 9999, 'fire');
+  g.cleanup();
+  run(g, 3);
+  const [a, b] = g.enemies;
+  check('A2 enfants distincts après 3 s', a && b && Math.hypot(a.x - b.x, a.y - b.y) > 0.15, a && b ? Math.hypot(a.x - b.x, a.y - b.y).toFixed(3) : 'absents');
+  check('A19 enfants héritent du multiplicateur de PV', a && Math.abs(a.maxHp - defs.enemies.nuppeppo_ko.hp * 2) < 1e-6, a ? `${a.maxHp}` : '');
+}
+{
+  // A3 : plafond de fusion lié aux données de la tour.
+  const towers = { ...defs.towers, mini: { ...defs.towers.fire, levels: defs.towers.fire.levels.slice(0, 2) } };
+  const g = new Game(base({ towers: ['mini'] }), { ...defs, towers });
+  const a = g.placeTower('mini', 1, 1);
+  const b = g.placeTower('mini', 2, 1);
+  const c = g.fuse(a.id, b.id);
+  const d = g.placeTower('mini', 1, 1);
+  const e2 = g.placeTower('mini', 6, 1);
+  const f2 = g.fuse(d.id, e2.id);
+  check('A3 N2 maximum pour une tour à 2 niveaux', !g.canFuse(f2.id, c.id).ok && g.canFuse(f2.id, c.id).reason === 'level');
+}
+{
+  // A9 / A11 : socle d'un écho occupé ; aucune commande pendant l'animation.
+  const g = new Game(base({ rewind: true, waves: [{ groups: [{ enemy: 'kodama', count: 30, interval: 0.5 }] }] }), defs);
+  g.startNextWave();
+  run(g, 7);
+  g.placeTower('fire', 1, 2);
+  g.rewind();
+  check('A11 pose refusée pendant le rembobinage', g.canPlaceTower('water', 6, 2).reason === 'rewinding');
+  check('A11 pierre refusée pendant le rembobinage', g.canPlaceStone(4, 2).reason === 'rewinding');
+  run(g, 1.3);
+  check('A9 socle de l’écho occupé', g.canPlaceTower('water', 1, 2).reason === 'echo');
+}
+{
+  // A18 : une brûlure résiduelle ne soigne pas un yokai qui absorbe le feu.
+  const g = new Game(base({ waves: [{ groups: [{ enemy: 'kitsune', count: 1, absorb: 'fire' }] }] }), defs);
+  g.startNextWave();
+  run(g, 1);
+  const e = g.enemies[0];
+  e.hp = 30;
+  e.burns.push({ v: 10, t: 2 });
+  run(g, 1);
+  check('A18 brûlure sans soin', e.hp <= 30);
+}
+{
+  // A23 : pas de tir de trop sur une cible déjà condamnée.
+  const g = new Game(base({ waves: [{ groups: [{ enemy: 'kodama', count: 1 }] }] }), defs);
+  g.startNextWave();
+  run(g, 1);
+  const e = g.enemies[0];
+  e.pend = e.hp;
+  check('A23 cible condamnée ignorée', g.findTarget({ x: e.x, y: e.y }, defs.towers.fire, 3, true) === null);
 }
 
 console.log('Robustesse');

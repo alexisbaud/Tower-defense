@@ -622,8 +622,8 @@ export class Renderer {
     const ts = this.ts;
     const ox = this.ox + t.x * ts;
     const oy = this.oy + t.y * ts;
-    const gx = drag.x;
-    const gy = drag.y - ts * 0.4;
+    const gx = drag.gx ?? drag.x;
+    const gy = (drag.gy ?? drag.y) + ts * 0.3; // drag.gy = corps de la lanterne portée
     ctx.save();
     ctx.strokeStyle = withAlpha(PALETTE.gold, 0.7);
     ctx.lineWidth = Math.max(1.5, ts * 0.04);

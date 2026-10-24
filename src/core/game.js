@@ -94,12 +94,15 @@ export class Game {
 
   canPlaceTower(type, c, r) {
     if (this.state === 'won' || this.state === 'lost') return { ok: false, reason: 'over' };
+    if (this.rewindAnim) return { ok: false, reason: 'rewinding' };
     const def = this.defs.towers[type];
     if (!def || !this.availableTowers.includes(type)) return { ok: false, reason: 'unknown' };
     if (!this.grid.inBounds(c, r)) return { ok: false, reason: 'bounds' };
     const i = this.grid.idx(c, r);
     if (this.grid.type(i) !== T.SLOT) return { ok: false, reason: 'slot' };
     if (this.towerAt(c, r)) return { ok: false, reason: 'occupied' };
+    // Un écho occupe son socle jusqu'à sa disparition : on repose « ailleurs ».
+    if (this.echoes.some((t) => t.c === c && t.r === r)) return { ok: false, reason: 'echo' };
     if (this.gold < def.cost) return { ok: false, reason: 'gold' };
     return { ok: true };
   }
@@ -140,7 +143,7 @@ export class Game {
 
   sellTower(id) {
     const t = this.towerById(id);
-    if (!t) return 0;
+    if (!t || this.rewindAnim) return 0;
     const value = this.sellValue(t);
     this.gold += value;
     this.towers = this.towers.filter((x) => x !== t);
@@ -165,9 +168,15 @@ export class Game {
     const b = this.towerById(dstId);
     if (!a || !b || a === b) return { ok: false, reason: 'mismatch' };
     if (this.state === 'won' || this.state === 'lost') return { ok: false, reason: 'over' };
+    if (this.rewindAnim) return { ok: false, reason: 'rewinding' };
     if (a.type !== b.type || a.level !== b.level) return { ok: false, reason: 'mismatch' };
-    if (a.level >= this.rules.maxTowerLevel) return { ok: false, reason: 'level' };
+    if (a.level >= this.maxLevelOf(a.type)) return { ok: false, reason: 'level' };
     return { ok: true };
+  }
+
+  // Niveau maximal d'une tour : borné par la règle globale ET par ses données.
+  maxLevelOf(type) {
+    return Math.min(this.rules.maxTowerLevel, this.defs.towers[type].levels.length);
   }
 
   // Glisser `src` sur `dst` : `src` disparaît, `dst` monte d'un niveau.
@@ -175,13 +184,14 @@ export class Game {
     if (!this.canFuse(srcId, dstId).ok) return null;
     const src = this.towerById(srcId);
     const dst = this.towerById(dstId);
+    const dstOldId = dst.id;
     this.towers = this.towers.filter((t) => t !== src);
     dst.level += 1;
     dst.invested += src.invested;
     dst.id = this.nextId++; // nouvelle identité : utile au rembobinage (écho)
     dst.bornAt = this.time;
     dst.cooldown = 0.3;
-    this.emit('fuse', { tower: dst, from: { x: src.x, y: src.y }, level: dst.level });
+    this.emit('fuse', { tower: dst, from: { x: src.x, y: src.y }, level: dst.level, oldId: dstOldId, srcId });
     this.onTowersChanged();
     return dst;
   }
@@ -214,6 +224,7 @@ export class Game {
     const conf = this.stoneConf();
     if (!conf) return { ok: false, reason: 'unknown' };
     if (this.state === 'won' || this.state === 'lost') return { ok: false, reason: 'over' };
+    if (this.rewindAnim) return { ok: false, reason: 'rewinding' };
     const g = this.grid;
     if (!g.inBounds(c, r)) return { ok: false, reason: 'bounds' };
     const i = g.idx(c, r);
@@ -223,7 +234,7 @@ export class Game {
     if (this.gold < conf.cost) return { ok: false, reason: 'gold' };
     for (const e of this.enemies) {
       if (!e.alive || e.flying) continue;
-      if (e.cur === i || e.target === i || g.tileAt(e.x, e.y) === i) return { ok: false, reason: 'occupiedEnemy' };
+      if (e.cur === i || e.target === i || g.tileAt(e.mx, e.my) === i) return { ok: false, reason: 'occupiedEnemy' };
     }
     // Le passage ne doit jamais être totalement bloqué.
     const dist = bfs(g, i);
@@ -253,7 +264,7 @@ export class Game {
 
   removeStone(c, r) {
     const g = this.grid;
-    if (!g.inBounds(c, r)) return false;
+    if (!g.inBounds(c, r) || this.rewindAnim) return false;
     const i = g.idx(c, r);
     if (!g.stone[i]) return false;
     const before = this.routeLength();
@@ -267,7 +278,7 @@ export class Game {
   }
 
   startNextWave() {
-    if (this.state !== 'build') return false;
+    if (this.state !== 'build' || this.rewindAnim) return false;
     const idx = this.waveIndex + 1;
     if (idx >= this.waves.length) return false;
     if (this.countdown != null && this.countdown > 0) {
@@ -365,6 +376,7 @@ export class Game {
     const def = this.defs.enemies[type];
     if (!def) throw new Error(`Yokai inconnu : ${type}`);
     const hp = def.hp * (opts.hpMult ?? 1) * (this.level.hpScale ?? 1);
+    const seed = this.rng.next();
     return {
       id: this.nextId++,
       type,
@@ -379,7 +391,16 @@ export class Game {
       armor: def.abilities?.armor ?? 0,
       flying: !!def.abilities?.flying,
       absorb: opts.absorb ?? def.abilities?.absorb ?? def.abilities?.cycleAbsorb?.elements[0] ?? null,
+      hpMult: opts.hpMult ?? 1, // transmis aux enfants (division, invocation)
+      groupAbsorb: opts.absorb ?? null,
       boss: !!def.boss,
+      // Position logique sur la ligne centrale du chemin (mx, my) et couloir latéral
+      // persistant : les yokai ne se superposent plus et restent dénombrables.
+      mx: 0,
+      my: 0,
+      lane: opts.lane ?? (seed - 0.5) * 0.36,
+      offX: 0,
+      offY: 0,
       alive: true,
       cur: -1,
       target: -1,
@@ -402,6 +423,11 @@ export class Game {
       blindT: 0,
       shredM: 1,
       shredT: 0,
+      // Effets actifs (une entrée par source) : chaque effet expire pour son compte.
+      slows: [],
+      burns: [],
+      shreds: [],
+      pend: 0, // dégâts en route (projectiles guidés) : évite la surpuissance
       knock: 0,
       knockFatigue: 0, // rendements décroissants du recul
       stunFatigue: 0, // rendements décroissants des étourdissements
@@ -409,7 +435,7 @@ export class Game {
       hitT: 0,
       spawnT: opts.spawnT ?? 0.7,
       age: 0,
-      seed: this.rng.next(),
+      seed,
       timers: {},
       enraged: false,
     };
@@ -418,8 +444,8 @@ export class Game {
   spawnEnemy(type, spawnTile, opts = {}) {
     const e = this.createEnemy(type, opts);
     const g = this.grid;
-    e.x = e.px = g.cx(spawnTile);
-    e.y = e.py = g.cy(spawnTile);
+    e.x = e.px = e.mx = g.cx(spawnTile);
+    e.y = e.py = e.my = g.cy(spawnTile);
     if (e.flying) {
       const goal = this.nearestGoal(e.x, e.y);
       e.fx0 = e.x;
@@ -473,7 +499,7 @@ export class Game {
     const d = this.flow.dist[e.target];
     const tx = this.grid.cx(e.target);
     const ty = this.grid.cy(e.target);
-    return (d < 0 ? 999 : d) + Math.hypot(tx - e.x, ty - e.y);
+    return (d < 0 ? 999 : d) + Math.hypot(tx - e.mx, ty - e.my);
   }
 
   updateEnemies(dt) {
@@ -500,15 +526,13 @@ export class Game {
     if (e.knockFatigue > 0) e.knockFatigue = Math.max(0, e.knockFatigue - dt * (this.rules.knockFatigueDecay ?? 0.2));
     if (e.stunFatigue > 0) e.stunFatigue = Math.max(0, e.stunFatigue - dt * (this.rules.stunFatigueDecay ?? 0.35));
     if (e.healT > 0) e.healT -= dt;
-    if (e.slowT > 0 && (e.slowT -= dt) <= 0) e.slowF = 1;
     if (e.stunT > 0) e.stunT -= dt;
     if (e.blindT > 0) e.blindT -= dt;
-    if (e.shredT > 0 && (e.shredT -= dt) <= 0) e.shredM = 1;
-    if (e.burnT > 0) {
-      e.burnT -= dt;
-      this.damage(e, e.burnDps * dt, 'fire', { dot: true });
-      if (e.burnT <= 0) e.burnDps = 0;
-    }
+    tickEffects(e.slows, dt);
+    tickEffects(e.shreds, dt);
+    tickEffects(e.burns, dt);
+    refreshStatus(e);
+    if (e.burnDps > 0) this.damage(e, e.burnDps * dt, 'fire', { dot: true });
   }
 
   // Capacités spéciales des yokai (paramétrées par les données).
@@ -521,7 +545,7 @@ export class Game {
       e.speed *= ab.enrage.speed;
       this.emit('enrage', { enemy: e });
     }
-    if (e.blindT > 0) return; // aveuglé (Vapeur) : pouvoirs suspendus
+    if (e.blindT > 0 || e.stunT > 0) return; // aveuglé (Vapeur) ou étourdi : pouvoirs suspendus
     if (ab.healAura) {
       tm.heal = (tm.heal ?? ab.healAura.interval * 0.5) - dt;
       if (tm.heal <= 0) {
@@ -551,6 +575,9 @@ export class Game {
         tm.cycle += ab.cycleAbsorb.interval;
         const els = ab.cycleAbsorb.elements;
         e.absorb = els[(els.indexOf(e.absorb) + 1) % els.length];
+        if (e.absorb === 'fire') e.burns.length = 0;
+        if (e.absorb === 'water') e.slows.length = 0;
+        refreshStatus(e);
         this.emit('absorbShift', { enemy: e, element: e.absorb });
       }
     }
@@ -572,9 +599,16 @@ export class Game {
 
   // Fait apparaître un yokai à la position d'un autre (division, invocation).
   spawnChild(type, parent, k = 0, n = 1) {
-    const e = this.createEnemy(type, { spawnT: 0.25 });
-    e.x = e.px = parent.x;
-    e.y = e.py = parent.y;
+    // Couloirs opposés et apparitions décalées : les enfants restent distincts.
+    const lane = n > 1 ? Math.max(-0.2, Math.min(0.2, (k - (n - 1) / 2) * 0.4)) : parent.lane;
+    const e = this.createEnemy(type, {
+      spawnT: 0.25 + k * 0.2,
+      hpMult: parent.hpMult,
+      absorb: parent.groupAbsorb ?? undefined,
+      lane,
+    });
+    e.x = e.px = e.mx = parent.x;
+    e.y = e.py = e.my = parent.y;
     e.dirX = parent.dirX;
     if (e.flying) {
       if (parent.flying) {
@@ -587,8 +621,8 @@ export class Game {
     } else if (parent.flying) {
       // Enfant terrestre d'un volant : il atterrit sur la case marchable la plus proche.
       const land = this.nearestWalkable(parent.x, parent.y);
-      e.x = e.px = this.grid.cx(land);
-      e.y = e.py = this.grid.cy(land);
+      e.x = e.px = e.mx = this.grid.cx(land);
+      e.y = e.py = e.my = this.grid.cy(land);
       e.cur = land;
       e.target = this.flow.next(land, 0, 1);
       if (e.target < 0) e.target = land;
@@ -596,15 +630,10 @@ export class Game {
       e.cur = parent.cur;
       e.target = parent.target;
       e.trail = parent.trail.slice();
-      // léger décalage pour ne pas superposer les enfants
-      const off = (k - (n - 1) / 2) * 0.22;
-      const tx = this.grid.cx(e.target) - e.x;
-      const ty = this.grid.cy(e.target) - e.y;
-      const d = Math.hypot(tx, ty) || 1;
-      e.x += (-ty / d) * off * 0.5 - (tx / d) * Math.abs(off);
-      e.y += (tx / d) * off * 0.5 - (ty / d) * Math.abs(off);
-      e.px = e.x;
-      e.py = e.y;
+      e.mx = parent.mx;
+      e.my = parent.my;
+      e.offX = parent.offX;
+      e.offY = parent.offY;
     }
     this.enemies.push(e);
     this.emit('spawnChild', { enemy: e, parent });
@@ -636,12 +665,12 @@ export class Game {
     while (remain > 0 && guard++ < 8) {
       const tx = g.cx(e.target);
       const ty = g.cy(e.target);
-      const dx = tx - e.x;
-      const dy = ty - e.y;
+      const dx = tx - e.mx;
+      const dy = ty - e.my;
       const d = Math.hypot(dx, dy);
       if (d <= remain) {
-        e.x = tx;
-        e.y = ty;
+        e.mx = tx;
+        e.my = ty;
         remain -= d;
         if (g.type(e.target) === T.GOAL) {
           this.leak(e);
@@ -656,15 +685,33 @@ export class Game {
         const pdx = g.col(e.cur) - g.col(prev);
         const pdy = g.row(e.cur) - g.row(prev);
         const n = this.flow.next(e.cur, pdx, pdy);
-        if (n < 0) return; // isolé (ne devrait pas arriver : la pose est validée)
+        if (n < 0) break; // isolé (ne devrait pas arriver : la pose est validée)
         e.target = n;
       } else {
-        e.x += (dx / d) * remain;
-        e.y += (dy / d) * remain;
+        e.mx += (dx / d) * remain;
+        e.my += (dy / d) * remain;
         if (Math.abs(dx) > 0.01) e.dirX = dx;
         remain = 0;
       }
     }
+    this.applyLane(e, dt);
+  }
+
+  // Décale le yokai sur son couloir, perpendiculairement à sa marche (lissé).
+  applyLane(e, dt) {
+    const g = this.grid;
+    let dx = g.cx(e.target) - e.mx;
+    let dy = g.cy(e.target) - e.my;
+    const d = Math.hypot(dx, dy);
+    if (d > 1e-3) {
+      dx /= d;
+      dy /= d;
+      const k = Math.min(1, dt * 6);
+      e.offX += (-dy * e.lane - e.offX) * k;
+      e.offY += (dx * e.lane - e.offY) * k;
+    }
+    e.x = e.mx + e.offX;
+    e.y = e.my + e.offY;
   }
 
   // Position d'un volant le long de sa ligne (légère ondulation).
@@ -673,8 +720,8 @@ export class Game {
     const nx = -(e.fy1 - e.fy0) / (e.flyLen || 1);
     const ny = (e.fx1 - e.fx0) / (e.flyLen || 1);
     const wob = Math.sin(k * Math.PI * 3 + e.seed * 6) * 0.35 * Math.sin(k * Math.PI);
-    e.x = e.fx0 + (e.fx1 - e.fx0) * k + nx * wob;
-    e.y = e.fy0 + (e.fy1 - e.fy0) * k + ny * wob;
+    e.x = e.mx = e.fx0 + (e.fx1 - e.fx0) * k + nx * wob;
+    e.y = e.my = e.fy0 + (e.fy1 - e.fy0) * k + ny * wob;
     e.dirX = e.fx1 - e.fx0;
   }
 
@@ -693,11 +740,11 @@ export class Game {
       // On recule d'abord vers le centre de la case courante, puis le long de la trace.
       // Au centre, la case précédente de la trace devient aussitôt la case courante
       // (le yokai repart vers elle ; canPlaceStone la protège donc des pierres).
-      if (Math.hypot(g.cx(e.cur) - e.x, g.cy(e.cur) - e.y) < 1e-3) {
+      if (Math.hypot(g.cx(e.cur) - e.mx, g.cy(e.cur) - e.my) < 1e-3) {
         const back = e.trail[e.trail.length - 1];
         if (back == null || !g.isWalkable(back) || this.flow.dist[back] < 0) {
           e.knock = 0;
-          return;
+          break;
         }
         e.trail.pop();
         e.target = e.cur;
@@ -706,17 +753,18 @@ export class Game {
       }
       const bx = g.cx(e.cur);
       const by = g.cy(e.cur);
-      const d = Math.hypot(bx - e.x, by - e.y);
+      const d = Math.hypot(bx - e.mx, by - e.my);
       if (d <= remain) {
-        e.x = bx;
-        e.y = by;
+        e.mx = bx;
+        e.my = by;
         remain -= d;
       } else {
-        e.x += ((bx - e.x) / d) * remain;
-        e.y += ((by - e.y) / d) * remain;
+        e.mx += ((bx - e.mx) / d) * remain;
+        e.my += ((by - e.my) / d) * remain;
         remain = 0;
       }
     }
+    this.applyLane(e, dt);
   }
 
   leak(e) {
@@ -737,10 +785,12 @@ export class Game {
    * opts : { pierce, dot, source }
    */
   damage(e, amount, element, opts = {}) {
-    if (!e.alive || amount <= 0) return 0;
+    if (!e.alive || !(amount > 0) || !Number.isFinite(amount)) return 0;
     if (e.absorb && e.absorb === element && e.blindT <= 0) {
+      // Un coup de son élément le soigne ; une brûlure résiduelle s'éteint simplement.
+      if (opts.dot) return 0;
       e.hp = Math.min(e.maxHp, e.hp + amount * 0.5);
-      if (!opts.dot) this.emit('absorb', { enemy: e, element });
+      this.emit('absorb', { enemy: e, element });
       return 0;
     }
     let mult = 1;
@@ -817,6 +867,8 @@ export class Game {
       enemies: this.enemies.map(cloneEnemy),
       towers: this.towers.map((t) => ({ ...t })),
       spawners: this.spawners.map((sp) => ({ ...sp })),
+      tornadoes: this.tornadoes.map((t) => ({ ...t })),
+      zoneTimers: this.zones.map((z) => [z.key, z.timer]),
     };
   }
 
@@ -862,55 +914,67 @@ export class Game {
     this.spawners = snap.spawners.map((sp) => ({ ...sp }));
     this.gold = snap.gold;
     this.lives = snap.lives;
-    this.stats = { ...snap.stats };
+    // Les lanternes construites restent comptées (statistique de fin de partie).
+    this.stats = { ...snap.stats, towersBuilt: this.stats.towersBuilt };
     this.grid.stone.set(snap.stones);
     this.stonesPlaced = snap.stonesPlaced;
     this.flow.compute();
     this.waveTime = snap.wt;
     this.projectiles = [];
-    this.tornadoes = [];
+    for (const e of this.enemies) e.pend = 0;
+    this.tornadoes = (snap.tornadoes || []).map((t) => ({ ...t }));
     this.history = this.history.slice(0, idx + 1);
     this.rewindAnim = null;
     this.onTowersChanged();
+    const timers = new Map(snap.zoneTimers || []);
+    for (const z of this.zones) if (timers.has(z.key)) z.timer = timers.get(z.key);
     this.emit('rewindEnd', { echoes: this.echoes.length });
   }
 
+  // Un yokai est insensible aux effets de l'élément qu'il absorbe (sauf aveuglé).
+  // `element` = élément de la SOURCE de l'effet ; null pour un combo (deux éléments).
   immuneTo(e, element) {
-    return e.absorb === element && e.blindT <= 0;
+    return !!element && e.absorb === element && e.blindT <= 0;
   }
 
-  applySlow(e, factor, duration) {
-    if (this.immuneTo(e, 'water')) return;
+  applySlow(e, factor, duration, element = 'water') {
+    if (this.immuneTo(e, element)) return;
     // Plancher : un yokai ralenti avance toujours (voir minSlowFactor dans data/rules.js).
-    factor = Math.max(this.rules.minSlowFactor ?? 0.35, factor);
-    if (e.slowT <= 0) e.slowF = factor;
-    else e.slowF = Math.min(e.slowF, factor);
-    e.slowT = Math.max(e.slowT, duration);
+    addEffect(e.slows, Math.max(this.rules.minSlowFactor ?? 0.35, factor), duration);
+    refreshStatus(e);
+  }
+
+  applyShred(e, mult, duration) {
+    addEffect(e.shreds, mult, duration);
+    refreshStatus(e);
   }
 
   // Étourdissement avec rendements décroissants : chaque étourdissement subi
-  // raccourcit les suivants tant que la « fatigue » n'est pas retombée.
-  applyStun(e, duration) {
+  // raccourcit les suivants tant que la « fatigue » n'est pas retombée. Un
+  // étourdissement plus court que celui en cours ne coûte rien (pas de fatigue).
+  applyStun(e, duration, element = null) {
+    if (this.immuneTo(e, element)) return;
     const resist = this.defs.enemies[e.type].stunResist ?? 0;
     const d = (duration * (1 - resist)) / (1 + e.stunFatigue);
-    e.stunFatigue += d * (this.rules.stunFatigueGain ?? 1.5);
-    e.stunT = Math.max(e.stunT, d);
+    if (d <= e.stunT) return;
+    e.stunFatigue += (d - Math.max(0, e.stunT)) * (this.rules.stunFatigueGain ?? 1.5);
+    e.stunT = d;
   }
 
   // Recul avec rendements décroissants : un yokai ne peut pas être repoussé
   // indéfiniment (sinon une vague pourrait ne jamais finir).
-  applyKnockback(e, amount) {
-    if (amount <= 0 || this.immuneTo(e, 'wind')) return;
+  applyKnockback(e, amount, element = 'wind') {
+    if (amount <= 0 || this.immuneTo(e, element)) return;
     const resist = this.defs.enemies[e.type].knockResist ?? 0;
     const k = (amount * (1 - resist)) / (1 + e.knockFatigue);
     e.knockFatigue += k * (this.rules.knockFatigueGain ?? 2.5);
     e.knock = Math.max(e.knock, k);
   }
 
-  applyBurn(e, dps, duration) {
-    if (this.immuneTo(e, 'fire')) return;
-    e.burnDps = Math.max(e.burnT > 0 ? e.burnDps : 0, dps);
-    e.burnT = Math.max(e.burnT, duration);
+  applyBurn(e, dps, duration, element = 'fire') {
+    if (this.immuneTo(e, element) || e.absorb === 'fire') return;
+    addEffect(e.burns, dps, duration);
+    refreshStatus(e);
   }
 
   // ───────────────────────── lanternes ─────────────────────────
@@ -932,14 +996,17 @@ export class Game {
 
   canTarget(def, e) {
     if (!e.alive || e.spawnT > 0) return false;
-    return e.flying ? def.targets.air : def.targets.ground;
+    const tg = def.targets ?? { ground: true, air: true };
+    return e.flying ? tg.air : tg.ground;
   }
 
-  findTarget(t, def, range) {
+  // `skipDoomed` : ignore un yokai que les projectiles déjà en vol suffiront à abattre.
+  findTarget(t, def, range, skipDoomed = false) {
     let best = null;
     let bestRem = Infinity;
     for (const e of this.enemies) {
       if (!this.canTarget(def, e)) continue;
+      if (skipDoomed && e.pend >= e.hp) continue;
       const d = Math.hypot(e.x - t.x, e.y - t.y);
       if (d > range + e.size * 0.5) continue;
       const rem = this.remaining(e);
@@ -961,7 +1028,7 @@ export class Game {
     if (t.cooldown > 0) return;
     const def = this.defs.towers[t.type];
     const st = def.levels[t.level - 1];
-    const target = this.findTarget(t, def, st.range);
+    const target = this.findTarget(t, def, st.range, !st.splash);
     if (!target) {
       t.cooldown = 0;
       return;
@@ -997,9 +1064,23 @@ export class Game {
       st,
       echo: power < 1,
       alive: true,
+      pend: 0,
     };
+    if (!lob && !st.splash) {
+      // estimation des dégâts du coup (armure comprise) réservés sur la cible
+      p.pend = this.estimateHit(target, st, power, t.type);
+      target.pend += p.pend;
+    }
     this.projectiles.push(p);
     this.emit('shoot', { tower: t, projectile: p, element: t.type, echo: p.echo });
+  }
+
+  estimateHit(e, st, power, element) {
+    if (e.absorb === element && e.blindT <= 0) return 0;
+    let dmg = (st.damage ?? 0) * power * (e.flying ? st.airMultiplier ?? 1 : 1);
+    if (e.armor > 0) dmg *= 1 - e.armor * (1 - (st.pierce ?? 0));
+    if (e.shredT > 0) dmg *= e.shredM;
+    return dmg;
   }
 
   updateProjectiles(dt) {
@@ -1018,6 +1099,8 @@ export class Game {
         p.tx = p.target.x;
         p.ty = p.target.y;
       } else {
+        if (p.target) p.target.pend = Math.max(0, p.target.pend - p.pend);
+        p.pend = 0;
         p.target = null;
       }
       const dx = p.tx - p.x;
@@ -1038,6 +1121,7 @@ export class Game {
 
   impact(p, target) {
     p.alive = false;
+    if (p.pend && p.target) p.target.pend = Math.max(0, p.target.pend - p.pend);
     const st = p.st;
     const pw = p.power;
     const el = p.element;
@@ -1049,23 +1133,24 @@ export class Game {
         const d = Math.hypot(e.x - p.x, e.y - p.y);
         if (d > st.splash + e.size * 0.5) continue;
         const main = e === target;
-        const dmg = st.damage * pw * (main || p.lob ? 1 : 0.5);
+        const dmg = (st.damage ?? 0) * pw * (main || p.lob ? 1 : 0.5);
         this.hitEffects(e, st, pw, el);
         this.damage(e, dmg * (e.flying ? st.airMultiplier ?? 1 : 1), el, opts);
       }
     } else if (target && target.alive) {
       this.hitEffects(target, st, pw, el);
-      this.damage(target, st.damage * pw * (target.flying ? st.airMultiplier ?? 1 : 1), el, opts);
+      this.damage(target, (st.damage ?? 0) * pw * (target.flying ? st.airMultiplier ?? 1 : 1), el, opts);
     }
     this.emit('hit', { x: p.x, y: p.y, element: el, level: p.level, splash: st.splash ?? 0, echo: p.echo });
   }
 
+  // Effets à l'impact : l'immunité dépend de l'élément de la tour qui tire.
   hitEffects(e, st, pw, el) {
     if (!e.alive) return;
-    if (st.burn) this.applyBurn(e, st.burn.dps * pw, st.burn.duration);
-    if (st.slow) this.applySlow(e, 1 - (1 - st.slow.factor) * pw, st.slow.duration);
-    if (st.stun && !this.immuneTo(e, 'earth')) this.applyStun(e, st.stun * pw);
-    if (st.knockback) this.applyKnockback(e, st.knockback * pw);
+    if (st.burn) this.applyBurn(e, st.burn.dps * pw, st.burn.duration, el);
+    if (st.slow) this.applySlow(e, 1 - (1 - st.slow.factor) * pw, st.slow.duration, el);
+    if (st.stun) this.applyStun(e, st.stun * pw, el);
+    if (st.knockback) this.applyKnockback(e, st.knockback * pw, el);
   }
 
   cleanup() {
@@ -1075,5 +1160,66 @@ export class Game {
 }
 
 function cloneEnemy(e) {
-  return { ...e, trail: e.trail.slice(), timers: { ...e.timers } };
+  return {
+    ...e,
+    trail: e.trail.slice(),
+    timers: { ...e.timers },
+    slows: e.slows.map((x) => ({ ...x })),
+    burns: e.burns.map((x) => ({ ...x })),
+    shreds: e.shreds.map((x) => ({ ...x })),
+  };
+}
+
+// ───────── effets à durée (une entrée par intensité, chacune expire pour son compte) ─────────
+
+function addEffect(list, v, t) {
+  for (const x of list) {
+    if (Math.abs(x.v - v) < 1e-6) {
+      x.t = Math.max(x.t, t);
+      return;
+    }
+  }
+  list.push({ v, t });
+  if (list.length > 6) {
+    list.sort((a, b) => b.t - a.t);
+    list.length = 6;
+  }
+}
+
+function tickEffects(list, dt) {
+  let j = 0;
+  for (const x of list) {
+    x.t -= dt;
+    if (x.t > 0) list[j++] = x;
+  }
+  list.length = j;
+}
+
+// Valeurs résumées lues par le moteur et le rendu : ralentissement le plus fort,
+// brûlure la plus forte, affaiblissement le plus fort parmi les effets actifs.
+function refreshStatus(e) {
+  let f = 1;
+  let ft = 0;
+  for (const x of e.slows) {
+    if (x.v < f) f = x.v;
+    if (x.t > ft) ft = x.t;
+  }
+  e.slowF = f;
+  e.slowT = ft;
+  let b = 0;
+  let bt = 0;
+  for (const x of e.burns) {
+    if (x.v > b) b = x.v;
+    if (x.t > bt) bt = x.t;
+  }
+  e.burnDps = b;
+  e.burnT = bt;
+  let m = 1;
+  let mt = 0;
+  for (const x of e.shreds) {
+    if (x.v > m) m = x.v;
+    if (x.t > mt) mt = x.t;
+  }
+  e.shredM = m;
+  e.shredT = mt;
 }

@@ -67,7 +67,7 @@ function showScreen(name) {
   if (name === 'title') title.show();
   if (name === 'map') {
     map.show(order, worlds, save);
-    $('map-stars').textContent = `${save.totalStars()}/${order.length * 3}`;
+    $('map-stars').textContent = `${save.totalStars(order)}/${order.length * 3}`;
   }
   if (name !== 'game') {
     state.game = null;
@@ -160,12 +160,20 @@ const input = new Input(canvas, renderer, {
       const msg = hud.reason(data.reason);
       if (msg) hud.toast(msg, kind === 'reject');
       if (kind === 'reject') sound.play('reject');
+    } else if (kind === 'dropCancel') {
+      sound.play('tap');
     }
   },
   onAction: (kind) => {
     if (kind === 'selectTower' || kind === 'dragStart') sound.play('select');
+    if (kind === 'placed' || kind === 'toolCleared' || kind === 'selectTower') hud.refreshTools();
   },
 });
+
+// Préférence « réduire les animations » : pas de tremblement d'écran.
+const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
+input.ui.reducedMotion = reduceMotion.matches;
+reduceMotion.addEventListener?.('change', () => (input.ui.reducedMotion = reduceMotion.matches));
 
 const hud = new Hud(screenGame, {
   onWave: () => state.game?.startNextWave(),
@@ -267,11 +275,14 @@ function openPauseMenu() {
   );
 }
 
-function showInfo(target) {
+let infoTarget = null; // { kind, id } de la fiche ouverte, pour la tenir à jour
+
+function showInfo(target, silent = false) {
   const g = state.game;
-  sound.play('select');
+  if (!silent) sound.play('select');
   if (target.kind === 'tower') {
-    const t = target.tower;
+    const t = g.towerById(target.tower.id) || target.tower;
+    infoTarget = { kind: 'tower', id: t.id };
     const def = g.defs.towers[t.type];
     const st = g.towerStats(t);
     const combos = g.zones
@@ -297,11 +308,26 @@ function showInfo(target) {
          <span style="grid-column:1/-1;opacity:.7">${next}</span>
        </div>`,
       [
-        { label: `Vendre +${g.sellValue(t)}`, cls: 'primary', run: () => g.sellTower(t.id) },
-        { label: 'Fermer', run: () => (input.ui.selectedTower = null) },
+        {
+          label: `Vendre +${g.sellValue(t)}`,
+          cls: 'primary',
+          run: () => {
+            if (!g.towerById(t.id)) hud.toast('Cette lanterne n’existe plus', true);
+            else g.sellTower(t.id);
+            infoTarget = null;
+          },
+        },
+        {
+          label: 'Fermer',
+          run: () => {
+            input.ui.selectedTower = null;
+            infoTarget = null;
+          },
+        },
       ],
     );
   } else if (target.kind === 'stone') {
+    infoTarget = null;
     const refund = Math.floor(g.stoneCost() * g.rules.stoneRefund);
     hud.showInfo(
       `<h3>石 Pierre</h3>
@@ -466,6 +492,20 @@ function handleEvents(game) {
       }
       case 'waveStart':
         hud.banner(`Vague ${ev.index + 1}`, ev.index === ev.total - 1 ? 'Dernière vague' : '');
+        break;
+      case 'fuse':
+        // La lanterne fusionnée change d'identité : sélection et fiche la suivent.
+        if (input.ui.selectedTower === ev.oldId || input.ui.selectedTower === ev.srcId) input.ui.selectedTower = ev.tower.id;
+        if (infoTarget?.id === ev.oldId || infoTarget?.id === ev.srcId) {
+          if (hud.infoOpen) showInfo({ kind: 'tower', tower: ev.tower }, true);
+        }
+        break;
+      case 'sell':
+      case 'rewindEnd':
+        if (infoTarget && hud.infoOpen && !game.towerById(infoTarget.id)) {
+          hud.hideInfo();
+          infoTarget = null;
+        }
         break;
       case 'earlyBonus':
         hud.toast(`Appel anticipé +${ev.gold} or`);

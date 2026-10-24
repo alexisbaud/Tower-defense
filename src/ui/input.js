@@ -3,6 +3,8 @@ import { T } from '../core/grid.js';
 
 const LONG_PRESS_MS = 430;
 const DRAG_THRESHOLD = 9;
+// La lanterne portée (fusion) est dessinée au-dessus du doigt pour rester visible.
+export const LIFT = 60;
 
 export class Input {
   /**
@@ -47,6 +49,8 @@ export class Input {
     if (!this.enabled || this.down) return;
     const game = this.game;
     if (!game || game.state === 'won' || game.state === 'lost') return;
+    // Pendant l'animation du rembobinage, aucun geste n'est pris en compte.
+    if (game.rewindAnim) return;
     this.h.onAction?.('pointer');
     const p = this.pos(e);
     const tile = this.tileOf(p);
@@ -100,7 +104,7 @@ export class Input {
       d.moved = true;
       clearTimeout(d.timer);
       if (d.tower && !d.long && this.game.fuse) {
-        this.ui.drag = { towerId: d.tower.id, x: p.x, y: p.y, hover: null };
+        this.ui.drag = { towerId: d.tower.id, x: p.x, y: p.y, gx: p.x, gy: p.y - LIFT, hover: null };
         this.ui.selectedTower = null;
         this.h.onAction?.('dragStart');
       }
@@ -108,13 +112,36 @@ export class Input {
     if (this.ui.drag) {
       this.ui.drag.x = p.x;
       this.ui.drag.y = p.y;
-      // La lanterne est dessinée au-dessus du doigt : on vise la case sous la lanterne.
-      const tile = this.tileOf({ x: p.x, y: p.y - this.renderer.ts * 0.4 });
-      const target = this.game.grid.inBounds(tile.c, tile.r) ? this.game.towerAt(tile.c, tile.r) : null;
-      this.ui.drag.hover = { c: tile.c, r: tile.r, valid: !!(target && this.game.canFuse(d.tower.id, target.id).ok) };
+      // La lanterne portée flotte LIFT px au-dessus du doigt ; la cible est la
+      // lanterne compatible la plus proche de la lanterne portée (aimantation).
+      this.ui.drag.gx = p.x;
+      this.ui.drag.gy = p.y - LIFT;
+      this.ui.drag.hover = this.fuseTarget(d.tower, this.ui.drag.gx, this.ui.drag.gy);
     } else if (d.placing) {
       this.updatePress(this.tileOf(p));
     }
+  }
+
+  // Cible de fusion : lanterne compatible dont le corps (≈ 0,3 case au-dessus du
+  // centre du socle) est à moins de 0,8 case de la lanterne portée. À défaut, la
+  // case sous la lanterne portée (pour afficher un refus clair).
+  fuseTarget(src, gx, gy) {
+    const game = this.game;
+    const ts = this.renderer.ts;
+    let best = null;
+    let bestD = ts * 0.8;
+    for (const t of game.towers) {
+      if (t.id === src.id || !game.canFuse(src.id, t.id).ok) continue;
+      const p = this.renderer.toScreen(t.x, t.y - 0.3);
+      const d = Math.hypot(p.x - gx, p.y - gy);
+      if (d < bestD) {
+        bestD = d;
+        best = t;
+      }
+    }
+    if (best) return { c: best.c, r: best.r, valid: true, id: best.id };
+    const tile = this.tileOf({ x: gx, y: gy + ts * 0.3 });
+    return { c: tile.c, r: tile.r, valid: false };
   }
 
   onUp(e) {
@@ -137,6 +164,8 @@ export class Input {
           } else {
             this.h.onFeedback?.('reject', { reason: res.reason, c: hover.c, r: hover.r });
           }
+        } else {
+          this.h.onFeedback?.('dropCancel', { c: src.c, r: src.r });
         }
       }
       return;
@@ -147,8 +176,10 @@ export class Input {
       this.ui.press = null;
       const res = game.canPlaceTower(type, c, r);
       if (res.ok) {
-        game.placeTower(type, c, r);
-        this.h.onAction?.('placed', { type });
+        const t = game.placeTower(type, c, r);
+        // L'outil se désélectionne après chaque pose : plus d'achat involontaire.
+        this.ui.tool = null;
+        this.h.onAction?.('placed', { type, tower: t });
       } else {
         game.emit('reject', { c, r, reason: res.reason });
         this.h.onFeedback?.('reject', { reason: res.reason, c, r });
@@ -163,12 +194,27 @@ export class Input {
     const game = this.game;
     const g = game.grid;
     if (tower) {
+      // Toucher une lanterne la sélectionne et range l'outil en main.
+      if (this.ui.tool) {
+        this.ui.tool = null;
+        this.h.onAction?.('toolCleared');
+      }
       this.ui.selectedTower = this.ui.selectedTower === tower.id ? null : tower.id;
       this.h.onAction?.('selectTower', { tower });
       return;
     }
-    this.ui.selectedTower = null;
-    if (!g.inBounds(tile.c, tile.r)) return;
+    // Avec une lanterne sélectionnée, un toucher ailleurs ne fait que désélectionner.
+    if (this.ui.selectedTower != null) {
+      this.ui.selectedTower = null;
+      return;
+    }
+    if (!g.inBounds(tile.c, tile.r)) {
+      if (this.ui.tool) {
+        this.ui.tool = null;
+        this.h.onAction?.('toolCleared');
+      }
+      return;
+    }
     const i = g.idx(tile.c, tile.r);
     if (this.ui.tool === 'stone') {
       if (g.stone[i]) {
@@ -189,8 +235,10 @@ export class Input {
       this.h.onInfo?.({ kind: 'stone', c: tile.c, r: tile.r });
       return;
     }
+    // Toucher hors socle avec une lanterne en main : on range l'outil, sans message.
     if (this.ui.tool && g.type(i) !== T.SLOT) {
-      this.h.onFeedback?.('hint', { reason: 'slot', c: tile.c, r: tile.r });
+      this.ui.tool = null;
+      this.h.onAction?.('toolCleared');
     }
   }
 

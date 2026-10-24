@@ -11,6 +11,37 @@ const err = (id, msg) => {
   console.log(`  ✗ [${id}] ${msg}`);
 };
 
+// ───── Données globales : tours, yokai, combos (références et valeurs) ─────
+const ELEMENTS = new Set(Object.keys(defs.towers));
+const num = (v) => typeof v === 'number' && Number.isFinite(v);
+for (const [id, t] of Object.entries(defs.towers)) {
+  if (!Array.isArray(t.levels) || !t.levels.length) err(`tour:${id}`, 'levels vide');
+  if (!num(t.cost) || t.cost <= 0) err(`tour:${id}`, 'cost invalide');
+  (t.levels || []).forEach((l, k) => {
+    for (const key of ['range', 'rate']) if (!num(l[key]) || l[key] <= 0) err(`tour:${id}`, `N${k + 1} : ${key} doit être > 0`);
+    if (l.damage != null && (!num(l.damage) || l.damage < 0)) err(`tour:${id}`, `N${k + 1} : damage invalide`);
+    if (l.pierce != null && (!num(l.pierce) || l.pierce < 0 || l.pierce > 1)) err(`tour:${id}`, `N${k + 1} : pierce hors de 0..1`);
+  });
+}
+for (const [id, e] of Object.entries(defs.enemies)) {
+  if (!num(e.hp) || e.hp <= 0) err(`yokai:${id}`, 'hp doit être > 0');
+  if (!num(e.speed) || e.speed <= 0) err(`yokai:${id}`, 'speed doit être > 0');
+  const ab = e.abilities || {};
+  if (ab.split && !defs.enemies[ab.split.into]) err(`yokai:${id}`, `split.into inconnu « ${ab.split.into} »`);
+  if (ab.summon && !defs.enemies[ab.summon.enemy]) err(`yokai:${id}`, `summon.enemy inconnu « ${ab.summon.enemy} »`);
+  if (ab.absorb && !ELEMENTS.has(ab.absorb)) err(`yokai:${id}`, `absorb inconnu « ${ab.absorb} »`);
+  for (const el of ab.cycleAbsorb?.elements || []) if (!ELEMENTS.has(el)) err(`yokai:${id}`, `cycleAbsorb : élément inconnu « ${el} »`);
+}
+for (const c of defs.combos) {
+  for (const el of c.elements || []) if (!ELEMENTS.has(el)) err(`combo:${c.id}`, `élément inconnu « ${el} »`);
+  if (!c.effect?.kind) err(`combo:${c.id}`, 'effect.kind manquant');
+}
+
+// Clés autorisées (une faute de frappe comme « intervale » est signalée).
+const LEVEL_KEYS = new Set(['id', 'name', 'subtitle', 'world', 'map', 'startGold', 'lives', 'towers', 'stones', 'rewind', 'tutorial', 'introduce', 'waves', 'hpScale', 'wavePause', 'rules', 'hard', 'challenge', 'rewindStart']);
+const WAVE_KEYS = new Set(['groups', 'reward', 'pause', 'climax', 'name']);
+const GROUP_KEYS = new Set(['enemy', 'count', 'interval', 'delay', 'spawn', 'hp', 'absorb']);
+
 const seen = new Set();
 for (const w of worlds) {
   if (!w.id || !w.name || !w.theme) err(w.id, 'monde incomplet (id, name, theme)');
@@ -56,9 +87,16 @@ for (const w of worlds) {
     for (const t of L.tutorial || []) if (!TUTORIALS.includes(t)) err(id, `tutoriel inconnu "${t}"`);
     for (const e of L.introduce || []) if (!defs.enemies[e]) err(id, `introduce : yokai inconnu "${e}"`);
     if (!Array.isArray(L.waves) || !L.waves.length) err(id, 'aucune vague');
+    for (const k of Object.keys(L)) if (!LEVEL_KEYS.has(k)) err(id, `clé de niveau inconnue « ${k} »`);
     (L.waves || []).forEach((wv, i) => {
       if (!wv.groups?.length) err(id, `vague ${i + 1} sans groupe`);
+      for (const k of Object.keys(wv)) if (!WAVE_KEYS.has(k)) err(id, `vague ${i + 1} : clé inconnue « ${k} »`);
       for (const gr of wv.groups || []) {
+        for (const k of Object.keys(gr)) if (!GROUP_KEYS.has(k)) err(id, `vague ${i + 1} : clé de groupe inconnue « ${k} »`);
+        if (!Number.isInteger(gr.count)) err(id, `vague ${i + 1} : count doit être un entier`);
+        if (gr.interval != null && !(gr.interval > 0)) err(id, `vague ${i + 1} : interval doit être > 0`);
+        if (gr.delay != null && !(gr.delay >= 0)) err(id, `vague ${i + 1} : delay doit être ≥ 0`);
+        if (gr.hp != null && !(gr.hp > 0)) err(id, `vague ${i + 1} : hp doit être > 0`);
         if (!defs.enemies[gr.enemy]) err(id, `vague ${i + 1} : yokai inconnu "${gr.enemy}"`);
         if (!(gr.count > 0)) err(id, `vague ${i + 1} : count invalide`);
         if ((gr.spawn ?? 0) >= g.spawns.length) err(id, `vague ${i + 1} : spawn ${gr.spawn} inexistant`);
