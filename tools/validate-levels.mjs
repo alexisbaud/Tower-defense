@@ -4,7 +4,8 @@ import { defs, worlds, loadLevel } from '../src/data.js';
 import { Grid, LEGEND, T } from '../src/core/grid.js';
 import { bfs } from '../src/core/flowfield.js';
 
-const TUTORIALS = ['place', 'wave', 'fuse', 'combo', 'stone', 'rewind'];
+const TUTORIALS = ['place', 'wave', 'fuse', 'combo', 'stone', 'rewind', 'barrier', 'early', 'priority'];
+const RULE_KEYS = new Set(['forbidTowers', 'noStones', 'noRewind', 'maxTowers', 'noLeak', 'minLives']);
 let errors = 0;
 const err = (id, msg) => {
   errors++;
@@ -12,11 +13,15 @@ const err = (id, msg) => {
 };
 
 // ───── Données globales : tours, yokai, combos (références et valeurs) ─────
-const ELEMENTS = new Set(Object.keys(defs.towers));
+const ELEMENTS = new Set(Object.keys(defs.elements));
+const ATTACKS = new Set(['projectile', 'lob', 'aura', 'pulse', 'beam', 'support', 'barrier']);
 const num = (v) => typeof v === 'number' && Number.isFinite(v);
 for (const [id, t] of Object.entries(defs.towers)) {
   if (!Array.isArray(t.levels) || !t.levels.length) err(`tour:${id}`, 'levels vide');
   if (!num(t.cost) || t.cost <= 0) err(`tour:${id}`, 'cost invalide');
+  if (!ELEMENTS.has(t.element)) err(`tour:${id}`, `élément inconnu « ${t.element} »`);
+  if (t.attack && !ATTACKS.has(t.attack)) err(`tour:${id}`, `attaque inconnue « ${t.attack} »`);
+  for (const k of ['name', 'role', 'strength', 'weakness']) if (!t[k]) err(`tour:${id}`, `${k} manquant`);
   (t.levels || []).forEach((l, k) => {
     for (const key of ['range', 'rate']) if (!num(l[key]) || l[key] <= 0) err(`tour:${id}`, `N${k + 1} : ${key} doit être > 0`);
     if (l.damage != null && (!num(l.damage) || l.damage < 0)) err(`tour:${id}`, `N${k + 1} : damage invalide`);
@@ -31,6 +36,9 @@ for (const [id, e] of Object.entries(defs.enemies)) {
   if (ab.summon && !defs.enemies[ab.summon.enemy]) err(`yokai:${id}`, `summon.enemy inconnu « ${ab.summon.enemy} »`);
   if (ab.absorb && !ELEMENTS.has(ab.absorb)) err(`yokai:${id}`, `absorb inconnu « ${ab.absorb} »`);
   for (const el of ab.cycleAbsorb?.elements || []) if (!ELEMENTS.has(el)) err(`yokai:${id}`, `cycleAbsorb : élément inconnu « ${el} »`);
+  for (const el of Object.keys(e.resist || {})) if (!ELEMENTS.has(el)) err(`yokai:${id}`, `resist : élément inconnu « ${el} »`);
+  if (e.armor != null && (!num(e.armor) || e.armor < 0)) err(`yokai:${id}`, 'armor invalide');
+  for (const k of ['strength', 'weakness', 'counters']) if (!e[k]) err(`yokai:${id}`, `${k} manquant`);
 }
 for (const c of defs.combos) {
   for (const el of c.elements || []) if (!ELEMENTS.has(el)) err(`combo:${c.id}`, `élément inconnu « ${el} »`);
@@ -38,7 +46,7 @@ for (const c of defs.combos) {
 }
 
 // Clés autorisées (une faute de frappe comme « intervale » est signalée).
-const LEVEL_KEYS = new Set(['id', 'name', 'subtitle', 'world', 'map', 'startGold', 'lives', 'towers', 'stones', 'rewind', 'tutorial', 'introduce', 'waves', 'hpScale', 'wavePause', 'rules', 'hard', 'challenge', 'rewindStart']);
+const LEVEL_KEYS = new Set(['id', 'name', 'subtitle', 'world', 'map', 'startGold', 'lives', 'towers', 'stones', 'rewind', 'tutorial', 'introduce', 'waves', 'hpScale', 'wavePause', 'rules', 'hard', 'challenge', 'rewindStart', 'concept']);
 const WAVE_KEYS = new Set(['groups', 'reward', 'pause', 'climax', 'name']);
 const GROUP_KEYS = new Set(['enemy', 'count', 'interval', 'delay', 'spawn', 'hp', 'absorb']);
 
@@ -84,6 +92,24 @@ for (const w of worlds) {
     if (!L.stones && open > 0) console.log(`  ! [${id}] zones ouvertes sans "stones" (les pierres seront indisponibles)`);
     if (typeof L.startGold !== 'number') err(id, 'startGold manquant');
     for (const t of L.towers || []) if (!defs.towers[t]) err(id, `tour inconnue "${t}"`);
+    // En coopération, chaque joueur doit pouvoir construire : au moins une lanterne d'attaque par élément.
+    const towersHere = L.towers || Object.keys(defs.towers);
+    for (const el of ELEMENTS) {
+      if (!towersHere.some((t) => defs.towers[t]?.element === el && !['support', 'barrier'].includes(defs.towers[t].attack))) err(id, `aucune lanterne d'attaque de l'élément ${el}`);
+    }
+    // Socles typés : l'élément du socle doit être proposé dans le niveau.
+    for (let i = 0; i < g.size; i++) {
+      const se = g.slotElement[i];
+      if (se && !towersHere.some((t) => defs.towers[t]?.element === se)) err(id, `socle ${se} (${g.col(i)},${g.row(i)}) sans lanterne de cet élément`);
+    }
+    if (L.hard) {
+      for (const k of Object.keys(L.hard)) if (!['hpScale', 'startGold', 'lives', 'rules'].includes(k)) err(id, `hard : clé inconnue « ${k} »`);
+    }
+    if (L.challenge) {
+      if (!L.challenge.name || !L.challenge.desc) err(id, 'challenge : name et desc requis');
+      for (const k of Object.keys(L.challenge.rule || {})) if (!RULE_KEYS.has(k)) err(id, `challenge.rule : clé inconnue « ${k} »`);
+      for (const t of L.challenge.rule?.forbidTowers || []) if (!defs.towers[t]) err(id, `challenge : tour inconnue « ${t} »`);
+    }
     for (const t of L.tutorial || []) if (!TUTORIALS.includes(t)) err(id, `tutoriel inconnu "${t}"`);
     for (const e of L.introduce || []) if (!defs.enemies[e]) err(id, `introduce : yokai inconnu "${e}"`);
     if (!Array.isArray(L.waves) || !L.waves.length) err(id, 'aucune vague');
@@ -100,7 +126,7 @@ for (const w of worlds) {
         if (!defs.enemies[gr.enemy]) err(id, `vague ${i + 1} : yokai inconnu "${gr.enemy}"`);
         if (!(gr.count > 0)) err(id, `vague ${i + 1} : count invalide`);
         if ((gr.spawn ?? 0) >= g.spawns.length) err(id, `vague ${i + 1} : spawn ${gr.spawn} inexistant`);
-        if (gr.absorb && !defs.towers[gr.absorb]) err(id, `vague ${i + 1} : absorb "${gr.absorb}" invalide`);
+        if (gr.absorb && !ELEMENTS.has(gr.absorb)) err(id, `vague ${i + 1} : absorb "${gr.absorb}" invalide`);
       }
     });
   }

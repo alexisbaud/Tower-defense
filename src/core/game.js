@@ -15,6 +15,16 @@ export const STEP = 1 / 60;
 export const PRIORITIES = ['first', 'last', 'strong', 'close'];
 const ALL_ELEMENTS = ['fire', 'water', 'wind', 'earth'];
 
+// Éléments contrôlés par chaque joueur en coopération : chacun garde pour lui
+// l'élément qu'il a choisi ; les éléments que personne n'a choisis sont partagés.
+// `choices` : un élément (ou null) par joueur. Seul, on contrôle tout.
+export function assignElements(choices, all = ALL_ELEMENTS) {
+  if (choices.length <= 1) return [all.slice()];
+  const taken = new Set(choices.filter(Boolean));
+  const free = all.filter((el) => !taken.has(el));
+  return choices.map((el) => (el ? [el, ...free] : free.length ? free.slice() : all.slice()));
+}
+
 export class Game {
   /**
    * @param {object} level  données du niveau (data/levels/*.js)

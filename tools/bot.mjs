@@ -2,96 +2,50 @@
 // (placeTower, fuse, placeStone, startNextWave, rewind…), comme le ferait l'UI.
 //
 // Stratégies :
-//   smart  — couverture du chemin, mélange d'éléments, combos, fusions, pierres, rembobinage
-//   basic  — couverture du chemin, sans fusion/pierre/rembobinage
-//   lazy   — trois lanternes de Feu puis plus rien (doit perdre les niveaux avancés)
+//   balanced     mélange d'éléments selon les yokai annoncés (contres, combos, soutiens,
+//                barrières), fusions, pierres, rembobinage — le joueur appliqué
+//   mono:<type>  une seule lanterne, posée et fusionnée partout (doit perdre dès le niveau 2)
+//   random       lanternes et socles au hasard, sans pierre (indicatif)
+//   smart        alias de balanced
+//
+// En coopération, chaque joueur a son propre bot : bot(strategy, game, { pid }).
 
 import { T } from '../src/core/grid.js';
+import { Rng } from '../src/core/rng.js';
 
-export function bot(strategy, game) {
+export function bot(strategy, game, opts = {}) {
   const log = [];
   const g = game.grid;
+  const pid = opts.pid ?? 0;
+  const rng = new Rng(opts.seed ?? 11 + pid * 101);
   let nextDecision = 0;
   let lastLives = game.lives;
 
+  const mono = strategy.startsWith('mono:') ? strategy.slice(5) : null;
   const opt = {
-    smart: { fuse: true, stones: true, rewind: true, combos: true, maxTowers: 99 },
-    basic: { fuse: false, stones: false, rewind: false, combos: false, maxTowers: 99 },
-    lazy: { fuse: false, stones: false, rewind: false, combos: false, maxTowers: 3, only: 'fire' },
-  }[strategy];
+    balanced: { fuse: true, stones: true, rewind: true, combos: true, support: true },
+    smart: { fuse: true, stones: true, rewind: true, combos: true, support: true },
+    random: { fuse: true, stones: false, rewind: true, combos: false, support: false, random: true },
+  }[mono ? 'mono' : strategy] ?? { fuse: true, stones: true, rewind: true, combos: false, support: false };
+  // Le bot mono joue aussi bien que le bot équilibré (fusions, pierres, rembobinage) :
+  // s'il perd, c'est bien que la lanterne seule ne suffit pas.
 
-  // Cases de chemin actuellement empruntées par les yokai terrestres.
+  const defs = game.defs;
+  const gold = () => game.goldOf(pid);
+  const available = () => game.towersFor(pid).filter((t) => !mono || t === mono);
+  const attackOf = (def) => def.attack ?? 'projectile';
+  const isSupport = (type) => ['support', 'barrier'].includes(attackOf(defs.towers[type]));
+
+  // ───────── lecture de la carte ─────────
+
+  // Cases du trajet actuel des yokai terrestres (poids = nombre de trajets).
   function routeTiles() {
-    const set = new Map();
-    for (const s of g.spawns) {
-      for (const i of game.flow.route(s)) set.set(i, (set.get(i) || 0) + 1);
-    }
-    return set;
+    const m = new Map();
+    for (const s of g.spawns) for (const i of game.flow.route(s)) m.set(i, (m.get(i) || 0) + 1);
+    return m;
   }
 
-  function coverage(c, r, range, tiles) {
-    let n = 0;
-    for (const [i, w] of tiles) {
-      const d = Math.hypot(g.cx(i) - (c + 0.5), g.cy(i) - (r + 0.5));
-      if (d <= range) n += w;
-    }
-    return n;
-  }
-
-  // Analyse des prochaines vagues : volants, carapaces, absorptions, boss.
-  function upcoming() {
-    const info = { air: 0, armor: 0, boss: 0, absorb: {}, total: 0 };
-    const from = Math.max(0, game.state === 'wave' ? game.waveIndex : game.waveIndex + 1);
-    for (let w = from; w < game.waves.length && w <= from + 1; w++) {
-      for (const gr of game.waves[w].groups) {
-        const d = game.defs.enemies[gr.enemy];
-        if (!d) continue;
-        const n = gr.count;
-        info.total += n;
-        if (d.abilities?.flying) info.air += n;
-        if (d.abilities?.armor) info.armor += n;
-        if (d.boss) info.boss += 1;
-        const ab = gr.absorb ?? d.abilities?.absorb;
-        if (ab) info.absorb[ab] = (info.absorb[ab] || 0) + n;
-      }
-    }
-    return info;
-  }
-
-  function pickType() {
-    const avail = game.availableTowers.filter((t) => !opt.only || t === opt.only);
-    const counts = {};
-    for (const t of game.towers) counts[t.type] = (counts[t.type] || 0) + 2 ** (t.level - 1);
-    const info = upcoming();
-    const want = { fire: 3, water: 1.3, wind: 1.1, earth: 2.2 };
-    if (info.total) {
-      want.wind += (3 * info.air) / info.total;
-      want.fire += (2 * info.air) / info.total;
-      want.earth += (3 * info.armor) / info.total;
-      if (info.air / info.total > 0.6) want.earth *= 0.3;
-      for (const [el, n] of Object.entries(info.absorb)) if (want[el]) want[el] *= Math.max(0.15, 1 - (1.5 * n) / info.total);
-    }
-    if (info.boss) {
-      want.fire += 1;
-      want.earth += 1;
-    }
-    let best = null;
-    let bestScore = -Infinity;
-    for (const t of avail) {
-      const score = (want[t] ?? 1) / (1 + (counts[t] || 0));
-      if (score > bestScore) {
-        bestScore = score;
-        best = t;
-      }
-    }
-    return best;
-  }
-
-  // Points échantillonnés sur les lignes de vol S→G (pondérés si des volants arrivent).
   function flightPoints() {
-    const info = upcoming();
-    if (!info.air || !info.total) return [];
-    const w = (1.5 * info.air) / info.total;
     const pts = [];
     for (const s of g.spawns) {
       const goal = game.nearestGoal(g.cx(s), g.cy(s));
@@ -100,73 +54,257 @@ export function bot(strategy, game) {
       const x1 = g.cx(goal);
       const y1 = g.cy(goal);
       const n = Math.ceil(Math.hypot(x1 - x0, y1 - y0) * 2);
-      for (let k = 0; k <= n; k++) pts.push([x0 + ((x1 - x0) * k) / n, y0 + ((y1 - y0) * k) / n, w]);
+      for (let k = 0; k <= n; k++) pts.push([x0 + ((x1 - x0) * k) / n, y0 + ((y1 - y0) * k) / n]);
     }
     return pts;
   }
 
+  // ───────── lecture des vagues annoncées ─────────
+
+  // Composition des deux prochaines vagues : [{ def, absorb, hp }] (PV totaux par groupe).
+  function upcoming() {
+    const out = [];
+    const from = game.waveIndex + 1;
+    const start = game.enemies.length ? Math.max(0, game.waveIndex) : from;
+    for (let w = start; w < game.waves.length && w <= from + 1; w++) {
+      for (const gr of game.waves[w].groups) {
+        const def = defs.enemies[gr.enemy];
+        if (!def) continue;
+        out.push({ def, absorb: gr.absorb ?? def.abilities?.absorb ?? null, hp: def.hp * (gr.hp ?? 1) * gr.count });
+        const split = def.abilities?.split;
+        if (split) out.push({ def: defs.enemies[split.into], absorb: null, hp: defs.enemies[split.into].hp * split.count * gr.count * (gr.hp ?? 1) });
+      }
+    }
+    return out;
+  }
+
+  // Dégâts par seconde estimés d'une lanterne contre un yokai (armure, résistances,
+  // cibles possibles, absorption) ; les attaques de zone comptent plus.
+  function dpsVs(type, level, edef, absorb) {
+    const def = defs.towers[type];
+    const st = def.levels[Math.min(level, def.levels.length) - 1];
+    const el = def.element;
+    const atk = attackOf(def);
+    if (atk === 'support' || atk === 'barrier') return 0;
+    if (absorb === el) return 0;
+    const flying = !!edef.abilities?.flying;
+    const tg = def.targets ?? { ground: true, air: true };
+    if (flying ? !tg.air : !tg.ground) return 0;
+    const resist = edef.resist?.[el] ?? 0;
+    const armor = edef.armor ?? 0;
+    const per = (dmg) => {
+      let d = dmg * (1 - resist);
+      if (armor > 0) d = Math.max(d * 0.2, d - armor * (1 - (st.pierce ?? 0)));
+      return Math.max(0, d);
+    };
+    let dps = atk === 'aura' ? (st.auraDps ?? 0) * (1 - resist) : per(st.damage ?? 0) * (st.rate ?? 1) * (flying ? st.airMultiplier ?? 1 : 1);
+    if (st.burn && edef.abilities?.absorb !== 'fire') dps += st.burn.dps * (1 - (edef.resist?.fire ?? 0)) * 0.8;
+    const zone = st.splash ? 1.7 : atk === 'beam' ? 1.6 : atk === 'pulse' ? 1.8 : atk === 'aura' ? 1.4 : 1;
+    let util = 1;
+    if (st.slow && edef.speed >= 1.2 && (edef.resist?.water ?? 0) < 1) util += 0.35;
+    if (st.knockback && !edef.abilities?.timeless) util += 0.15;
+    if (st.stun) util += 0.2;
+    if (st.armorBreak && armor > 0) util += 0.5;
+    return dps * zone * util;
+  }
+
+  // Valeur d'un type de lanterne pour les prochaines vagues (dégâts utiles par pièce d'or).
+  function valueOf(type) {
+    const list = upcoming();
+    const total = list.reduce((s, x) => s + x.hp, 0) || 1;
+    let v = 0;
+    for (const x of list) v += (x.hp / total) * dpsVs(type, 1, x.def, x.absorb);
+    return v / defs.towers[type].cost;
+  }
+
+  // ───────── socles ─────────
+
+  function slotFree(type, c, r) {
+    const i = g.idx(c, r);
+    if (g.type(i) !== T.SLOT || game.towerAt(c, r)) return false;
+    const se = g.slotElement[i];
+    if (se && se !== defs.towers[type].element) return false;
+    return !game.echoes.some((t) => t.c === c && t.r === r);
+  }
+
+  function freeSlots(type) {
+    const out = [];
+    for (let i = 0; i < g.size; i++) if (g.type(i) === T.SLOT && slotFree(type, g.col(i), g.row(i))) out.push([g.col(i), g.row(i)]);
+    return out;
+  }
+
+  const barrierTiles = () => game.barriers.map((b) => b.tile);
+
+  function slotScore(type, c, r, tiles, air) {
+    const def = defs.towers[type];
+    const st = def.levels[0];
+    const x = c + 0.5;
+    const y = r + 0.5;
+    const atk = attackOf(def);
+    let score = 0;
+    if (atk === 'support') {
+      for (const t of game.towers) {
+        if (t.c === c && t.r === r) continue;
+        const d = Math.hypot(t.x - x, t.y - y);
+        if (d > st.range) continue;
+        if (st.rateBonus && !isSupport(t.type)) score += 2 ** (t.level - 1) * (defs.towers[t.type].cost / 50);
+      }
+      if (st.heal) for (const bt of barrierTiles()) if (Math.hypot(g.cx(bt) - x, g.cy(bt) - y) <= st.range) score += 4;
+      return score;
+    }
+    if (atk === 'barrier') {
+      // un mur sur le trajet, au milieu de lanternes qui frappent
+      let best = 0;
+      for (const [i] of tiles) {
+        if (Math.hypot(g.cx(i) - x, g.cy(i) - y) > st.range) continue;
+        if (barrierTiles().includes(i)) continue;
+        let s = 1;
+        for (const t of game.towers) if (!isSupport(t.type) && Math.hypot(t.x - g.cx(i), t.y - g.cy(i)) <= game.towerStats(t).range) s += 2 ** (t.level - 1);
+        // loin du sanctuaire : plus de temps pour frapper les yokai arrêtés
+        s *= 1 + Math.min(1, game.flow.dist[i] / 20);
+        best = Math.max(best, s);
+      }
+      return best;
+    }
+    const tg = def.targets ?? { ground: true, air: true };
+    if (tg.ground) {
+      for (const [i, w] of tiles) {
+        const d = Math.hypot(g.cx(i) - x, g.cy(i) - y);
+        if (d <= st.range) score += w * (barrierTiles().includes(i) ? 3 : 1);
+      }
+    }
+    if (tg.air && air.length) {
+      const share = airShare();
+      for (const [px, py] of air) if (Math.hypot(px - x, py - y) <= st.range) score += share * 1.5;
+    }
+    if (opt.combos) {
+      for (const t of [...game.towers, ...game.echoes]) {
+        if (t.element === def.element || Math.max(Math.abs(t.c - c), Math.abs(t.r - r)) !== 1) continue;
+        if (game.comboFor(t.type, type)) score += 3;
+      }
+    }
+    // un Carillon voisin accélère
+    for (const t of game.towers) {
+      const tst = game.towerStats(t);
+      if (tst.rateBonus && Math.hypot(t.x - x, t.y - y) <= tst.range) score *= 1 + tst.rateBonus * 0.5;
+    }
+    return score;
+  }
+
+  function airShare() {
+    const list = upcoming();
+    const total = list.reduce((s, x) => s + x.hp, 0) || 1;
+    return list.filter((x) => x.def.abilities?.flying).reduce((s, x) => s + x.hp, 0) / total;
+  }
+
   function bestSlot(type) {
+    const slots = freeSlots(type);
+    if (!slots.length) return null;
+    if (opt.random) {
+      const [c, r] = slots[Math.floor(rng.next() * slots.length)];
+      return { c, r, score: 1 };
+    }
     const tiles = routeTiles();
-    const def = game.defs.towers[type];
-    const range = def.levels[0].range;
-    const air = def.targets.air ? flightPoints() : [];
+    const air = flightPoints();
     let best = null;
     let bestScore = 0;
-    for (let i = 0; i < g.size; i++) {
-      if (g.type(i) !== T.SLOT) continue;
-      const c = g.col(i);
-      const r = g.row(i);
-      if (game.towerAt(c, r)) continue;
-      let score = coverage(c, r, range, tiles);
-      for (const [x, y, w] of air) if (Math.hypot(x - (c + 0.5), y - (r + 0.5)) <= range) score += w * 0.5;
-      if (opt.combos && game.comboFor) {
-        for (const t of game.towers) {
-          if (Math.max(Math.abs(t.c - c), Math.abs(t.r - r)) === 1 && t.type !== type && game.comboFor(t.type, type)) score += 3;
-        }
+    for (const [c, r] of slots) {
+      const s = slotScore(type, c, r, tiles, air);
+      if (s > bestScore) {
+        bestScore = s;
+        best = [c, r];
+      }
+    }
+    return best ? { c: best[0], r: best[1], score: bestScore } : null;
+  }
+
+  // ───────── choix de la lanterne ─────────
+
+  function pickType() {
+    const avail = available().filter((t) => defs.towers[t]);
+    if (!avail.length) return null;
+    if (opt.random) return avail[Math.floor(rng.next() * avail.length)];
+    if (mono) return avail[0];
+    const mine = game.towers.filter((t) => t.owner === pid || game.players.length === 1);
+    const count = {};
+    for (const t of mine) count[t.type] = (count[t.type] || 0) + 2 ** (t.level - 1);
+    const dmgTowers = mine.filter((t) => !isSupport(t.type)).length;
+    const ground = 1 - airShare();
+    let best = null;
+    let bestScore = -Infinity;
+    for (const type of avail) {
+      const def = defs.towers[type];
+      const atk = attackOf(def);
+      let score;
+      if (atk === 'support') {
+        if (!opt.support) continue;
+        const slot = bestSlot(type);
+        if (!slot) continue;
+        score = (def.levels[0].rateBonus ? slot.score * 0.012 : slot.score * 0.006) / (1 + (count[type] || 0));
+        if (def.levels[0].rateBonus && dmgTowers < 4) continue;
+        if (def.levels[0].heal && !game.barriers.length) continue;
+      } else if (atk === 'barrier') {
+        if (!opt.support || dmgTowers < 2 || ground < 0.5) continue;
+        if ((count[type] || 0) >= 2) continue;
+        score = 0.05 * ground / (1 + (count[type] || 0));
+      } else {
+        score = valueOf(type) / (1 + 0.6 * (count[type] || 0));
       }
       if (score > bestScore) {
         bestScore = score;
-        best = { c, r };
+        best = type;
       }
     }
     return best;
   }
 
+  // ───────── fusion, pierres ─────────
+
   function tryFuse() {
-    if (!opt.fuse || !game.fuse) return false;
+    if (!opt.fuse) return false;
+    const mine = game.towers.filter((t) => t.owner === pid || game.players.length === 1);
     for (let lvl = 1; lvl < game.rules.maxTowerLevel; lvl++) {
-      for (const type of Object.keys(game.defs.towers)) {
-        const list = game.towers.filter((t) => t.type === type && t.level === lvl);
-        if (list.length >= 2) {
-          const tiles = routeTiles();
-          const range = game.defs.towers[type].levels[lvl].range;
-          list.sort((a, b) => coverage(b.c, b.r, range, tiles) - coverage(a.c, a.r, range, tiles));
-          const dst = list[0];
-          const src = list[list.length - 1];
-          if (game.fuse(src.id, dst.id)) {
-            log.push(`t=${game.time.toFixed(1)} fusion ${type} -> N${lvl + 1}`);
-            return true;
-          }
+      const types = [...new Set(mine.map((t) => t.type))];
+      for (const type of types) {
+        const list = mine.filter((t) => t.type === type && t.level === lvl);
+        if (list.length < 2 || lvl >= game.maxLevelOf(type)) continue;
+        if (opt.random && rng.next() < 0.5) continue;
+        const tiles = routeTiles();
+        const air = flightPoints();
+        // on garde la mieux placée, on libère la moins utile (de préférence hors combo)
+        const score = (t) => slotScore(type, t.c, t.r, tiles, air) + (game.zones.some((z) => z.a === t.id || z.b === t.id) ? 5 : 0);
+        list.sort((a, b) => score(b) - score(a));
+        const dst = list[0];
+        const src = list[list.length - 1];
+        if (game.fuse(src.id, dst.id, pid)) {
+          log.push(`t=${game.time.toFixed(1)} fusion ${type} -> N${lvl + 1}`);
+          return true;
         }
       }
     }
     return false;
   }
 
+  function routeLength() {
+    let total = 0;
+    for (const s of g.spawns) total += game.flow.dist[s];
+    return total;
+  }
+
   function tryStone() {
-    if (!opt.stones || !game.placeStone || !game.level.stones || game.towers.length < 2) return false;
+    if (!opt.stones || !game.canUseStones(pid) || game.towers.length < 2) return false;
     const cost = game.stoneCost();
-    if (game.stonesLeft() <= 0 || game.gold < cost + 30) return false;
+    if (game.stonesLeft() <= 0 || gold() < cost + 30) return false;
     const base = routeLength();
     const cands = [];
     for (let i = 0; i < g.size; i++) {
       if (g.type(i) !== T.OPEN || g.stone[i]) continue;
-      if (game.canPlaceStone(g.col(i), g.row(i)).ok) cands.push(i);
+      if (game.canPlaceStone(g.col(i), g.row(i), pid).ok) cands.push(i);
     }
     const lenWith = (list) => {
       for (const i of list) g.stone[i] = 1;
       game.flow.compute();
-      let ok = g.spawns.every((s) => game.flow.dist[s] >= 0);
+      const ok = g.spawns.every((s) => game.flow.dist[s] >= 0);
       const len = ok ? routeLength() : -1;
       for (const i of list) g.stone[i] = 0;
       game.flow.compute();
@@ -181,8 +319,7 @@ export function bot(strategy, game) {
         best = i;
       }
     }
-    // Aucun gain immédiat : on regarde les paires (un seul caillou ne suffit pas toujours).
-    if (best < 0 && game.stonesLeft() >= 2 && game.gold >= cost * 2 + 30) {
+    if (best < 0 && game.stonesLeft() >= 2 && gold() >= cost * 2 + 30) {
       for (let a = 0; a < cands.length; a++) {
         for (let b = a + 1; b < cands.length; b++) {
           const gain = lenWith([cands[a], cands[b]]) - base;
@@ -193,18 +330,11 @@ export function bot(strategy, game) {
         }
       }
     }
-    if (best >= 0 && bestGain >= 1) {
-      game.placeStone(g.col(best), g.row(best));
+    if (best >= 0 && bestGain >= 1 && game.placeStone(g.col(best), g.row(best), pid)) {
       log.push(`t=${game.time.toFixed(1)} pierre (${g.col(best)},${g.row(best)}) +${bestGain}`);
       return true;
     }
     return false;
-  }
-
-  function routeLength() {
-    let total = 0;
-    for (const s of g.spawns) total += game.flow.dist[s];
-    return total;
   }
 
   function spend() {
@@ -212,12 +342,11 @@ export function bot(strategy, game) {
     while (guard++ < 30) {
       if (tryFuse()) continue;
       if (tryStone()) continue;
-      if (game.towers.length >= opt.maxTowers) break;
       const type = pickType();
-      if (!type || game.gold < game.defs.towers[type].cost) break;
+      if (!type || gold() < defs.towers[type].cost) break;
       const slot = bestSlot(type);
       if (!slot) break;
-      game.placeTower(type, slot.c, slot.r);
+      if (!game.placeTower(type, slot.c, slot.r, pid)) break;
       log.push(`t=${game.time.toFixed(1)} pose ${type} (${slot.c},${slot.r})`);
     }
   }
@@ -228,13 +357,13 @@ export function bot(strategy, game) {
       if (t < nextDecision) return;
       nextDecision = t + 0.5;
       spend();
-      if (opt.rewind && game.canRewind && game.lives < lastLives && game.canRewind()) {
-        game.rewind();
+      if (opt.rewind && game.lives < lastLives && game.canRewind()) {
+        game.rewind(pid);
         log.push(`t=${game.time.toFixed(1)} rembobinage`);
-        spend();
       }
+      if (game.lastChanceT > 0 && game.canRewind()) game.rewind(pid);
       lastLives = game.lives;
-      if (game.state === 'build') game.startNextWave();
+      if (game.state === 'build' && pid === 0) game.startNextWave(pid, false);
     },
   };
 }
