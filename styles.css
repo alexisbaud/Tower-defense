@@ -1564,6 +1564,9 @@ h4 {
 
 .hint {
   position: absolute;
+  /* origine explicite (boîte de padding de #screen-game, celle de getBoundingClientRect) :
+     sinon le calque se place sous le padding des zones sûres et le doigt est décalé */
+  inset: 0;
   z-index: 12;
   pointer-events: none;
   font-family: var(--font-title);

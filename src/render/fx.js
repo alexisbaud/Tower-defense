@@ -1479,6 +1479,7 @@ function portalSprite(size, sc) {
     }
     brushStroke(g, pts, 0.17, withAlpha(INK, 0.85), { taperIn: 0.7, taperOut: 0.2 });
   }
+  if (portals.size > 4) portals.clear(); // une seule taille de case active à la fois
   portals.set(key, c);
   return c;
 }
@@ -1492,6 +1493,7 @@ function portalFrame(R, sc, i) {
   let frames = portalFrames.get(key);
   if (!frames) {
     frames = new Array(PORTAL_FRAMES);
+    if (portalFrames.size > 4) portalFrames.clear(); // anciennes tailles (rotation, baisse de qualité)
     portalFrames.set(key, frames);
   }
   if (frames[i]) return frames[i];

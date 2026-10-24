@@ -233,7 +233,7 @@ export default {
 levels: ['1-1', '1-2', '1-3', '1-4', '1-5'],
 ```
 
-C'est tout : la carte des niveaux, la sauvegarde, le service worker (qui découvre les niveaux dans `worlds.js`) et le moteur le prennent en compte automatiquement.
+C'est tout : la carte des niveaux, la sauvegarde, le service worker (qui découvre les niveaux dans `worlds.js`, y compris chez un joueur qui a déjà installé le jeu : le niveau est mis en cache au prochain lancement en ligne) et le moteur le prennent en compte automatiquement.
 
 3. Vérifiez :
 
@@ -363,6 +363,7 @@ Tous les outils tournent avec Node ≥ 18 (aucune dépendance npm ; Playwright p
 | `node tools/sim.mjs [ids] --bots=smart,basic,lazy --seeds=1,2,3` | Joue chaque niveau avec des bots (smart doit gagner partout) |
 | `node tools/play-browser.mjs [ids]` | Joue chaque niveau en entier dans le vrai jeu (rendu, audio, modales, sauvegarde) et vérifie victoire + console propre |
 | `node tools/qa.mjs` | QA navigateur 390×844 depuis l'écran titre : erreurs console + captures |
+| `node tools/layout-check.mjs` | Mise en page en 390×844, 375×667, 430×932 avec safe areas : pas de débordement, boutons ≥ 44 pt |
 | `node tools/shot.mjs <id>` | Capture d'un niveau |
 | `node tools/make-icons.mjs` | Régénère les icônes PNG depuis `src/render/icon.js` |
 

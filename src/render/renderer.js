@@ -30,11 +30,18 @@ export class Renderer {
 
   resize(w, h) {
     const dpr = Math.min(this.maxDpr, window.devicePixelRatio || 1);
-    this.w = Math.max(1, w);
-    this.h = Math.max(1, h);
+    w = Math.max(1, w);
+    h = Math.max(1, h);
+    const cw = Math.round(w * dpr);
+    const ch = Math.round(h * dpr);
+    // Rien n'a changé (window 'resize' et ResizeObserver signalent souvent le même
+    // changement) : ne pas refaire le fond, ni vider le canvas en réaffectant sa taille.
+    if (w === this.w && h === this.h && dpr === this.dpr && this.canvas.width === cw && this.canvas.height === ch) return;
+    this.w = w;
+    this.h = h;
     this.dpr = dpr;
-    this.canvas.width = Math.round(this.w * dpr);
-    this.canvas.height = Math.round(this.h * dpr);
+    this.canvas.width = cw;
+    this.canvas.height = ch;
     this.canvas.style.width = `${this.w}px`;
     this.canvas.style.height = `${this.h}px`;
     if (this.game) this.layout();
@@ -279,7 +286,13 @@ export class Renderer {
     // sceau 巻 et compteur de secondes
     ctx.globalAlpha = env;
     const s = 64 * dpr * (0.9 + 0.1 * env);
-    drawSeal(ctx, cx, cy - s * 0.18, s, '巻');
+    // Sceau rendu à taille fixe (une seule image en cache) ; la pulsation passe par le repère.
+    const s0 = Math.round(64 * dpr);
+    ctx.save();
+    ctx.translate(cx, cy - s * 0.18);
+    ctx.scale(s / s0, s / s0);
+    drawSeal(ctx, 0, 0, s0, '巻');
+    ctx.restore();
     const secs = Math.max(0, anim.seconds * (1 - easeInOut(k)));
     const label = `−${secs.toFixed(1)} s`;
     ctx.font = `800 ${Math.round(34 * dpr)}px "Shippori Mincho", serif`;

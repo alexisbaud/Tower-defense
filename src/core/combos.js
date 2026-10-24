@@ -24,7 +24,10 @@ export function computeZones(game) {
       if (Math.max(Math.abs(a.c - b.c), Math.abs(a.r - b.r)) !== 1) continue;
       const def = game.comboIndex.get(comboKey(a.type, b.type));
       if (!def) continue;
-      const key = a.id < b.id ? `${a.id}:${b.id}` : `${b.id}:${a.id}`;
+      // Clé stable (combo + socles) : une fusion ou un rembobinage change les ids des
+      // lanternes, mais la zone reste la même (minuterie conservée, pas de nouvelle annonce).
+      const [p, q] = a.c * 100 + a.r < b.c * 100 + b.r ? [a, b] : [b, a];
+      const key = `${def.id}@${p.c},${p.r}-${q.c},${q.r}`;
       const avg = (a.level + b.level) / 2;
       const mult = 1 + bonus * (avg - 1);
       const prev = old.get(key);
@@ -55,7 +58,7 @@ export function applyStatus(game, e, status, mult, groundOnly, duration) {
   if (groundOnly && e.flying) return;
   if (status.blind) e.blindT = Math.max(e.blindT, Math.max(duration, status.blind));
   if (status.slow) {
-    const f = Math.max(0.15, 1 - (1 - status.slow) * Math.min(1.6, mult));
+    const f = 1 - (1 - status.slow) * Math.min(1.6, mult); // plancher appliqué par applySlow
     game.applySlow(e, f, Math.max(duration, 0.3));
   }
   if (status.burn) game.applyBurn(e, status.burn.dps * mult, Math.max(duration, status.burn.duration));

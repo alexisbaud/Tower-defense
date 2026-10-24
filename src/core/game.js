@@ -438,6 +438,22 @@ export class Game {
     return e;
   }
 
+  // Case marchable reliée au sanctuaire la plus proche d'un point.
+  nearestWalkable(x, y) {
+    const g = this.grid;
+    let best = g.goals[0];
+    let bd = Infinity;
+    for (let i = 0; i < g.size; i++) {
+      if (!g.isWalkable(i) || this.flow.dist[i] < 0) continue;
+      const d = Math.hypot(g.cx(i) - x, g.cy(i) - y);
+      if (d < bd) {
+        bd = d;
+        best = i;
+      }
+    }
+    return best;
+  }
+
   nearestGoal(x, y) {
     let best = this.grid.goals[0];
     let bd = Infinity;
@@ -481,7 +497,7 @@ export class Game {
   }
 
   updateStatuses(e, dt) {
-    if (e.knockFatigue > 0) e.knockFatigue = Math.max(0, e.knockFatigue - dt * (this.rules.knockFatigueDecay ?? 0.25));
+    if (e.knockFatigue > 0) e.knockFatigue = Math.max(0, e.knockFatigue - dt * (this.rules.knockFatigueDecay ?? 0.2));
     if (e.stunFatigue > 0) e.stunFatigue = Math.max(0, e.stunFatigue - dt * (this.rules.stunFatigueDecay ?? 0.35));
     if (e.healT > 0) e.healT -= dt;
     if (e.slowT > 0 && (e.slowT -= dt) <= 0) e.slowF = 1;
@@ -560,7 +576,7 @@ export class Game {
     e.x = e.px = parent.x;
     e.y = e.py = parent.y;
     e.dirX = parent.dirX;
-    if (e.flying || parent.flying) {
+    if (e.flying) {
       if (parent.flying) {
         Object.assign(e, { fx0: parent.fx0, fy0: parent.fy0, fx1: parent.fx1, fy1: parent.fy1, flyLen: parent.flyLen, s: parent.s });
       } else {
@@ -568,6 +584,14 @@ export class Game {
         Object.assign(e, { fx0: e.x, fy0: e.y, fx1: this.grid.cx(goal), fy1: this.grid.cy(goal), s: 0 });
         e.flyLen = Math.hypot(e.fx1 - e.fx0, e.fy1 - e.fy0);
       }
+    } else if (parent.flying) {
+      // Enfant terrestre d'un volant : il atterrit sur la case marchable la plus proche.
+      const land = this.nearestWalkable(parent.x, parent.y);
+      e.x = e.px = this.grid.cx(land);
+      e.y = e.py = this.grid.cy(land);
+      e.cur = land;
+      e.target = this.flow.next(land, 0, 1);
+      if (e.target < 0) e.target = land;
     } else {
       e.cur = parent.cur;
       e.target = parent.target;
@@ -667,27 +691,26 @@ export class Game {
     let guard = 0;
     while (remain > 0 && guard++ < 8) {
       // On recule d'abord vers le centre de la case courante, puis le long de la trace.
-      let back = e.cur;
-      const atCur = Math.hypot(g.cx(e.cur) - e.x, g.cy(e.cur) - e.y) < 1e-3;
-      if (atCur) {
-        back = e.trail[e.trail.length - 1];
+      // Au centre, la case précédente de la trace devient aussitôt la case courante
+      // (le yokai repart vers elle ; canPlaceStone la protège donc des pierres).
+      if (Math.hypot(g.cx(e.cur) - e.x, g.cy(e.cur) - e.y) < 1e-3) {
+        const back = e.trail[e.trail.length - 1];
         if (back == null || !g.isWalkable(back) || this.flow.dist[back] < 0) {
           e.knock = 0;
           return;
         }
+        e.trail.pop();
+        e.target = e.cur;
+        e.cur = back;
+        continue;
       }
-      const bx = g.cx(back);
-      const by = g.cy(back);
+      const bx = g.cx(e.cur);
+      const by = g.cy(e.cur);
       const d = Math.hypot(bx - e.x, by - e.y);
       if (d <= remain) {
         e.x = bx;
         e.y = by;
         remain -= d;
-        if (back !== e.cur) {
-          e.trail.pop();
-          e.target = e.cur;
-          e.cur = back;
-        }
       } else {
         e.x += ((bx - e.x) / d) * remain;
         e.y += ((by - e.y) / d) * remain;
@@ -858,6 +881,8 @@ export class Game {
 
   applySlow(e, factor, duration) {
     if (this.immuneTo(e, 'water')) return;
+    // Plancher : un yokai ralenti avance toujours (voir minSlowFactor dans data/rules.js).
+    factor = Math.max(this.rules.minSlowFactor ?? 0.35, factor);
     if (e.slowT <= 0) e.slowF = factor;
     else e.slowF = Math.min(e.slowF, factor);
     e.slowT = Math.max(e.slowT, duration);
@@ -878,7 +903,7 @@ export class Game {
     if (amount <= 0 || this.immuneTo(e, 'wind')) return;
     const resist = this.defs.enemies[e.type].knockResist ?? 0;
     const k = (amount * (1 - resist)) / (1 + e.knockFatigue);
-    e.knockFatigue += k * (this.rules.knockFatigueGain ?? 1.5);
+    e.knockFatigue += k * (this.rules.knockFatigueGain ?? 2.5);
     e.knock = Math.max(e.knock, k);
   }
 

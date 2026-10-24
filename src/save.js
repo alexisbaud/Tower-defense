@@ -15,10 +15,25 @@ function load() {
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) return structuredCloneSafe(DEFAULT);
-    return { ...structuredCloneSafe(DEFAULT), ...JSON.parse(raw) };
+    return sanitize(JSON.parse(raw));
   } catch {
     return structuredCloneSafe(DEFAULT);
   }
+}
+
+// Une sauvegarde abîmée (modifiée à la main, version future…) ne doit jamais
+// bloquer le jeu : on ne garde que les champs valides.
+function sanitize(p) {
+  const out = structuredCloneSafe(DEFAULT);
+  if (!p || typeof p !== 'object') return out;
+  for (const k of ['muted', 'music', 'rewindTutorialSeen']) if (typeof p[k] === 'boolean') out[k] = p[k];
+  if (p.stars && typeof p.stars === 'object' && !Array.isArray(p.stars)) {
+    for (const [id, v] of Object.entries(p.stars)) {
+      const n = Math.max(0, Math.min(3, Math.floor(Number(v))));
+      if (n > 0) out.stars[id] = n;
+    }
+  }
+  return out;
 }
 
 function structuredCloneSafe(o) {

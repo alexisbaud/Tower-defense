@@ -21,7 +21,7 @@ export default {
   ],
   startGold: 320,
   lives: 20,
-  hpScale: 1.9,
+  hpScale: 1.6,
   towers: ['fire', 'water', 'wind', 'earth'],
   stones: { cost: 10, max: 8 },
   rewind: true,

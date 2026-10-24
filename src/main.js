@@ -81,6 +81,20 @@ $('btn-title-sound').addEventListener('click', () => setMuted(!save.data.muted))
 $('btn-map-back').addEventListener('click', () => showScreen('title'));
 if (window.navigator.standalone) $('title-foot').textContent = 'Version hors ligne prête';
 
+// Charge un niveau ; s'il est introuvable (hors ligne et jamais mis en cache),
+// le dit au joueur au lieu d'ignorer le toucher.
+async function fetchLevel(id) {
+  try {
+    return await loadLevel(id);
+  } catch {
+    showModal(
+      `<div class="modal-kanji">封</div><h2>Niveau indisponible</h2><p>Ce niveau n’est pas encore enregistré pour le jeu hors ligne. Ouvrez le jeu une fois connecté pour le télécharger.</p>`,
+      [{ label: 'Carte du jardin', run: () => showScreen('map') }],
+    );
+    return null;
+  }
+}
+
 async function openLevelCard(entry, unlocked) {
   if (!unlocked) {
     showModal(
@@ -89,7 +103,8 @@ async function openLevelCard(entry, unlocked) {
     );
     return;
   }
-  const level = await loadLevel(entry.id);
+  const level = await fetchLevel(entry.id);
+  if (!level) return;
   const world = worldById(level.world);
   const stars = save.stars(entry.id);
   const towers = (level.towers || Object.keys(defs.towers))
@@ -351,7 +366,8 @@ function updateBossBar(g) {
 }
 
 async function startLevel(id) {
-  const level = await loadLevel(id);
+  const level = await fetchLevel(id);
+  if (!level) return;
   const world = worldById(level.world);
   modal.classList.add('hidden');
   showScreen('game');
@@ -361,6 +377,7 @@ async function startLevel(id) {
   state.resultShown = false;
   setPaused(false);
   input.reset();
+  renderer.game = null; // resize() ne refait pas le fond de l'ancien niveau : setGame s'en charge
   resize();
   renderer.setGame(state.game, world.theme);
   hud.setup(state.game, input);
@@ -376,6 +393,7 @@ async function startLevel(id) {
   musicHold = null;
   sound.intensity = 0;
   sound.setWorld?.(world.id);
+  pauseIfLandscape();
   if (!state.loopRunning) {
     state.loopRunning = true;
     state.last = performance.now();
@@ -383,14 +401,14 @@ async function startLevel(id) {
   }
 }
 
-function showResult(won) {
+// `record` : la victoire est déjà enregistrée à l'événement 'win' (voir handleEvents).
+function showResult(won, record = false) {
   const g = state.game;
   state.resultShown = true;
   setPaused(true);
   const idx = order.findIndex((o) => o.id === state.levelId);
   if (won) {
     const stars = g.stars();
-    const record = save.record(state.levelId, stars);
     const next = order[idx + 1];
     const card = showModal(
       `<div class="modal-kanji">勝</div><h2>Victoire !</h2>
@@ -410,6 +428,7 @@ function showResult(won) {
     const is = card.querySelectorAll('.result-stars i');
     is.forEach((el, k) =>
       setTimeout(() => {
+        if (state.game !== g || !state.resultShown) return; // partie suivante déjà lancée (ou carte)
         el.classList.add('show');
         if (k < stars) sound.play('star', { i: k });
       }, 350 + k * 380),
@@ -457,10 +476,13 @@ function handleEvents(game) {
       case 'enrage':
         hud.toast(`${defs.enemies[ev.enemy.type].name} entre en rage !`, true);
         break;
-      case 'win':
+      case 'win': {
         hud.banner('Victoire', '★'.repeat(ev.stars) + '☆'.repeat(3 - ev.stars));
-        setTimeout(() => state.game === game && showResult(true), 1400);
+        // Enregistrée tout de suite : quitter (ou recommencer) pendant la bannière ne perd pas la victoire.
+        const record = save.record(state.levelId, ev.stars);
+        setTimeout(() => state.game === game && showResult(true, record), 1400);
         break;
+      }
       case 'lose':
         hud.banner('Défaite', 'Le sanctuaire est tombé');
         setTimeout(() => state.game === game && showResult(false), 1400);
@@ -480,29 +502,36 @@ function resize() {
 }
 
 // Qualité adaptative : si l'appareil n'atteint pas ~45 fps pendant quelques
-// secondes, on réduit la résolution du canvas (3x → 2x → 1.5x).
-const perf = { acc: 0, n: 0 };
-function adaptQuality(rawDt) {
+// secondes, on réduit la résolution du canvas (3x → 2x → 1.5x). Une cadence
+// régulière plafonnée par le système (iOS en mode Économie d'énergie : 30 Hz)
+// avec peu de travail par frame ne dégrade rien : on ne baisse que si la frame
+// coûte cher (plus de la moitié de l'intervalle) ou si la cadence est saccadée.
+const perf = { acc: 0, work: 0, jit: 0, prev: 0, n: 0 };
+function adaptQuality(rawDt, work) {
   if (state.paused || document.hidden) return;
   perf.acc += rawDt;
+  perf.work += work;
+  if (perf.n) perf.jit += Math.abs(rawDt - perf.prev);
+  perf.prev = rawDt;
   perf.n++;
   if (perf.n < 150) return;
   const avg = perf.acc / perf.n;
-  perf.acc = 0;
-  perf.n = 0;
-  if (avg > 1 / 45 && renderer.maxDpr > 1.5 && (window.devicePixelRatio || 1) > 1.5) {
+  const busy = perf.work / perf.acc > 0.5;
+  const jerky = perf.jit / (perf.n - 1) > avg * 0.2;
+  perf.acc = perf.work = perf.jit = perf.n = 0;
+  if (avg > 1 / 45 && (busy || jerky) && renderer.maxDpr > 1.5 && (window.devicePixelRatio || 1) > 1.5) {
     renderer.maxDpr = renderer.maxDpr > 2 ? 2 : 1.5;
     resize();
   }
 }
 
 function frame(now) {
+  const t0 = performance.now();
   const raw = (now - state.last) / 1000;
   const dt = Math.min(0.1, raw);
   state.last = now;
   const g = state.game;
   if (g && state.screen === 'game') {
-    if (raw < 0.25) adaptQuality(raw);
     if (!state.paused) {
       state.acc += dt * state.speed;
       let steps = 0;
@@ -519,6 +548,7 @@ function frame(now) {
     updateBossBar(g);
     tutorial.update(state.paused || modalOpen());
     renderer.render(state.paused ? 0 : dt, state.paused ? 1 : state.acc / STEP, input.ui);
+    if (raw < 0.25) adaptQuality(raw, (performance.now() - t0) / 1000);
   }
   requestAnimationFrame(frame);
 }
@@ -551,7 +581,29 @@ document.addEventListener('visibilitychange', () => {
 });
 window.addEventListener('pagehide', () => sound.suspend());
 
+// Téléphone tourné en paysage : l'écran « Tournez votre téléphone » (styles.css)
+// masque la partie, qui se met donc en pause (iOS ignore l'orientation du manifeste).
+const landscape = matchMedia('(orientation: landscape) and (max-height: 500px)');
+function pauseIfLandscape() {
+  if (landscape.matches && state.game && state.screen === 'game' && !state.paused && !state.resultShown) openPauseMenu();
+}
+if (landscape.addEventListener) landscape.addEventListener('change', pauseIfLandscape);
+else landscape.addListener?.(pauseIfLandscape);
+
 window.addEventListener('resize', resize);
+// Changement de densité de pixels sans changement de taille (écran externe, zoom).
+function watchDpr() {
+  const mq = matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+  mq.addEventListener?.(
+    'change',
+    () => {
+      resize();
+      watchDpr();
+    },
+    { once: true },
+  );
+}
+watchDpr();
 new ResizeObserver(resize).observe(document.getElementById('app'));
 
 // Hors ligne : service worker.

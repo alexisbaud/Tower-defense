@@ -80,6 +80,20 @@ console.log('Combos');
   const pairs = new Set(defs.combos.map((c) => [...c.elements].sort().join('+')));
   check('6 paires distinctes', pairs.size === 6);
 }
+{
+  // Fusionner une lanterne déjà en combo : même zone (minuterie gardée), pas de nouvelle annonce.
+  const g = new Game(base(), defs, { recordEvents: true });
+  g.placeTower('water', 1, 2);
+  const v = g.placeTower('wind', 1, 3);
+  const v2 = g.placeTower('wind', 7, 1);
+  const z0 = g.zones.find((z) => z.def.id === 'frost');
+  z0.timer = 3.5;
+  g.events.length = 0;
+  g.fuse(v2.id, v.id);
+  const z1 = g.zones.find((z) => z.def.id === 'frost');
+  check('fusion : zone conservée', z1 && z1.key === z0.key && z1.timer === 3.5 && z1.mult > z0.mult);
+  check('fusion : combo non réannoncé', !g.events.some((ev) => ev.type === 'combo'));
+}
 
 console.log('Capacités des yokai');
 {
@@ -181,6 +195,98 @@ console.log('Rendements décroissants');
   e.knock = 0;
   g.applyKnockback(e, 1);
   check('reculs décroissants', e.knock < k1);
+}
+{
+  // Recul complet le long de la trace, même depuis le centre d'une case (pas d'oscillation).
+  const map = [
+    ',,,,S,,,,',
+    ',,,,.,,,,',
+    ',,,,.,,,,',
+    ',,,,.,,,,',
+    ',,,,.,,,,',
+    ',,,,.,,,,',
+    ',,,,.,,,,',
+    ',,,,G,,,,',
+  ];
+  const g = new Game(base({ map, waves: [{ groups: [{ enemy: 'kodama', count: 1 }] }] }), defs);
+  g.startNextWave();
+  run(g, 4);
+  const e = g.enemies[0];
+  e.x = g.grid.cx(e.cur);
+  e.y = g.grid.cy(e.cur);
+  const y0 = e.y;
+  g.applyKnockback(e, 1.1);
+  const amount = e.knock;
+  let back = 0;
+  let jitter = false;
+  let prev = e.y;
+  while (e.knock > 0) {
+    g.update(STEP);
+    if (e.y > prev + 1e-9) jitter = true;
+    prev = e.y;
+    back = Math.max(back, y0 - e.y);
+  }
+  check('recul complet depuis le centre d’une case', Math.abs(back - amount) < 0.02, `${back.toFixed(3)} / ${amount.toFixed(3)}`);
+  check('recul sans aller-retour', !jitter);
+  // le yokai est entre sa case de recul (devenue courante) et la case qu'il quittait
+  check('case de recul = case courante', g.grid.cy(e.cur) <= e.y && e.y <= g.grid.cy(e.target), `${g.grid.cy(e.cur)} ≤ ${e.y} ≤ ${g.grid.cy(e.target)}`);
+}
+
+console.log('Robustesse');
+{
+  // Un enfant terrestre né d'un volant atterrit sur le chemin.
+  const g = new Game(base({ waves: [{ groups: [{ enemy: 'tengu', count: 1, interval: 1 }] }] }), defs);
+  g.startNextWave();
+  run(g, 2);
+  const child = g.spawnChild('kodama', g.enemies[0]);
+  check('enfant terrestre d’un volant sur une case marchable', child.cur >= 0 && g.grid.isWalkable(child.cur) && child.target >= 0);
+  run(g, 30);
+  check('il rejoint le sanctuaire', g.lives < 20);
+}
+{
+  // Sauvegarde abîmée mais JSON valide : jamais d'exception.
+  const store = { 'jardin-des-esprits:v1': '{"stars":{"1-1":"3","1-2":"abc","1-3":9},"muted":"oui"}' };
+  globalThis.localStorage = { getItem: (k) => store[k] ?? null, setItem: (k, v) => (store[k] = v) };
+  const { save } = await import('../src/save.js?corrompue');
+  check('sauvegarde abîmée nettoyée', save.stars('1-1') === 3 && save.stars('1-2') === 0 && save.stars('1-3') === 3 && save.data.muted === false);
+  check('total d’étoiles numérique', save.totalStars() === 6);
+  delete globalThis.localStorage;
+}
+
+console.log('Une vague finit toujours (pire cas)');
+{
+  // Boue N3 + N3 au contact, deux Vent N3, Givre : le yokai le plus lent doit avancer.
+  const map = [
+    ',,,,S,,,,',
+    ',,,#.#,,,',
+    ',,,#.#,,,',
+    ',,,#.#,,,',
+    ',,,#.#,,,',
+    ',,,,.,,,,',
+    ',,,,.,,,,',
+    ',,,,.,,,,',
+    ',,,,.,,,,',
+    ',,,,G,,,,',
+  ];
+  for (const enemy of ['kodama', 'gashadokuro', 'kappa']) {
+    const g = new Game(base({ map, waves: [{ groups: [{ enemy, count: 1, interval: 1, hp: 100000 }] }] }), defs);
+    const place = (type, c, r) => {
+      const t = g.placeTower(type, c, r);
+      t.level = 3;
+    };
+    place('water', 3, 1);
+    place('earth', 3, 2);
+    place('water', 5, 1);
+    place('earth', 5, 2);
+    place('wind', 3, 3);
+    place('wind', 5, 3);
+    place('water', 3, 4);
+    place('wind', 5, 4);
+    g.onTowersChanged();
+    g.startNextWave();
+    run(g, 400);
+    check(`${enemy} finit par passer (PV ×100000)`, g.lives < 20, `vies ${g.lives}, y=${g.enemies[0]?.y?.toFixed(2)}`);
+  }
 }
 
 console.log('Rembobinage');

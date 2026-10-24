@@ -66,6 +66,9 @@ export class Input {
         this.h.onInfo?.({ kind: 'tower', tower });
       }, LONG_PRESS_MS);
     } else if (this.ui.tool && this.ui.tool !== 'stone') {
+      // Pose : l'aperçu suit le doigt pendant tout le geste, même s'il passe
+      // (ou commence) hors d'un socle — relâcher hors socle annule.
+      this.down.placing = true;
       this.updatePress(tile);
     } else if (game.grid.inBounds(tile.c, tile.r) && game.grid.stone[game.grid.idx(tile.c, tile.r)]) {
       this.down.timer = setTimeout(() => {
@@ -109,7 +112,7 @@ export class Input {
       const tile = this.tileOf({ x: p.x, y: p.y - this.renderer.ts * 0.4 });
       const target = this.game.grid.inBounds(tile.c, tile.r) ? this.game.towerAt(tile.c, tile.r) : null;
       this.ui.drag.hover = { c: tile.c, r: tile.r, valid: !!(target && this.game.canFuse(d.tower.id, target.id).ok) };
-    } else if (this.ui.press) {
+    } else if (d.placing) {
       this.updatePress(this.tileOf(p));
     }
   }

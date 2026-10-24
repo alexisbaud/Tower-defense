@@ -345,6 +345,7 @@ function flakeSprite(sizePx, sc) {
     }
     c.stroke();
   }
+  if (flakeCache.size > 4) flakeCache.clear(); // une seule taille de case active à la fois
   flakeCache.set(key, L);
   return L;
 }
@@ -632,7 +633,7 @@ export function drawComboLinks(ctx, game, ts, time) {
     }
     // sceau qui se pose comme un tampon (léger rebond)
     const s = Math.round(ts * 0.32);
-    const S = sealSprite(z.def.kanji, s, sc);
+    const S = sealSprite(z.def.kanji || '合', s, sc); // kanji facultatif dans les données
     const k = age < 0.35 ? 1.6 - easeOutBack(age / 0.35) * 0.6 : 1;
     ctx.globalAlpha = a0 * pop;
     if (k === 1) blit(ctx, m, S, G.sx - S.w / 2, G.sy - S.h / 2);
@@ -705,6 +706,7 @@ function tornadoFrame(ts, size, sc, i) {
   let frames = tornadoFrames.get(key);
   if (!frames) {
     frames = new Array(TORNADO_FRAMES);
+    if (tornadoFrames.size > 4) tornadoFrames.clear(); // anciennes tailles (rotation, baisse de qualité)
     tornadoFrames.set(key, frames);
   }
   if (frames[i]) return frames[i];

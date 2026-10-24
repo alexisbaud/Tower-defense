@@ -42,17 +42,32 @@ const CORE = [
 ];
 
 // Les niveaux sont découverts dans data/worlds.js : ajouter un niveau ne
-// demande pas de modifier ce fichier.
+// demande pas de modifier ce fichier (ni à l'installation, ni ensuite : voir fetch).
+function levelPaths(txt) {
+  const ids = [];
+  for (const m of txt.matchAll(/levels:\s*\[([^\]]*)\]/g)) {
+    for (const q of m[1].matchAll(/['"]([^'"]+)['"]/g)) ids.push(`data/levels/${q[1]}.js`);
+  }
+  return ids;
+}
+
 async function levelFiles() {
   try {
-    const txt = await (await fetch('data/worlds.js', { cache: 'no-store' })).text();
-    const ids = [];
-    for (const m of txt.matchAll(/levels:\s*\[([^\]]*)\]/g)) {
-      for (const q of m[1].matchAll(/['"]([^'"]+)['"]/g)) ids.push(`data/levels/${q[1]}.js`);
-    }
-    return ids;
+    return levelPaths(await (await fetch('data/worlds.js', { cache: 'no-store' })).text());
   } catch {
     return [];
+  }
+}
+
+// Un worlds.js plus récent que l'installation peut annoncer de nouveaux niveaux
+// (sw.js inchangé, donc pas de réinstallation) : on met en cache ceux qui manquent.
+async function cacheNewLevels(cache, res) {
+  try {
+    for (const f of levelPaths(await res.text())) {
+      if (!(await cache.match(f))) await cache.add(new Request(f, { cache: 'reload' })).catch(() => {});
+    }
+  } catch {
+    /* hors ligne ou réponse illisible : on réessaiera au prochain lancement */
   }
 }
 
@@ -87,7 +102,10 @@ self.addEventListener('fetch', (event) => {
         const cache = await caches.open(VERSION);
         try {
           const res = await fetch(req);
-          if (res.ok) cache.put(req, res.clone());
+          if (res.ok) {
+            cache.put(req, res.clone());
+            if (url.pathname.endsWith('/data/worlds.js')) event.waitUntil(cacheNewLevels(cache, res.clone()));
+          }
           return res;
         } catch {
           const hit = await cache.match(req, { ignoreSearch: true });

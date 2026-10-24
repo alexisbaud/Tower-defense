@@ -16,11 +16,13 @@ export class Tutorial {
   }
 
   start(game) {
+    // Masquer d'abord l'indication éventuelle du niveau précédent.
+    this.hide();
+    this.el.classList.add('hidden');
+    this.el.innerHTML = '';
     this.steps = [...(game.level.tutorial || [])];
     this.done = new Set();
-    this.current = null;
     this.rewindPhase = this.steps.includes('rewind') ? 1 : 0;
-    this.hide();
   }
 
   onEvent(ev) {

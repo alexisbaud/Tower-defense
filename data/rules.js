@@ -15,11 +15,16 @@ export default {
   // Combos : bonus de puissance par niveau moyen au-delà de 1
   comboLevelBonus: 0.4,
   // Rendements décroissants : chaque recul / étourdissement subi augmente une
-  // « fatigue » qui réduit les suivants, puis retombe avec le temps.
-  knockFatigueGain: 1.5,
-  knockFatigueDecay: 0.25, // recul moyen maximal à l’équilibre ≈ decay / gain ≈ 0,17 case/s
+  // « fatigue » qui réduit les suivants, puis retombe avec le temps. À l'équilibre,
+  // le recul moyen subi vaut decay / gain (0,08 case/s) et la part du temps passée
+  // étourdi vaut decay / gain (≈ 23 %). Avec le plancher de ralentissement, même le
+  // yokai le plus lent (0,4 case/s) avance donc toujours : 0,4 × 0,35 × 0,77 > 0,08.
+  // Une vague finit toujours.
+  knockFatigueGain: 2.5,
+  knockFatigueDecay: 0.2,
   stunFatigueGain: 1.5,
   stunFatigueDecay: 0.35,
+  minSlowFactor: 0.35,    // aucun ralentissement ne descend sous 35 % de la vitesse
   // Rembobinage (niveaux avec `rewind: true`)
   rewindSeconds: 6,       // remonte le temps de 6 s, une fois par vague
   echoSeconds: 10,        // durée de vie des échos fantômes
