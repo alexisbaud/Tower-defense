@@ -361,7 +361,8 @@ Tous les outils tournent avec Node ≥ 18 (aucune dépendance npm ; Playwright p
 | `node tools/test-core.mjs` | Tests du moteur : pierres et blocage, fusion, combos, capacités, rembobinage |
 | `node tools/validate-levels.mjs` | Validation du schéma de tous les niveaux |
 | `node tools/sim.mjs [ids] --bots=smart,basic,lazy --seeds=1,2,3` | Joue chaque niveau avec des bots (smart doit gagner partout) |
-| `node tools/qa.mjs` | QA navigateur 390×844 : erreurs console + captures |
+| `node tools/play-browser.mjs [ids]` | Joue chaque niveau en entier dans le vrai jeu (rendu, audio, modales, sauvegarde) et vérifie victoire + console propre |
+| `node tools/qa.mjs` | QA navigateur 390×844 depuis l'écran titre : erreurs console + captures |
 | `node tools/shot.mjs <id>` | Capture d'un niveau |
 | `node tools/make-icons.mjs` | Régénère les icônes PNG depuis `src/render/icon.js` |
 
