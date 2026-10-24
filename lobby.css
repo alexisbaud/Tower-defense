@@ -1,0 +1,339 @@
+/* Salon multijoueur de l'écran d'accueil (src/ui/lobby.js). */
+.lobby {
+  width: min(100%, 380px);
+  margin: 0 auto;
+  padding: 12px 14px 10px;
+  border-radius: 14px;
+  background: rgba(22, 34, 58, 0.86);
+  background-image: var(--washi);
+  background-size: var(--washi-size);
+  background-blend-mode: soft-light;
+  color: var(--cream);
+  box-shadow: 0 6px 22px rgba(10, 14, 24, 0.35), inset 0 0 0 1px rgba(242, 232, 208, 0.18);
+  text-align: left;
+  font-family: var(--font-ui);
+}
+
+.lobby-head {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 10px;
+}
+.lobby-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.lobby-label {
+  font-family: var(--font-title);
+  font-size: 15px;
+  letter-spacing: 0.08em;
+}
+.lobby-status {
+  font-size: 12px;
+  opacity: 0.85;
+  white-space: nowrap;
+}
+.lobby-status::before {
+  content: '';
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 5px;
+  border-radius: 50%;
+  background: #9a9a9a;
+  vertical-align: 0;
+}
+.lobby-status.online::before {
+  background: #8fd07a;
+  box-shadow: 0 0 6px #8fd07a;
+}
+.lobby-status.connecting::before {
+  background: var(--gold-2);
+  animation: lobbyBlink 1s infinite;
+}
+@keyframes lobbyBlink {
+  50% {
+    opacity: 0.25;
+  }
+}
+
+.lobby-code {
+  display: flex;
+  justify-content: center;
+  gap: 5px;
+}
+.lobby-code-ch {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 40px;
+  border-radius: 6px;
+  background: var(--cream);
+  color: var(--vermillion-dark);
+  font-family: var(--font-title);
+  font-weight: 700;
+  font-size: 24px;
+  box-shadow: inset 0 0 0 2px var(--vermillion), 0 2px 0 rgba(0, 0, 0, 0.3);
+  -webkit-user-select: text;
+  user-select: text;
+}
+.lobby-code.dim .lobby-code-ch {
+  opacity: 0.45;
+}
+.lobby-share {
+  display: flex;
+  gap: 8px;
+}
+
+.lobby .btn.small {
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0 12px;
+  font-size: 14px;
+}
+.lobby .hidden {
+  display: none !important;
+}
+
+.lobby-players {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.lobby-player {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 4px 8px;
+  border-radius: 10px;
+  background: rgba(242, 232, 208, 0.1);
+  overflow: hidden;
+}
+.lobby-player.me {
+  background: rgba(242, 232, 208, 0.2);
+  box-shadow: inset 0 0 0 1px rgba(240, 207, 106, 0.6);
+}
+.lobby-player.empty {
+  opacity: 0.55;
+}
+.lobby-seal {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  background: var(--el, #6d6a78);
+  color: var(--cream);
+  font-size: 15px;
+  box-shadow: inset 0 0 0 2px rgba(242, 232, 208, 0.6);
+}
+.lobby-seal.empty {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px rgba(242, 232, 208, 0.5);
+  font-family: var(--font-title);
+}
+.lobby-pname {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lobby-player.me .lobby-pname {
+  text-decoration: underline dotted rgba(242, 232, 208, 0.6);
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.lobby-tags {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.lobby-tag {
+  font-style: normal;
+  font-size: 12px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: rgba(242, 232, 208, 0.16);
+  line-height: 16px;
+}
+.lobby-tag.host {
+  background: var(--gold-dark);
+}
+.lobby-tag.you {
+  background: var(--vermillion-ui);
+}
+.lobby-tag.off {
+  background: #55505f;
+}
+
+.lobby-sub {
+  margin: 12px 0 6px;
+  font-family: var(--font-title);
+  font-size: 14px;
+}
+.lobby-elements {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+.lobby-el {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  min-height: 70px;
+  padding: 6px 2px 5px;
+  border: 0;
+  border-radius: 10px;
+  background: rgba(242, 232, 208, 0.1);
+  color: var(--cream);
+  font-family: var(--font-ui);
+  box-shadow: inset 0 0 0 1px rgba(242, 232, 208, 0.25);
+  transition: transform 0.12s, background 0.12s;
+}
+.lobby-el:active {
+  transform: scale(0.95);
+}
+.lobby-el.selected {
+  background: var(--el);
+  box-shadow: inset 0 0 0 2px var(--gold-2), 0 0 12px rgba(240, 207, 106, 0.45);
+}
+.lobby-el:disabled {
+  opacity: 0.45;
+}
+.lobby-el-glyph {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  font-size: 12px;
+  color: var(--el);
+}
+.lobby-el.selected .lobby-el-glyph {
+  color: var(--cream);
+}
+.lobby-el-kanji {
+  font-family: var(--font-title);
+  font-size: 22px;
+  line-height: 1.1;
+}
+.lobby-el-name {
+  font-size: 13px;
+  font-weight: 700;
+}
+.lobby-el-style {
+  font-size: 12px;
+  opacity: 0.85;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.lobby-note {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.4;
+  opacity: 0.88;
+}
+.lobby-join {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+.lobby-join-form {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+}
+.lobby-join-input {
+  flex: 1;
+  min-width: 0;
+  height: 44px;
+  border: 0;
+  border-radius: 8px;
+  padding: 0 10px;
+  background: var(--cream);
+  color: var(--ink);
+  font-family: var(--font-title);
+  font-size: 22px; /* ≥ 16 px : pas de zoom automatique sur iPhone */
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  text-align: center;
+  -webkit-user-select: text;
+  user-select: text;
+}
+.lobby-error {
+  min-height: 0;
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: #ffb4a0;
+  text-align: center;
+}
+.lobby-error:empty {
+  display: none;
+}
+.lobby-error.busy {
+  color: var(--gold-2);
+}
+
+/* Petits écrans : salon plus compact */
+@media (max-height: 740px) {
+  .lobby {
+    padding: 10px 12px 8px;
+  }
+  .lobby-el {
+    min-height: 60px;
+  }
+  .lobby-el-style {
+    display: none;
+  }
+}
+
+/* Compagnons de partie (coopération), sous le HUD */
+.coop-roster {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  padding: 2px 8px;
+  pointer-events: none;
+}
+.coop-mate {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px 1px 3px;
+  border-radius: 10px;
+  background: rgba(22, 34, 58, 0.72);
+  color: var(--cream);
+  font-size: 12px;
+  line-height: 18px;
+}
+.coop-mate.off {
+  opacity: 0.5;
+}
+.coop-mate i {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  background: var(--el);
+  font-style: normal;
+  font-size: 10px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .lobby-status.connecting::before {
+    animation: none;
+  }
+}
