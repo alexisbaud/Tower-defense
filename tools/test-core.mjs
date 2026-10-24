@@ -449,6 +449,28 @@ console.log('Rembobinage');
   check('jauge vide : défaite immédiate', g2.state === 'lost');
 }
 
+{
+  // Dernière chance sur la toute dernière fuite : pas de victoire à 0 vie.
+  const g = new Game(base({ rewind: true, rewindStart: 100, lives: 1, waves: [{ groups: [{ enemy: 'kodama', count: 1 }] }] }), defs);
+  g.startNextWave();
+  run(g, 3);
+  g.leak(g.enemies[0]);
+  run(g, 0.5);
+  check('dernière fuite : pas de victoire à 0 vie', g.state === 'wave' && g.lastChanceT > 0, g.state);
+  run(g, 5);
+  check('sans rembobinage : défaite', g.state === 'lost', g.state);
+}
+{
+  // Défi « N lanternes » : les poses fusionnées comptent.
+  const lvl = base({ challenge: { name: 'Deux', desc: '', rule: { maxTowers: 2 } } });
+  const g = new Game(lvl, defs);
+  g.challenge = true;
+  const a = g.placeTower('fire', 1, 1);
+  const b = g.placeTower('fire', 2, 1);
+  g.fuse(a.id, b.id);
+  check('défi : pose refusée après 2 poses, même fusionnées', g.canPlaceTower('fire', 1, 1).reason === 'challenge');
+}
+
 console.log('Socles typés et éléments');
 {
   const map = [',,,,S,,,,', ',1#ooo2#,', ',#ooooo#,', ',#ooooo#,', ',##ooo##,', ',,,,.,,,,', ',,,,G,,,,'];

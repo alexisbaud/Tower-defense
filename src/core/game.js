@@ -211,7 +211,8 @@ export class Game {
     if (this.towerAt(c, r)) return { ok: false, reason: 'occupied' };
     // Un écho occupe son socle jusqu'à sa disparition : on repose « ailleurs ».
     if (this.echoes.some((t) => t.c === c && t.r === r)) return { ok: false, reason: 'echo' };
-    if (this.challengeRule?.maxTowers != null && this.towers.length >= this.challengeRule.maxTowers) return { ok: false, reason: 'challenge' };
+    // défi « N lanternes » : toutes les poses comptent (une fusion consomme une pose)
+    if (this.challengeRule?.maxTowers != null && this.stats.towersBuilt >= this.challengeRule.maxTowers) return { ok: false, reason: 'challenge' };
     if (this.goldOf(pid) < def.cost) return { ok: false, reason: 'gold' };
     return { ok: true };
   }
@@ -628,7 +629,8 @@ export class Game {
 
   // Fin de chaque vague (récompense) et victoire.
   checkWaves() {
-    if (this.state !== 'wave') return;
+    // pendant la dernière chance, la partie est suspendue : ni fin de vague ni victoire
+    if (this.state !== 'wave' || this.lastChanceT > 0) return;
     for (let w = 0; w <= this.waveIndex; w++) {
       if (this.waveCleared[w]) continue;
       if (!this.spawnersDone(w) || this.enemies.some((e) => e.wave === w)) continue;

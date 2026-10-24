@@ -3,7 +3,11 @@
 //
 // Stratégies :
 //   balanced     mélange d'éléments selon les yokai annoncés (contres, combos, soutiens,
-//                barrières), fusions, pierres, rembobinage — le joueur appliqué
+//                barrières), fusions, pierres, rembobinage — le joueur appliqué :
+//                il diversifie ses éléments (kitsune), renforce l'antiaérien quand les
+//                volants annoncés dépassent sa défense, passe ses arcs en priorité
+//                « premier » face aux volants, ne choisit que des lanternes qui ont un
+//                socle libre (socles typés) et respecte le défi « N lanternes »
 //   mono:<type>  une seule lanterne, posée et fusionnée partout (doit perdre dès le niveau 2)
 //   random       lanternes et socles au hasard, sans pierre (indicatif)
 //   smart        alias de balanced
@@ -70,7 +74,7 @@ export function bot(strategy, game, opts = {}) {
       for (const gr of game.waves[w].groups) {
         const def = defs.enemies[gr.enemy];
         if (!def) continue;
-        out.push({ def, absorb: gr.absorb ?? def.abilities?.absorb ?? null, hp: def.hp * (gr.hp ?? 1) * gr.count });
+        out.push({ def, absorb: gr.absorb ?? def.abilities?.absorb ?? null, hp: def.hp * (gr.hp ?? 1) * gr.count, unit: def.hp * (gr.hp ?? 1) * game.hpScale, count: gr.count, interval: gr.interval ?? 1 });
         const split = def.abilities?.split;
         if (split) out.push({ def: defs.enemies[split.into], absorb: null, hp: defs.enemies[split.into].hp * split.count * gr.count * (gr.hp ?? 1) });
       }
@@ -108,12 +112,47 @@ export function bot(strategy, game, opts = {}) {
     return dps * zone * util;
   }
 
+  // Défense antiaérienne : dégâts qu'encaisse un volant pendant sa traversée, sur la
+  // ligne de vol la moins couverte (lanternes de tous les joueurs).
+  function airCover() {
+    let worst = Infinity;
+    for (const s of g.spawns) {
+      const goal = game.nearestGoal(g.cx(s), g.cy(s));
+      const x0 = g.cx(s), y0 = g.cy(s), x1 = g.cx(goal), y1 = g.cy(goal);
+      const n = Math.ceil(Math.hypot(x1 - x0, y1 - y0) * 2);
+      let dmg = 0;
+      for (const t of game.towers) {
+        const def = defs.towers[t.type];
+        const tg = def.targets ?? { ground: true, air: true };
+        if (!tg.air || isSupport(t.type)) continue;
+        const st = game.towerStats(t);
+        let k = 0;
+        for (let j = 0; j <= n; j++) if (Math.hypot(x0 + ((x1 - x0) * j) / n - t.x, y0 + ((y1 - y0) * j) / n - t.y) <= st.range) k++;
+        const dps = (st.damage ?? 0) * (st.airMultiplier ?? 1) * (st.rate ?? 1) * (t.rateMult || 1) + (st.auraDps ?? 0) + (st.burn?.dps ?? 0);
+        dmg += (dps * k * 0.5) / 1.2; // k points espacés d'une demi-case, volant à ~1,2 case/s
+      }
+      worst = Math.min(worst, dmg);
+    }
+    return worst;
+  }
+
+  // Volants annoncés plus robustes que la défense antiaérienne : leur poids triple.
+  // Besoin : PV des volants d'un groupe présents en même temps sur la ligne de vol.
+  function airBoost(list) {
+    const flight = Math.max(4, ...g.spawns.map((s) => { const gl = game.nearestGoal(g.cx(s), g.cy(s)); return Math.hypot(g.cx(gl) - g.cx(s), g.cy(gl) - g.cy(s)); }));
+    const need = Math.max(0, ...list.filter((x) => x.def.abilities?.flying).map((x) => x.unit * Math.min(x.count, 1 + flight / x.def.speed / x.interval)));
+    if (!need) return 1;
+    return airCover() < 1.5 * need ? 3 : 1;
+  }
+
   // Valeur d'un type de lanterne pour les prochaines vagues (dégâts utiles par pièce d'or).
   function valueOf(type) {
     const list = upcoming();
-    const total = list.reduce((s, x) => s + x.hp, 0) || 1;
+    const boost = airBoost(list);
+    const w = (x) => x.hp * (x.def.abilities?.flying ? boost : 1);
+    const total = list.reduce((s, x) => s + w(x), 0) || 1;
     let v = 0;
-    for (const x of list) v += (x.hp / total) * dpsVs(type, 1, x.def, x.absorb);
+    for (const x of list) v += (w(x) / total) * dpsVs(type, 1, x.def, x.absorb);
     return v / defs.towers[type].cost;
   }
 
@@ -193,8 +232,10 @@ export function bot(strategy, game, opts = {}) {
 
   function airShare() {
     const list = upcoming();
-    const total = list.reduce((s, x) => s + x.hp, 0) || 1;
-    return list.filter((x) => x.def.abilities?.flying).reduce((s, x) => s + x.hp, 0) / total;
+    const boost = airBoost(list);
+    const w = (x) => x.hp * (x.def.abilities?.flying ? boost : 1);
+    const total = list.reduce((s, x) => s + w(x), 0) || 1;
+    return list.filter((x) => x.def.abilities?.flying).reduce((s, x) => s + w(x), 0) / total;
   }
 
   function bestSlot(type) {
@@ -220,8 +261,16 @@ export function bot(strategy, game, opts = {}) {
 
   // ───────── choix de la lanterne ─────────
 
+  // Défi « N lanternes » : le bot ne dépasse jamais le nombre de poses permis.
+  function buildLimitReached() {
+    const max = game.challengeRule?.maxTowers;
+    return max != null && (game.stats.towersBuilt >= max || game.towers.length >= max);
+  }
+
   function pickType() {
-    const avail = available().filter((t) => defs.towers[t]);
+    if (buildLimitReached()) return null;
+    // seules comptent les lanternes qui ont encore un socle libre (socles typés)
+    const avail = available().filter((t) => defs.towers[t] && freeSlots(t).length);
     if (!avail.length) return null;
     if (opt.random) return avail[Math.floor(rng.next() * avail.length)];
     if (mono) return avail[0];
@@ -229,6 +278,10 @@ export function bot(strategy, game, opts = {}) {
     const count = {};
     for (const t of mine) count[t.type] = (count[t.type] || 0) + 2 ** (t.level - 1);
     const dmgTowers = mine.filter((t) => !isSupport(t.type)).length;
+    // part de l'or investi par élément (diversifier : kitsune, coopération)
+    const inv = mine.reduce((s, t) => s + t.invested, 0) || 1;
+    const elShare = {};
+    for (const t of mine) elShare[t.element] = (elShare[t.element] || 0) + t.invested / inv;
     const ground = 1 - airShare();
     let best = null;
     let bestScore = -Infinity;
@@ -246,9 +299,12 @@ export function bot(strategy, game, opts = {}) {
       } else if (atk === 'barrier') {
         if (!opt.support || dmgTowers < 2 || ground < 0.5) continue;
         if ((count[type] || 0) >= 2) continue;
-        score = 0.05 * ground / (1 + (count[type] || 0));
+        const slot = bestSlot(type);
+        if (!slot) continue;
+        // valeur d'un mur : les lanternes qui frappent autour de sa case (voir slotScore)
+        score = (0.015 * slot.score * ground) / (1 + (count[type] || 0));
       } else {
-        score = valueOf(type) / (1 + 0.6 * (count[type] || 0));
+        score = valueOf(type) / (1 + 0.6 * (count[type] || 0)) / (1 + 0.8 * (elShare[def.element] || 0));
       }
       if (score > bestScore) {
         bestScore = score;
@@ -337,6 +393,20 @@ export function bot(strategy, game, opts = {}) {
     return false;
   }
 
+  // Priorités : un antiaérien réglé sur « plus fort » viserait les carapaces au sol ;
+  // quand des volants sont annoncés, il passe sur « premier » (les volants filent droit).
+  function retarget() {
+    if (opt.random) return;
+    const wantAir = airShare() > 0.1;
+    for (const t of game.towers) {
+      if (game.players.length > 1 && t.owner !== pid) continue;
+      const def = defs.towers[t.type];
+      if (def.priority !== 'strong' || !((def.levels[0].airMultiplier ?? 1) > 1)) continue;
+      const want = wantAir ? 'first' : 'strong';
+      if (t.priority !== want) game.setPriority(t.id, want, pid);
+    }
+  }
+
   function spend() {
     let guard = 0;
     while (guard++ < 30) {
@@ -357,6 +427,7 @@ export function bot(strategy, game, opts = {}) {
       if (t < nextDecision) return;
       nextDecision = t + 0.5;
       spend();
+      retarget();
       if (opt.rewind && game.lives < lastLives && game.canRewind()) {
         game.rewind(pid);
         log.push(`t=${game.time.toFixed(1)} rembobinage`);

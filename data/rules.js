@@ -9,7 +9,10 @@ export default {
   // Les vagues s'enchaînent : la suivante part `pause` secondes après la fin des
   // apparitions de la précédente, même si des yokai sont encore en route. On peut
   // l'appeler plus tôt (bonus d'or et charge de Rembobinage).
-  waveReward: 15,         // or par défaut à la fin d'une vague
+  // Économie : les primes des yokai (data/enemies.js) restent modestes et la fin de
+  // vague paie davantage, pour que l'or ne fasse pas boule de neige en fin de niveau ;
+  // l'or de départ des niveaux, plus généreux, permet une vraie première défense.
+  waveReward: 25,         // or par défaut à la fin d'une vague
   maxTowerLevel: 3,
   // Pierres (chemin modifiable) — un niveau peut surcharger via `stones: { cost, max }`
   stoneCost: 10,
@@ -37,7 +40,7 @@ export default {
   // de remonter le temps de 6 s (autant de fois qu'on la remplit).
   rewindSeconds: 6,
   rewindCost: 100,        // charge consommée par un rembobinage (= jauge pleine)
-  rewindPerGold: 0.9,     // charge gagnée par pièce d'or de récompense d'un yokai
+  rewindPerGold: 1.5,     // charge gagnée par pièce d'or de récompense d'un yokai
   rewindPerEarlySecond: 3,// charge gagnée par seconde d'avance à l'appel d'une vague
   lastChanceSeconds: 4,   // fuite fatale avec la jauge pleine : délai pour rembobiner
   echoSeconds: 10,        // durée de vie des échos fantômes
@@ -48,10 +51,13 @@ export default {
   stars3: 0.85,
   stars2: 0.5,
   // Coopération (1 à 4 joueurs) : facteurs selon le nombre de joueurs.
-  // Chaque joueur a sa bourse ; les vies du sanctuaire sont communes.
+  // Chaque joueur a sa bourse ; les vies du sanctuaire sont communes. L'or de départ
+  // par joueur laisse chacun poser au moins une lanterne de son élément dès le début
+  // (la Terre coûte 65) ; les PV montent moins vite que l'or total, car chaque joueur
+  // n'utilise que les socles de son élément et les socles universels.
   coop: {
-    startGold: [1, 0.6, 0.45, 0.38], // part de l'or de départ du niveau, par joueur
+    startGold: [1, 0.65, 0.55, 0.5], // part de l'or de départ du niveau, par joueur
     reward: [1, 0.6, 0.45, 0.38], // part de chaque récompense, versée à chaque joueur
-    hp: [1, 1.25, 1.5, 1.75], // multiplicateur des PV des yokai
+    hp: [1, 1.2, 1.4, 1.6], // multiplicateur des PV des yokai
   },
 };

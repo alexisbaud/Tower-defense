@@ -1,45 +1,117 @@
-// Niveau 2-1 — un escalier en zigzag, un palier de gravier à labyrinther, et les premiers nuppeppō qui se divisent.
+// Niveau 2-1 — Les Terrasses gelées. Leçon : la priorité de ciblage (et le répit).
+//
+// Après l'Aka-oni, un niveau plus doux pour essayer les douze lanternes : quatre
+// terrasses reliées par des marches, et beaucoup de socles entre elles (chacun
+// couvre deux terrasses). Les tengu descendent le long du bord est, où veillent
+// des socles de Vent. Les yuki-onna soignent le cortège : régler une lanterne
+// sur « plus fort » (ou les aveugler à la Vapeur) les abat en premier.
+//
+// Courbe : 1-3 montée, 4 répit, 5-6 montée, 7 répit, 8-9 montée, 10 répit,
+// 11 montée, 12 climax « La Procession des neiges ».
 export default {
   id: '2-1',
-  name: "L'Escalier gelé",
-  subtitle: 'Les marches glissent, la chair se divise',
+  name: 'Les Terrasses gelées',
+  subtitle: 'Visez d’abord celle qui soigne',
+  concept: 'Priorité',
   world: 'snow',
   map: [
-    'T,,,,##ST',
-    ',,,##...,',
-    ',TR...##,',
-    'T...##,,T',
-    ',.##,R,,,',
-    ',ooooo..,',
-    ',ooooo,.,',
-    ',ooooo~.,',
-    ',ooooo,.T',
-    'T,R,#,,.,',
-    '~~,,#...,',
-    '~~T...##,',
-    'T,,G,,,,T',
+    'T,,,,,,ST',
+    ',,3,#,1.,',
+    ',.......,',
+    ',.2#,4#,,',
+    ',.,,1,3,,',
+    ',.......,',
+    ',#4,#2,.,',
+    'T,#1,3#.,',
+    ',.......,',
+    ',.#2,#4,,',
+    ',.,1#,3,,',
+    ',.......,',
+    'T,,,,,,G,',
   ],
-  startGold: 250,
+  startGold: 380,
   lives: 20,
-  hpScale: 1.8,
-  towers: ['fire', 'water', 'wind', 'earth'],
-  stones: { cost: 10, max: 6 },
+  hpScale: 3,
+  wavePause: 15,
+  // les douze lanternes (trois par élément)
+  towers: ['fire', 'fire_mortar', 'fire_wisp', 'water', 'water_spring', 'water_torrent', 'wind', 'wind_chime', 'wind_bow', 'earth', 'earth_guard', 'earth_quake'],
   rewind: true,
-  introduce: ['nuppeppo'],
+  tutorial: ['priority'],
+  introduce: ['yukionna'],
+  hard: { hpScale: 1.7, startGold: -30, lives: -5 },
+  challenge: {
+    name: 'Sans Terre',
+    desc: 'Gagner sans lanterne de Terre : ni catapulte, ni gardien, ni séisme.',
+    rule: { forbidTowers: ['earth', 'earth_guard', 'earth_quake'] },
+  },
   waves: [
-    { groups: [{ enemy: 'kodama', count: 10, interval: 0.8, hp: 1.1 }, { enemy: 'kamaitachi', count: 6, interval: 0.6, delay: 3, hp: 1.1 }] },
-    { groups: [{ enemy: 'nuppeppo', count: 5, interval: 1.8, hp: 1.2 }, { enemy: 'kamaitachi', count: 8, interval: 0.5, delay: 4, hp: 1.2 }] },
-    { groups: [{ enemy: 'kappa', count: 5, interval: 1.4, hp: 1.3 }, { enemy: 'kodama', count: 10, interval: 0.7, delay: 2, hp: 1.3 }] },
-    { groups: [{ enemy: 'nuppeppo', count: 8, interval: 1.2, hp: 1.3 }, { enemy: 'tengu', count: 5, interval: 1.4, delay: 3, hp: 1.3 }] },
-    { groups: [{ enemy: 'kappa', count: 8, interval: 1, hp: 1.4 }, { enemy: 'kamaitachi', count: 14, interval: 0.4, delay: 4, hp: 1.4 }] },
-    { groups: [{ enemy: 'nuppeppo', count: 10, interval: 0.9, hp: 1.5 }, { enemy: 'tengu', count: 9, interval: 0.9, delay: 3, hp: 1.6 }] },
-    { groups: [{ enemy: 'kappa', count: 10, interval: 0.9, hp: 1.7 }, { enemy: 'nuppeppo', count: 10, interval: 0.8, delay: 3, hp: 1.7 }, { enemy: 'kamaitachi', count: 16, interval: 0.35, delay: 7, hp: 1.7 }] },
+    { groups: [{ enemy: 'kodama', count: 10, interval: 1.2, hp: 1.15 }, { enemy: 'kamaitachi', count: 4, interval: 1.2, delay: 6, hp: 1.15 }] },
+    { groups: [{ enemy: 'yukionna', count: 2, interval: 4, hp: 1.2 }, { enemy: 'kodama', count: 10, interval: 1.1, delay: 1, hp: 1.2 }] },
     {
       groups: [
-        { enemy: 'nuppeppo', count: 16, interval: 0.6, hp: 1.9 },
-        { enemy: 'kappa', count: 10, interval: 0.8, delay: 3, hp: 1.9 },
-        { enemy: 'tengu', count: 12, interval: 0.7, delay: 5, hp: 2 },
-        { enemy: 'kamaitachi', count: 20, interval: 0.3, delay: 8, hp: 1.9 },
+        { enemy: 'kappa', count: 4, interval: 2.5, hp: 1.1 },
+        { enemy: 'yukionna', count: 2, interval: 4, delay: 2, hp: 1.1 },
+        { enemy: 'kamaitachi', count: 8, interval: 0.9, delay: 5, hp: 1.1 },
+      ],
+    },
+    // répit
+    { groups: [{ enemy: 'tengu', count: 4, interval: 2.2, hp: 0.3 }, { enemy: 'kodama', count: 8, interval: 1.2, delay: 3 }] },
+    {
+      groups: [
+        { enemy: 'nuppeppo', count: 6, interval: 1.8, hp: 0.75 },
+        { enemy: 'yukionna', count: 3, interval: 3, delay: 2, hp: 0.75 },
+        { enemy: 'kitsune', count: 5, interval: 1.5, delay: 5, hp: 0.75, absorb: 'wind' },
+      ],
+    },
+    {
+      groups: [
+        { enemy: 'kappa', count: 6, interval: 1.8, hp: 1.5 },
+        { enemy: 'yukionna', count: 3, interval: 3, delay: 2, hp: 1.5 },
+        { enemy: 'kamaitachi', count: 10, interval: 0.8, delay: 6, hp: 1.5 },
+      ],
+    },
+    // répit
+    {
+      groups: [
+        { enemy: 'kitsune', count: 6, interval: 1.5, hp: 1.35, absorb: 'water' },
+        { enemy: 'kodama', count: 8, interval: 1.1, delay: 3, hp: 1.35 },
+      ],
+    },
+    {
+      groups: [
+        { enemy: 'nuppeppo', count: 8, interval: 1.5, hp: 1.5 },
+        { enemy: 'yukionna', count: 4, interval: 2.5, delay: 2, hp: 1.5 },
+        { enemy: 'tengu', count: 5, interval: 1.8, delay: 6, hp: 0.4 },
+      ],
+    },
+    {
+      groups: [
+        { enemy: 'kappa', count: 8, interval: 1.5, hp: 1.35 },
+        { enemy: 'yukionna', count: 4, interval: 2.5, delay: 2, hp: 1.35 },
+        { enemy: 'kitsune', count: 6, interval: 1.3, delay: 5, hp: 1.35, absorb: 'fire' },
+        { enemy: 'kamaitachi', count: 8, interval: 0.8, delay: 9, hp: 1.35 },
+      ],
+    },
+    // répit
+    { groups: [{ enemy: 'kodama', count: 16, interval: 0.9, hp: 1.25 }, { enemy: 'tengu', count: 4, interval: 2, delay: 4, hp: 0.35 }] },
+    {
+      groups: [
+        { enemy: 'nuppeppo', count: 8, interval: 1.3, hp: 1.85 },
+        { enemy: 'kappa', count: 6, interval: 1.6, delay: 3, hp: 1.85 },
+        { enemy: 'yukionna', count: 5, interval: 2.2, delay: 4, hp: 1.85 },
+        { enemy: 'tengu', count: 6, interval: 1.6, delay: 8, hp: 0.5 },
+      ],
+    },
+    // climax : La Procession des neiges
+    {
+      name: 'La Procession des neiges',
+      climax: true,
+      groups: [
+        { enemy: 'yukionna', count: 6, interval: 2.2, hp: 2.65 },
+        { enemy: 'kappa', count: 8, interval: 1.4, delay: 2, hp: 2.65 },
+        { enemy: 'kitsune', count: 8, interval: 1.2, delay: 6, hp: 2.65, absorb: 'earth' },
+        { enemy: 'nuppeppo', count: 6, interval: 1.4, delay: 9, hp: 2.65 },
+        { enemy: 'kamaitachi', count: 12, interval: 0.7, delay: 13, hp: 2.65 },
       ],
       reward: 0,
     },

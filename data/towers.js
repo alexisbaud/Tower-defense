@@ -113,9 +113,9 @@ export default {
     targets: { ground: true, air: true },
     projectile: 'droplet',
     levels: [
-      { range: 2.2, rate: 1.0, damage: 6, slow: { factor: 0.6, duration: 1.4 }, projectileSpeed: 8 },
-      { range: 2.5, rate: 1.15, damage: 11, slow: { factor: 0.5, duration: 1.8 }, splash: 0.6, projectileSpeed: 9 },
-      { range: 2.9, rate: 1.35, damage: 20, slow: { factor: 0.42, duration: 2.2 }, splash: 0.9, projectileSpeed: 10 },
+      { range: 2.2, rate: 1.0, damage: 4, slow: { factor: 0.6, duration: 1.4 }, projectileSpeed: 8 },
+      { range: 2.5, rate: 1.15, damage: 7, slow: { factor: 0.5, duration: 1.8 }, splash: 0.6, projectileSpeed: 9 },
+      { range: 2.9, rate: 1.35, damage: 11, slow: { factor: 0.42, duration: 2.2 }, splash: 0.9, projectileSpeed: 10 },
     ],
   },
   water_spring: {
