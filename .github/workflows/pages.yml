@@ -1,4 +1,4 @@
-# Vérifie le jeu (tests du moteur, schéma des niveaux, simulation) puis publie
+# Vérifie le jeu (tests du moteur, schéma des niveaux, équilibrage simulé) puis publie
 # le dépôt tel quel sur la branche gh-pages, servie par GitHub Pages.
 name: Tests et déploiement GitHub Pages
 
@@ -26,8 +26,8 @@ jobs:
         run: node tools/test-core.mjs
       - name: Validation des niveaux
         run: node tools/validate-levels.mjs
-      - name: Chaque niveau est gagnable (bot)
-        run: node tools/sim.mjs --bots=smart
+      - name: Équilibrage (bot équilibré gagnant seul et en coop, aucune lanterne seule gagnante, courbe des vagues)
+        run: node tools/sim.mjs --check
       - name: Publication sur gh-pages
         run: |
           git config user.name "github-actions[bot]"
