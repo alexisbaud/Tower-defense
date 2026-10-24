@@ -6,6 +6,7 @@
 //   damage    vies retirées s'il atteint le sanctuaire
 //   size      rayon visuel / de collision en cases
 //   look      style de dessin utilisé par le moteur de rendu
+//   strength / weakness / counters  textes affichés dans la fiche du yokai
 //   abilities capacités optionnelles (voir README « Ajouter un ennemi ») :
 //     armor: 0..1                       réduction des dégâts (la Terre perce)
 //     flying: true                      vole en ligne droite vers le sanctuaire
@@ -21,6 +22,9 @@ export default {
   kodama: {
     name: 'Kodama',
     desc: 'Petit esprit des arbres. Lent et docile.',
+    strength: 'Nombreux.',
+    weakness: 'Fragile : tout l’abat.',
+    counters: 'Toutes les lanternes',
     hp: 40,
     speed: 0.95,
     reward: 5,
@@ -32,6 +36,9 @@ export default {
   kamaitachi: {
     name: 'Kamaitachi',
     desc: 'Belette-faucille. Très rapide, mais fragile.',
+    strength: 'Très rapide : traverse les défenses lentes.',
+    weakness: 'Peu de PV.',
+    counters: 'Eau (ralentit), Boue, Feu',
     hp: 26,
     speed: 2.0,
     reward: 6,
@@ -43,6 +50,9 @@ export default {
   kappa: {
     name: 'Kappa',
     desc: 'Carapace épaisse : réduit fortement les dégâts. La Terre la brise.',
+    strength: 'Carapace : réduit les dégâts des petits coups.',
+    weakness: 'Lent.',
+    counters: 'Terre (perce), Tempête de sable, lanternes fusionnées',
     hp: 110,
     speed: 0.8,
     reward: 10,
@@ -54,6 +64,9 @@ export default {
   tengu: {
     name: 'Karasu-tengu',
     desc: 'Corbeau-démon qui vole droit vers le sanctuaire en ignorant le chemin.',
+    strength: 'Vole : ignore le chemin, les pierres et la Terre.',
+    weakness: 'Fragile face au Vent.',
+    counters: 'Vent (×2), Feu, Tornade de flammes',
     hp: 55,
     speed: 1.2,
     reward: 9,
@@ -65,6 +78,9 @@ export default {
   nuppeppo: {
     name: 'Nuppeppō',
     desc: 'Masse de chair molle qui se divise en deux à sa mort.',
+    strength: 'Se divise en deux à sa mort.',
+    weakness: 'Lent, fragments fragiles.',
+    counters: 'Dégâts de zone : Terre, Eau N2+, Magma',
     hp: 95,
     speed: 0.8,
     reward: 6,
@@ -76,6 +92,9 @@ export default {
   nuppeppo_ko: {
     name: 'Petit nuppeppō',
     desc: 'Fragment rapide né de la division.',
+    strength: 'Rapide.',
+    weakness: 'Très fragile.',
+    counters: 'Dégâts de zone',
     hp: 34,
     speed: 1.15,
     reward: 3,
@@ -87,6 +106,9 @@ export default {
   kitsune: {
     name: 'Kitsune',
     desc: 'Renard-esprit qui absorbe un élément (aura colorée) : il en guérit au lieu d’en souffrir.',
+    strength: 'Absorbe un élément (aura colorée) : il s’en soigne.',
+    weakness: 'Sans défense contre les autres éléments.',
+    counters: 'Un autre élément, ou la Vapeur (pouvoirs suspendus)',
     hp: 85,
     speed: 1.3,
     reward: 9,
@@ -98,6 +120,9 @@ export default {
   yukionna: {
     name: 'Yuki-onna',
     desc: 'Femme des neiges qui soigne régulièrement les yokai proches.',
+    strength: 'Soigne les yokai proches.',
+    weakness: 'Fragile si on l’isole.',
+    counters: 'Priorité « plus fort » ou « dernier », Vapeur, recul du Vent',
     hp: 80,
     speed: 0.9,
     reward: 11,
@@ -109,6 +134,9 @@ export default {
   akaoni: {
     name: 'Aka-oni',
     desc: 'Ogre rouge du Jardin de mousse. Son coup de massue étourdit les lanternes proches.',
+    strength: 'Blindé, sa massue étourdit les lanternes proches.',
+    weakness: 'Lent.',
+    counters: 'Terre, Tempête de sable, lanternes éloignées de son chemin',
     boss: true,
     hp: 1700,
     speed: 0.5,
@@ -123,6 +151,9 @@ export default {
   gashadokuro: {
     name: 'Gashadokuro',
     desc: 'Squelette géant du Temple sous la neige. Invoque des kodama et change d’élément absorbé.',
+    strength: 'Énorme, invoque des kodama, change d’élément absorbé.',
+    weakness: 'Très lent.',
+    counters: 'Plusieurs éléments à la fois, Vapeur, dégâts de zone pour les invocations',
     boss: true,
     hp: 5200,
     speed: 0.4,

@@ -16,6 +16,8 @@
 export default {
   fire: {
     name: 'Lanterne du Feu',
+    strength: 'Gros dégâts sur une cible, brûlure qui ignore l’armure.',
+    weakness: 'Coups trop faibles contre les carapaces au niveau 1 ; soigne les kitsune de feu.',
     kanji: '火',
     role: 'Dégâts',
     desc: 'Projette des braises qui brûlent leur cible.',
@@ -32,6 +34,8 @@ export default {
   },
   water: {
     name: "Lanterne de l'Eau",
+    strength: 'Ralentit tout ce qu’elle touche ; zone dès le niveau 2.',
+    weakness: 'Presque aucun dégât : ne tue rien seule.',
     kanji: '水',
     role: 'Ralentissement',
     desc: 'Des gouttes glacées qui ralentissent les yokai.',
@@ -48,6 +52,8 @@ export default {
   },
   wind: {
     name: 'Lanterne du Vent',
+    strength: 'Repousse les yokai ; dégâts doublés contre les volants.',
+    weakness: 'Faible au sol ; boss et yokai hors du temps résistent au recul.',
     kanji: '風',
     role: 'Recul',
     desc: 'Des bourrasques qui repoussent les yokai. Redoutable contre les volants.',
@@ -64,6 +70,8 @@ export default {
   },
   earth: {
     name: 'Lanterne de la Terre',
+    strength: 'Dégâts de zone lourds, perce la moitié de l’armure.',
+    weakness: 'Lente et incapable de toucher les volants.',
     kanji: '土',
     role: 'Zone',
     desc: 'Projette des rochers qui écrasent tout autour de l’impact et ignorent les carapaces. Ne touche pas les volants.',

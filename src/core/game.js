@@ -8,6 +8,7 @@ import { Rng } from './rng.js';
 import { buildComboIndex, computeZones, updateZones, updateTornadoes, comboKey } from './combos.js';
 
 export const STEP = 1 / 60;
+export const PRIORITIES = ['first', 'last', 'strong', 'close'];
 
 export class Game {
   /**
@@ -129,12 +130,101 @@ export class Game {
       stunT: 0,
       shotT: 0,
       bornAt: this.time,
+      priority: def.priority ?? 'first',
     };
     this.towers.push(t);
     this.stats.towersBuilt++;
     this.emit('place', { tower: t });
     this.onTowersChanged();
     return t;
+  }
+
+  // ───────────────────────── priorités de ciblage ─────────────────────────
+
+  setPriority(id, priority) {
+    const t = this.towerById(id);
+    if (!t || !PRIORITIES.includes(priority)) return false;
+    t.priority = priority;
+    this.emit('priority', { tower: t, priority });
+    return true;
+  }
+
+  cyclePriority(id) {
+    const t = this.towerById(id);
+    if (!t) return null;
+    const next = PRIORITIES[(PRIORITIES.indexOf(t.priority) + 1) % PRIORITIES.length];
+    this.setPriority(id, next);
+    return next;
+  }
+
+  // Annuler une pose récente : la lanterne disparaît, son prix est intégralement rendu.
+  undoPlace(id, maxAge = 3) {
+    const t = this.towerById(id);
+    if (!t || t.level !== 1 || this.rewindAnim || this.time - t.bornAt > maxAge + 0.25) return false;
+    this.towers = this.towers.filter((x) => x !== t);
+    this.gold += t.invested;
+    this.stats.towersBuilt = Math.max(0, this.stats.towersBuilt - 1);
+    this.emit('undo', { tower: t, value: t.invested });
+    this.onTowersChanged();
+    return true;
+  }
+
+  // ───────────────────────── aperçus (sans effet de bord) ─────────────────────────
+
+  // Combos qui naîtraient si l'on posait `type` en (c, r).
+  previewCombos(type, c, r) {
+    const out = [];
+    for (const t of [...this.towers, ...this.echoes]) {
+      if (t.type === type || Math.max(Math.abs(t.c - c), Math.abs(t.r - r)) !== 1) continue;
+      const def = this.comboFor(type, t.type);
+      if (def) out.push({ def, other: t });
+    }
+    return out;
+  }
+
+  // Conséquences d'une fusion : case libérée, combos perdus (lanterne source)
+  // et combos renforcés (lanterne cible), niveau obtenu.
+  previewFuse(srcId, dstId) {
+    const check = this.canFuse(srcId, dstId);
+    const src = this.towerById(srcId);
+    const dst = this.towerById(dstId);
+    if (!check.ok) return { ok: false, reason: check.reason };
+    const lost = this.zones.filter((z) => (z.a === src.id || z.b === src.id) && z.a !== dst.id && z.b !== dst.id);
+    const kept = this.zones.filter((z) => z.a === dst.id || z.b === dst.id);
+    return { ok: true, level: dst.level + 1, freed: { c: src.c, r: src.r }, lost, kept };
+  }
+
+  // Chemin si l'on posait une pierre en (c, r) : validité, gain de cases et tracés.
+  previewStone(c, r) {
+    const check = this.canPlaceStone(c, r);
+    const g = this.grid;
+    if (!g.inBounds(c, r)) return { ok: false, reason: 'bounds', delta: 0, routes: [] };
+    const i = g.idx(c, r);
+    const dist = bfs(g, i);
+    const routes = [];
+    let len = 0;
+    for (const s of g.spawns) {
+      if (dist[s] < 0) continue;
+      len += dist[s];
+      routes.push(routeFrom(g, dist, s));
+    }
+    return { ok: check.ok, reason: check.reason, delta: check.ok || check.reason === 'gold' ? len - this.routeLength() : 0, routes };
+  }
+
+  // Composition de la prochaine vague (aperçu du bouton d'appel).
+  nextWavePreview() {
+    const idx = this.waveIndex + 1;
+    if (idx >= this.waves.length) return null;
+    const wave = this.waves[idx];
+    const counts = new Map();
+    for (const gr of wave.groups) {
+      const key = gr.enemy + (gr.absorb ? `:${gr.absorb}` : '');
+      const cur = counts.get(key) || { enemy: gr.enemy, absorb: gr.absorb ?? null, count: 0 };
+      cur.count += gr.count;
+      counts.set(key, cur);
+    }
+    const bonus = this.state === 'build' && this.countdown != null ? Math.floor(this.countdown * this.rules.earlyBonusPerSecond) : 0;
+    return { index: idx, groups: [...counts.values()], climax: !!wave.climax, countdown: this.countdown, bonus };
   }
 
   sellValue(t) {
@@ -1000,18 +1090,26 @@ export class Game {
     return e.flying ? tg.air : tg.ground;
   }
 
+  // Choix de la cible selon la priorité de la tour :
+  //   first  le plus avancé vers le sanctuaire   last   le moins avancé
+  //   strong le plus de PV restants              close  le plus proche de la tour
   // `skipDoomed` : ignore un yokai que les projectiles déjà en vol suffiront à abattre.
   findTarget(t, def, range, skipDoomed = false) {
+    const mode = t.priority || 'first';
     let best = null;
-    let bestRem = Infinity;
+    let bestScore = Infinity;
     for (const e of this.enemies) {
       if (!this.canTarget(def, e)) continue;
       if (skipDoomed && e.pend >= e.hp) continue;
       const d = Math.hypot(e.x - t.x, e.y - t.y);
       if (d > range + e.size * 0.5) continue;
-      const rem = this.remaining(e);
-      if (rem < bestRem) {
-        bestRem = rem;
+      let score;
+      if (mode === 'last') score = -this.remaining(e);
+      else if (mode === 'strong') score = -(e.hp - e.pend) * 1000 + this.remaining(e);
+      else if (mode === 'close') score = d;
+      else score = this.remaining(e);
+      if (score < bestScore) {
+        bestScore = score;
         best = e;
       }
     }
@@ -1222,4 +1320,31 @@ function refreshStatus(e) {
   }
   e.shredM = m;
   e.shredT = mt;
+}
+
+// Tracé d'une apparition au sanctuaire selon un champ de distances donné.
+function routeFrom(g, dist, start) {
+  const out = [start];
+  let i = start;
+  for (let guard = 0; guard < g.size; guard++) {
+    const d = dist[i];
+    if (d <= 0) break;
+    const c = g.col(i);
+    const r = g.row(i);
+    let next = -1;
+    for (const [dx, dy] of [[0, 1], [1, 0], [0, -1], [-1, 0]]) {
+      const nc = c + dx;
+      const nr = r + dy;
+      if (!g.inBounds(nc, nr)) continue;
+      const n = g.idx(nc, nr);
+      if (dist[n] === d - 1) {
+        next = n;
+        break;
+      }
+    }
+    if (next < 0) break;
+    out.push(next);
+    i = next;
+  }
+  return out;
 }
