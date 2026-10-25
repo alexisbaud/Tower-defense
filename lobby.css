@@ -1,0 +1,1329 @@
+/* Feuilles des menus (accueil, salon, réglages, fiche de niveau) et éléments de la
+   partie coopérative (coéquipiers, attente de l'hôte, lanternes des autres).
+   Lot MENUS : ce fichier, chargé après styles.css, surcharge sans conflit. */
+
+/* ───────────── Accueil : zone d'annonce, équipe, attente ───────────── */
+
+/* zone d'annonce (une seule à la fois, 48) : arrivée d'un ami, invitation à réinstaller,
+   ligne Safari « Sur l'écran d'accueil » */
+.title-notice {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  min-height: 48px;
+  padding: 0 4px 0 0;
+  border-radius: var(--r-l);
+  background-color: var(--ink);
+  background-image: var(--washi);
+  background-size: var(--washi-size);
+  border: 1.5px solid rgba(242, 232, 208, 0.22);
+  box-shadow: var(--sh-float);
+  color: var(--cream);
+  animation: noticeIn var(--d-med) var(--e-emph);
+}
+
+.title-notice[data-kind='announce'],
+.title-notice[data-kind='safari'] {
+  align-items: center;
+  padding: 6px 14px 6px 8px;
+}
+
+.title-notice[data-kind='safari'] {
+  justify-content: center;
+  padding-left: 14px;
+}
+
+@keyframes noticeIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+.notice-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 6px 4px 6px 8px;
+  border-radius: var(--r-l);
+  text-align: left;
+}
+
+.notice-main.is-pressed {
+  background: rgba(242, 232, 208, 0.1);
+}
+
+.notice-ico {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  background: var(--vermillion-ui);
+  color: var(--cream);
+  font-family: var(--font-title);
+  font-size: 17px;
+  font-weight: 800;
+  transform: rotate(-3deg);
+  box-shadow: inset 0 0 0 1.5px rgba(255, 244, 222, 0.4);
+}
+
+.title-notice[data-kind='announce'] .notice-ico {
+  background: var(--indigo-2);
+}
+
+.notice-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.notice-text b {
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.notice-text small {
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.3;
+  color: var(--on-dark-2);
+}
+
+.title-notice[data-kind='safari'] .notice-text {
+  text-align: center;
+}
+
+.title-notice[data-kind='safari'] .notice-text small {
+  color: var(--cream);
+}
+
+.notice-chev {
+  flex: none;
+  font-size: 24px;
+  color: var(--gold-on-dark);
+}
+
+.notice-later {
+  flex: none;
+  align-self: center;
+  min-height: 44px;
+  padding: 0 8px;
+  color: var(--on-dark-2);
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* hôte avec des invités : qui jouera, au-dessus du héros */
+.title-team {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+
+.tt-mate {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  max-width: 100%;
+  padding: 3px 12px 3px 5px;
+  border-radius: 16px;
+  background: rgba(250, 245, 232, 0.96);
+  border: 1.5px solid var(--ink);
+  box-shadow: var(--sh-1);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.tt-mate span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* invité : carte d'attente à la place du héros */
+.title-wait {
+  min-height: 64px;
+  margin: 0;
+  display: grid;
+  place-items: center;
+  padding: 8px 20px;
+  border-radius: 32px;
+  background-color: var(--indigo);
+  background-image: var(--washi);
+  background-size: var(--washi-size);
+  color: var(--cream);
+  border: 2px solid var(--ink);
+  box-shadow: var(--sh-float);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.3;
+  text-align: center;
+}
+
+.title-actions .hidden,
+.title-wait.hidden {
+  display: none !important;
+}
+
+/* (règles des petits écrans de styles.css, surchargées : même gabarit partout) */
+#screen-title {
+  padding-top: calc(var(--sat) + 6px);
+}
+
+#screen-title h1 {
+  font-size: var(--fs-display);
+}
+
+#screen-title h1::after {
+  margin-top: 10px;
+  height: 12px;
+}
+
+#screen-title .tagline {
+  font-size: 18px;
+}
+
+@media (max-height: 700px) {
+  #screen-title .tagline {
+    display: none;
+  }
+  #screen-title h1 {
+    margin-top: 6px;
+  }
+}
+
+/* message bref hors partie : pilule d'encre, au-dessus des boutons de l'accueil (main.js
+   pose `bottom`), au bas de la carte ailleurs ; deux lignes au plus, jamais tronqué */
+.app-toast {
+  position: absolute;
+  left: 50%;
+  bottom: calc(var(--sab) + 24px);
+  z-index: 60;
+  width: max-content;
+  max-width: min(340px, calc(100% - 32px));
+  padding: 10px 16px;
+  border-radius: 12px;
+  background-color: var(--ink);
+  background-image: var(--washi);
+  background-size: var(--washi-size);
+  color: var(--cream);
+  border: 1.5px solid rgba(242, 232, 208, 0.22);
+  box-shadow: var(--sh-float);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.3;
+  text-align: center;
+  opacity: 0;
+  transform: translate(-50%, 8px);
+  transition: opacity var(--d-short) var(--e-out), transform var(--d-short) var(--e-out);
+  pointer-events: none;
+}
+
+.app-toast.show {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+/* ───────────── Feuilles des menus : en-tête commun ───────────── */
+
+/* voile des feuilles modales hors partie (toucher = fermer) */
+.modal.as-sheet.veil {
+  background: var(--veil);
+  pointer-events: auto;
+}
+
+.modal-card.menu-sheet {
+  text-align: left;
+}
+
+.menu-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  padding: 6px 0 10px;
+  border-bottom: 1px solid rgba(29, 27, 34, 0.16);
+}
+
+.menu-seal {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  background-color: var(--indigo-2);
+  background-image: var(--washi);
+  background-size: var(--washi-size);
+  color: var(--cream);
+  font-family: var(--font-title);
+  font-size: 19px;
+  font-weight: 800;
+  box-shadow: inset 0 0 0 1.5px rgba(255, 244, 222, 0.4), 0 2px 0 var(--ink);
+  transform: rotate(-3deg);
+}
+
+.menu-seal.ink {
+  background-color: var(--ink);
+  color: var(--vermillion-2);
+}
+
+.menu-seal.lv-world {
+  width: 48px;
+  height: 48px;
+  border-radius: 8px;
+  background-color: var(--vermillion);
+  font-size: 28px;
+}
+
+.menu-titles {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.modal-card .menu-title {
+  margin: 0;
+  font-family: var(--font-title);
+  font-size: calc(var(--fs-h2) * var(--fs-scale, 1));
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.modal-card .menu-title::after {
+  content: none;
+}
+
+.menu-kicker {
+  display: block;
+  margin-bottom: 1px;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.25;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+
+.menu-head .sheet-close {
+  align-self: flex-start;
+}
+
+/* retour (« ‹ Pause ») à la place du sceau */
+.menu-back {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 44px;
+  padding: 0 10px 0 2px;
+  border-radius: var(--r-m);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.menu-back.is-pressed {
+  background: rgba(29, 27, 34, 0.08);
+}
+
+/* rubrique : micro 12, capitales (tertiaire) */
+.menu-sec {
+  margin: 0 0 8px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+
+.modal-card .menu-p {
+  margin: 12px 0 4px;
+  font-size: calc(16px * var(--fs-scale, 1));
+  line-height: 1.45;
+}
+
+.modal-card .menu-p b {
+  color: var(--ink);
+}
+
+.menu-sheet .actions:empty {
+  display: none;
+}
+
+/* ───────────── Salon (feuille « Jouer à plusieurs ») ───────────── */
+
+.lobby {
+  color: var(--ink);
+  font-family: var(--font-ui);
+  text-align: left;
+}
+
+.lobby .hidden {
+  display: none !important;
+}
+
+.lobby-statusline {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0 8px;
+  margin: 2px 0 0;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.3;
+  color: var(--ink-2);
+}
+
+.lobby-status::before {
+  content: '';
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: #8a867c;
+  vertical-align: 1px;
+}
+
+.lobby-status.online::before {
+  background: var(--moss-ui);
+  box-shadow: 0 0 0 2px rgba(94, 108, 51, 0.25);
+}
+
+.lobby-status.connecting::before {
+  background: var(--gold);
+  animation: lobbyBlink 1s infinite;
+}
+
+@keyframes lobbyBlink {
+  50% {
+    opacity: 0.25;
+  }
+}
+
+/* « Réessayer » : texte dans la ligne d'état, cible de 44 */
+.lobby-retry {
+  min-height: 44px;
+  margin: -12px 0;
+  padding: 0 6px;
+  color: var(--vermillion-ui);
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.lobby-sec {
+  padding: 12px 0;
+  border-top: 1px solid rgba(29, 27, 34, 0.14);
+}
+
+.lobby-head + .lobby-body > .lobby-sec:first-child {
+  border-top: 0;
+}
+
+.lobby-code-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.lobby-code {
+  flex: none;
+  display: flex;
+  gap: 6px;
+}
+
+.lobby-code-ch {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 52px;
+  border-radius: 8px;
+  background: #fbf5e6;
+  color: var(--vermillion-dark);
+  font-family: var(--font-title);
+  font-weight: 800;
+  font-size: 30px;
+  line-height: 1;
+  box-shadow: inset 0 0 0 2px var(--vermillion), 0 2px 0 var(--ink);
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.lobby-code.dim .lobby-code-ch {
+  opacity: 0.5;
+}
+
+.lobby .lobby-invite {
+  min-height: 48px;
+  padding: 0 12px;
+}
+
+.lobby-hint {
+  margin: 10px 0 0;
+  font-size: calc(15px * var(--fs-scale, 1));
+  line-height: 1.4;
+  color: var(--ink-2);
+}
+
+.lobby-players {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.lobby-player {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 52px;
+  padding: 4px 0;
+  border-bottom: 1px dashed rgba(29, 27, 34, 0.16);
+}
+
+.lobby-player.off {
+  opacity: 0.62;
+}
+
+.lobby-seal {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+}
+
+.lobby-seal.none {
+  border-radius: 50%;
+  background: #6d6a78;
+  color: var(--cream);
+  font-size: 14px;
+  font-weight: 700;
+  box-shadow: inset 0 0 0 1.5px rgba(242, 232, 208, 0.6);
+}
+
+/* élément attribué d'office (le joueur n'a rien choisi) : sceau en pointillés */
+.lobby-seal.auto {
+  border-radius: 8px;
+  outline: 1.5px dashed rgba(29, 27, 34, 0.55);
+  outline-offset: 1px;
+}
+
+.lobby-pmain {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+
+.lobby-pname {
+  min-width: 0;
+  max-width: 100%;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lobby-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.lobby-tags:empty {
+  display: none;
+}
+
+.lobby-tag {
+  font-style: normal;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 18px;
+  padding: 0 6px;
+  border-radius: 5px;
+  background: #55505f;
+  color: var(--cream);
+}
+
+.lobby-tag.host {
+  background: #6e500f; /* or sombre : texte crème lisible (AA) */
+}
+
+.lobby-tag.you {
+  background: var(--vermillion-ui);
+}
+
+.lobby-tag.auto {
+  background: #3b4a6b;
+}
+
+.lobby .lobby-rename {
+  flex: none;
+  min-height: 44px;
+  padding: 0 12px;
+  font-size: 14px;
+}
+
+.lobby-pel {
+  flex: none;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ink-2);
+}
+
+.lobby-free {
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+  padding-left: 40px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink-2);
+}
+
+.lobby-rename-form {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  gap: 8px;
+}
+
+.lobby-rename-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 44px;
+  padding: 0 10px;
+  border: 2px solid var(--ink);
+  border-radius: var(--r-m);
+  background: #fffaf0;
+  color: var(--ink);
+  font: 700 16px var(--font-ui); /* ≥ 16 px : pas de zoom automatique sur iPhone */
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.lobby .lobby-rename-ok {
+  flex: none;
+  min-height: 44px;
+  min-width: 56px;
+  padding: 0 12px;
+}
+
+/* élément : 4 cartes, un mot de style (jamais tronqué) */
+.lobby-elements {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.lobby-el {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  min-width: 0;
+  min-height: 72px;
+  padding: 6px 2px;
+  border-radius: 12px;
+  border: 2px solid var(--ink);
+  background-color: #fbf5e6;
+  color: var(--ink);
+  box-shadow: var(--sh-1);
+  transition: transform var(--d-quick) var(--e-spring), background-color var(--d-quick);
+}
+
+.lobby-el.is-pressed {
+  transform: translateY(2px);
+  box-shadow: 0 0 0 var(--ink), var(--glow-press);
+  transition-duration: 0s;
+}
+
+.lobby-el-badge {
+  display: grid;
+  place-items: center;
+  height: 28px;
+}
+
+.lobby-el-name {
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.15;
+}
+
+.lobby-el-style {
+  max-width: 100%;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.15;
+  color: var(--ink-2);
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+.lobby-el.selected {
+  background-color: var(--el-ui, var(--el));
+  color: var(--cream);
+  box-shadow: inset 0 0 0 2px var(--gold-on-dark), var(--sh-1);
+}
+
+.lobby-el.selected .lobby-el-style {
+  color: var(--cream);
+}
+
+.lobby-el.auto {
+  border-style: dashed;
+  box-shadow: inset 0 0 0 2px var(--el-ui, var(--el));
+}
+
+.lobby-el:disabled {
+  opacity: 0.55;
+  border-style: dashed;
+  box-shadow: none;
+}
+
+.lobby-note {
+  margin: 10px 0 0;
+  font-size: calc(13px * var(--fs-scale, 1));
+  line-height: 1.4;
+  color: var(--ink-2);
+}
+
+.lobby-join-form {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.lobby-join-input {
+  flex: none;
+  width: 168px;
+  height: 48px;
+  padding: 0 0 0 0.3em;
+  border: 2px solid var(--ink);
+  border-radius: 12px;
+  background: #fffaf0;
+  color: var(--ink);
+  font-family: var(--font-title);
+  font-size: 26px; /* ≥ 16 px : pas de zoom automatique sur iPhone */
+  font-weight: 800;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  text-align: center;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.lobby-join-input::placeholder {
+  color: rgba(29, 27, 34, 0.35);
+}
+
+.lobby .lobby-join-ok {
+  min-height: 48px;
+  padding: 0 12px;
+}
+
+.lobby-error {
+  margin: 8px 0 0;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.35;
+  color: var(--vermillion-dark);
+}
+
+.lobby-error:empty {
+  display: none;
+}
+
+.lobby-error.busy {
+  color: var(--gold-dark);
+}
+
+.lobby .lobby-leave {
+  width: 100%;
+  min-height: 48px;
+  margin-top: 8px;
+}
+
+/* ───────────── Partie coopérative ───────────── */
+
+/* Coéquipiers, sous le HUD : sceau d'élément, nom, or (absent : estompé) */
+.coop-roster {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 8px 4px;
+  background-color: var(--indigo);
+  background-image: var(--washi);
+  background-size: var(--washi-size);
+  position: relative;
+  z-index: 2;
+  overflow: hidden;
+}
+.coop-roster.hidden {
+  display: none;
+}
+.coop-mate {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 1px 8px 1px 3px;
+  border-radius: 11px;
+  background: rgba(10, 14, 26, 0.42);
+  box-shadow: inset 0 0 0 1px rgba(242, 232, 208, 0.16);
+  color: var(--cream);
+  font-size: 12px;
+  line-height: 20px;
+  white-space: nowrap;
+}
+.coop-mate b {
+  min-width: 0;
+  max-width: 82px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.coop-mate .cm-gold {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--gold-2);
+}
+.coop-mate .cm-gold i {
+  font-style: normal;
+  font-size: 12px;
+  opacity: 0.9;
+}
+.coop-mate em {
+  font-style: normal;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: #55505f;
+}
+.coop-mate.off {
+  opacity: 0.62;
+}
+.coop-mate .el-badge {
+  flex: none;
+}
+
+/* Invité : pause de l'hôte, ou hôte sans nouvelles (le plateau reste visible) */
+.coop-wait {
+  position: absolute;
+  left: 50%;
+  top: 44px;
+  z-index: 33;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: max-content;
+  max-width: calc(100% - 32px);
+  padding: 10px 16px 10px 10px;
+  border-radius: 14px;
+  background-color: var(--ink);
+  background-image: var(--washi);
+  background-size: var(--washi-size);
+  color: var(--cream);
+  border: 2px solid var(--gold-2);
+  box-shadow: 0 5px 0 rgba(0, 0, 0, 0.45), 0 0 20px rgba(240, 207, 106, 0.3);
+  pointer-events: none;
+  animation: cardIn 0.25s cubic-bezier(0.2, 0.9, 0.3, 1.12);
+}
+.coop-wait.hidden {
+  display: none;
+}
+.cw-kanji {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 10px;
+  background: var(--indigo-2);
+  font-family: var(--font-title);
+  font-size: 24px;
+  font-weight: 800;
+  box-shadow: inset 0 0 0 2px rgba(255, 244, 222, 0.35);
+}
+.cw-kanji.wait {
+  animation: cwBreath 1.4s ease-in-out infinite;
+}
+@keyframes cwBreath {
+  50% {
+    opacity: 0.55;
+  }
+}
+.cw-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.cw-text b {
+  font-family: var(--font-title);
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--gold-2);
+}
+.cw-text small {
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+/* Invité : la vitesse est réglée par l'hôte (bouton affiché, inactif) */
+.coop-guest #btn-speed {
+  opacity: 0.6;
+}
+
+/* Barre d'actions sur la lanterne d'un coéquipier : « Lanterne de Aki » */
+.tb-owner {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 190px;
+  min-height: 50px;
+  padding: 0 10px 0 6px;
+  color: var(--cream);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+.tb-owner .tb-txt {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tb-owner-seal {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  background: var(--el);
+  color: var(--cream);
+  font-size: 13px;
+  box-shadow: inset 0 0 0 1.5px rgba(242, 232, 208, 0.6);
+}
+
+/* Fiche d'une lanterne : son joueur */
+.sheet-owner {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* Fiche de niveau de l'hôte : qui part avec lui */
+.modal-card p.lv-team {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  margin: 0;
+}
+.lv-mate {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 14px;
+  font-weight: 700;
+}
+.modal-card p.lv-team-note {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+.lv-mate-any {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  background: #6d6a78;
+  color: var(--cream);
+  font-size: 12px;
+}
+
+/* Pause et résultat en coopération */
+.modal-card p.pause-coop,
+.modal-card p.res-coop {
+  margin: 4px 0 2px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--indigo);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lobby-status.connecting::before,
+  .cw-kanji.wait {
+    animation: none;
+  }
+  .coop-wait {
+    animation: none;
+  }
+  .lobby-el {
+    transition: none;
+  }
+}
+
+/* Sceau d'un joueur sans élément choisi : son initiale sur fond neutre */
+.seal-any {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: var(--s, 18px);
+  height: var(--s, 18px);
+  border-radius: 50%;
+  background: #6d6a78;
+  color: var(--cream);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+  box-shadow: inset 0 0 0 1.5px rgba(242, 232, 208, 0.6);
+}
+
+/* ═════════════ Lot MENUS (docs/UI-UX.md §6.15 à §6.22) ═════════════ */
+
+/* Feuilles des menus : gouttière 16, hauteurs moyenne (contenu, ≤ 88 % pour la fiche de
+   niveau) et grande (56 px sous le haut de la page). La mécanique (poignée, glisser,
+   voile) est celle de src/ui/sheet.js. */
+.modal.as-sheet .modal-card.menu-sheet {
+  --pad-x: 16px;
+  --pad-b: calc(var(--sab) + 12px);
+  padding: 8px calc(var(--pad-x) + var(--sar)) var(--pad-b) calc(var(--pad-x) + var(--sal));
+  max-height: calc(100% - var(--sat) - 56px);
+}
+
+.modal.as-sheet .modal-card.menu-sheet.sheet-large {
+  height: calc(100% - var(--sat) - 56px);
+}
+
+.modal.as-sheet .modal-card.level-card {
+  max-height: min(88%, calc(100% - var(--sat) - 56px));
+}
+
+.menu-sheet .sheet-grabber {
+  margin-bottom: 2px;
+}
+
+/* l'en-tête (titre, ✕) reste en haut de la feuille quand le corps défile */
+.menu-sheet .menu-head {
+  position: sticky;
+  top: -8px;
+  z-index: 3;
+  margin: 0 calc(-1 * (var(--pad-x) + var(--sar))) 0 calc(-1 * (var(--pad-x) + var(--sal)));
+  padding-left: calc(var(--pad-x) + var(--sal));
+  padding-right: calc(var(--pad-x) + var(--sar));
+  background-color: var(--cream);
+  background-image: var(--washi);
+  background-size: var(--washi-size);
+}
+
+.menu-sheet .actions {
+  margin-top: 12px;
+}
+
+/* « Jouer » reste collé en bas pendant que le corps défile */
+.menu-sheet .actions.lv-actions {
+  position: sticky;
+  bottom: calc(-1 * var(--pad-b));
+  z-index: 2;
+  margin: 4px calc(-1 * (var(--pad-x) + var(--sar))) calc(-1 * var(--pad-b)) calc(-1 * (var(--pad-x) + var(--sal)));
+  padding: 10px calc(var(--pad-x) + var(--sar)) var(--pad-b) calc(var(--pad-x) + var(--sal));
+  background-color: var(--cream);
+  background-image: var(--washi);
+  background-size: var(--washi-size);
+  border-top: 1px solid rgba(29, 27, 34, 0.14);
+}
+
+.level-card .actions .btn.primary {
+  flex: 1;
+  min-height: 56px;
+  font-size: 18px;
+  line-height: 1.15;
+}
+
+.level-card .btn-sub {
+  display: block;
+  margin-top: 1px;
+  font-size: 13px;
+  font-weight: 700;
+  opacity: 0.95;
+}
+
+/* ───────────── Réglages ───────────── */
+
+.set-body .menu-sec {
+  margin: 18px 0 2px;
+}
+
+.set-body > .menu-sec:first-child {
+  margin-top: 12px;
+}
+
+.set-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-height: 48px;
+  padding: 4px 0;
+  border-bottom: 1px solid rgba(29, 27, 34, 0.1);
+  color: var(--ink);
+  text-align: left;
+}
+
+button.set-row.is-pressed {
+  background: rgba(29, 27, 34, 0.05);
+}
+
+.set-l {
+  font-size: calc(16px * var(--fs-scale, 1));
+  font-weight: 500;
+  line-height: 1.3;
+}
+
+.set-l small {
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
+.set-seg {
+  flex-wrap: wrap;
+  padding: 6px 0;
+}
+
+.set-seg .seg {
+  flex: 1 1 200px;
+  max-width: 100%;
+  gap: 8px;
+}
+
+.set-seg .seg > button {
+  min-height: 44px;
+  font-size: 14px;
+}
+
+/* sur papier, l'option choisie est un aplat indigo (bien distinct des autres) */
+.menu-sheet .seg.light > button[aria-checked='true'] {
+  background-color: var(--indigo);
+  background-image: none;
+  border: 2px solid var(--ink);
+  color: var(--cream);
+}
+
+.set-seg-text .seg {
+  flex-basis: 100%;
+}
+
+.set-note {
+  margin: 6px 0 4px;
+  font-size: calc(13px * var(--fs-scale, 1));
+  line-height: 1.4;
+  color: var(--ink-2);
+}
+
+.code-box {
+  margin-top: 8px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 2px solid var(--ink);
+  background: #fffaf0;
+  box-shadow: var(--sh-1);
+}
+
+.code-val {
+  display: block;
+  font-family: var(--font-ui);
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.code-p {
+  color: var(--ink-2);
+}
+
+.code-dash {
+  color: rgba(29, 27, 34, 0.45);
+}
+
+.code-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.code-actions .btn {
+  min-height: 44px;
+  font-size: 15px;
+}
+
+.code-actions .btn.done {
+  background-color: #dfe6c8;
+}
+
+.set-body .code-import-open {
+  width: 100%;
+  min-height: 44px;
+  margin-top: 6px;
+  font-size: 15px;
+}
+
+.code-import {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.code-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 48px;
+  padding: 0 10px;
+  border: 2px solid var(--ink);
+  border-radius: 12px;
+  background: #fffaf0;
+  color: var(--ink);
+  font: 700 18px var(--font-ui); /* ≥ 16 px : pas de zoom automatique sur iPhone */
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.code-import .btn {
+  flex: none;
+  min-height: 48px;
+  padding: 0 14px;
+}
+
+.code-msg {
+  margin: 8px 0 0;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.35;
+  color: var(--moss-ui);
+}
+
+.code-msg.bad {
+  color: var(--vermillion-dark);
+}
+
+.code-msg:empty {
+  display: none;
+}
+
+.blur-help {
+  margin: 18px 0 4px;
+  padding: 12px 14px 4px;
+  border-radius: 12px;
+  background: var(--cream-2);
+  box-shadow: inset 3px 0 0 var(--vermillion-ui);
+  font-size: calc(15px * var(--fs-scale, 1));
+  line-height: 1.45;
+}
+
+.modal-card .blur-help .blur-title {
+  margin: 0 0 4px;
+  font-family: var(--font-ui);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.blur-help p {
+  margin: 0 0 4px;
+}
+
+.blur-help ol {
+  margin: 0;
+  padding-left: 22px;
+}
+
+.blur-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  color: var(--ink);
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.set-about {
+  margin: 2px 0 6px;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
+/* ───────────── Petits écrans (≤ 720 px de haut) ───────────── */
+
+@media (max-height: 720px) {
+  .lobby-code-ch {
+    width: 36px;
+    height: 48px;
+    font-size: 27px;
+  }
+  .lobby-el {
+    min-height: 64px;
+  }
+}
+
+@media (max-width: 380px) {
+  .lobby-join-input {
+    width: 150px;
+  }
+  .lobby-code {
+    gap: 4px;
+  }
+}
+
+/* ───────────── Mouvement réduit, effets sobres ───────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  .title-notice,
+  .map-node.next::before,
+  .rotate-seal {
+    animation: none !important;
+  }
+}
+
+html.fx-sober .title-notice,
+html.fx-sober .map-node.next::before,
+html.fx-sober .map-node.celebrate .stars i.on,
+html.fx-sober .rotate-seal {
+  animation: none;
+}

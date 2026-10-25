@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <title>Jardin des Esprits</title>
+    <script>
+      // Retour à la racine du projet (GitHub Pages : /Tower-defense/), quelle que soit
+      // la profondeur du chemin manquant ; un « ./ » relatif bouclerait sur /a/ pour /a/b.
+      (function () {
+        var seg = location.pathname.split('/')[1];
+        var base = seg && location.pathname !== '/' + seg + '/' ? '/' + seg + '/' : '/';
+        location.replace(base);
+      })();
+    </script>
+    <noscript><meta http-equiv="refresh" content="0; url=/Tower-defense/" /></noscript>
+  </head>
+  <body style="background:#1f2f4f;color:#f2e8d0;font-family:serif;text-align:center;padding-top:30vh">
+    <a href="/Tower-defense/" style="color:#f2e8d0">Retour au Jardin des Esprits</a>
+  </body>
+</html>

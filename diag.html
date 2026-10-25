@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#1f2f4f" />
+    <meta name="format-detection" content="telephone=no" />
+    <title>Diagnostic de l’écran · Jardin des Esprits</title>
+    <!-- Page autonome (sans module ni police externe) : mesure, dans l'app installée, la
+         bande que iOS 26/27 floute sous la barre d'état. Règles tous les 10 px de 0 à 160,
+         textes de 12, 15 et 17 px, et les valeurs utiles. Lien depuis Réglages. -->
+    <style>
+      :root {
+        --indigo: #1f2f4f;
+        --cream: #f2e8d0;
+        --cream-2: #c8bfa6;
+        --gold: #f0cf6a;
+        --red: #ff8a6e;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        background: var(--indigo);
+        color: var(--cream);
+        font-family: -apple-system, 'Hiragino Sans', 'Helvetica Neue', sans-serif;
+        -webkit-text-size-adjust: 100%;
+      }
+      .rules {
+        position: relative;
+        height: 170px;
+      }
+      .tick {
+        position: absolute;
+        left: 0;
+        right: 0;
+        height: 0;
+        border-top: 1px solid rgba(242, 232, 208, 0.45);
+      }
+      .tick.major {
+        border-top: 2px solid var(--gold);
+      }
+      .tick span {
+        position: absolute;
+        left: 6px;
+        top: -8px;
+        padding: 0 4px;
+        background: var(--indigo);
+        font-size: 12px;
+        font-weight: 700;
+        line-height: 16px;
+        font-variant-numeric: tabular-nums;
+      }
+      .tick .s15 {
+        left: auto;
+        right: 6px;
+        font-size: 15px;
+        top: -10px;
+        line-height: 20px;
+      }
+      .tick .s17 {
+        left: auto;
+        right: 6px;
+        font-size: 17px;
+        top: -11px;
+        line-height: 22px;
+      }
+      .inset {
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: env(safe-area-inset-top, 0px);
+        border-top: 2px dashed var(--red);
+      }
+      .inset span,
+      .inset40 span {
+        position: absolute;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        padding: 0 6px;
+        background: var(--indigo);
+        color: var(--red);
+        font-size: 12px;
+        font-weight: 700;
+        white-space: nowrap;
+      }
+      .inset40 {
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: calc(env(safe-area-inset-top, 0px) + 40px);
+        border-top: 2px dashed var(--gold);
+      }
+      .inset40 span {
+        color: var(--gold);
+      }
+      main {
+        padding: 12px 16px calc(env(safe-area-inset-bottom, 0px) + 24px);
+      }
+      h1 {
+        margin: 0 0 6px;
+        font-size: 22px;
+      }
+      p {
+        margin: 0 0 12px;
+        font-size: 16px;
+        line-height: 1.45;
+        color: var(--cream-2);
+      }
+      dl {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 6px 12px;
+        margin: 0 0 16px;
+        padding: 12px 14px;
+        border-radius: 12px;
+        background: rgba(242, 232, 208, 0.08);
+        font-size: 15px;
+      }
+      dt {
+        color: var(--cream-2);
+      }
+      dd {
+        margin: 0;
+        font-weight: 700;
+        word-break: break-word;
+      }
+      .back {
+        display: inline-flex;
+        align-items: center;
+        min-height: 48px;
+        padding: 0 18px;
+        border-radius: 14px;
+        border: 2px solid #1d1b22;
+        background: var(--cream);
+        color: #1d1b22;
+        font-size: 16px;
+        font-weight: 700;
+        text-decoration: none;
+        box-shadow: 0 3px 0 #1d1b22;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="rules" id="rules" aria-hidden="true">
+      <div class="inset"><span>bas de la zone sûre</span></div>
+      <div class="inset40"><span>zone sûre + 40 px</span></div>
+    </div>
+    <main>
+      <h1>Diagnostic de l’écran</h1>
+      <p>Faites une capture d’écran de cette page (bouton latéral + volume haut) : jusqu’à quelle règle le haut est-il flou ? Les textes de 12, 15 et 17 px montrent ce qui reste lisible.</p>
+      <dl id="vals"></dl>
+      <a class="back" href="./">‹ Retour au jeu</a>
+    </main>
+    <script>
+      (function () {
+        var rules = document.getElementById('rules');
+        for (var y = 0; y <= 160; y += 10) {
+          var t = document.createElement('div');
+          t.className = 'tick' + (y % 50 === 0 ? ' major' : '');
+          t.style.top = y + 'px';
+          // numéros tous les 20 px (12 px), textes de 15 px à 20, 60, 100, 140 et de 17 px à
+          // 40, 80, 120, 160 : chaque ligne de texte a sa place, rien ne se chevauche
+          t.innerHTML = (y % 20 === 0 ? '<span>' + y + ' px</span>' : '') + (y % 40 === 20 ? '<span class="s15">texte 15 px · ' + y + '</span>' : '') + (y % 40 === 0 && y ? '<span class="s17">texte 17 px · ' + y + '</span>' : '');
+          rules.appendChild(t);
+        }
+        var probe = document.createElement('div');
+        probe.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:env(safe-area-inset-top,0px);visibility:hidden';
+        document.body.appendChild(probe);
+        function ios() {
+          var m = /OS (\d+)[_.](\d+)(?:[_.](\d+))? like Mac OS X/.exec(navigator.userAgent);
+          if (m) return m[1] + '.' + m[2] + (m[3] ? '.' + m[3] : '');
+          var v = /Version\/(\d+(?:\.\d+)*)/.exec(navigator.userAgent);
+          return v ? 'Safari ' + v[1] : 'non iOS';
+        }
+        function show() {
+          var vv = window.visualViewport;
+          var rows = [
+            ['App installée (standalone)', String(navigator.standalone === true)],
+            ['display-mode', matchMedia('(display-mode: standalone)').matches ? 'standalone' : 'browser'],
+            ['Encart haut mesuré', probe.getBoundingClientRect().height + ' px'],
+            ['innerHeight', innerHeight + ' px'],
+            ['visualViewport.height', vv ? Math.round(vv.height) + ' px' : '—'],
+            ['devicePixelRatio', String(window.devicePixelRatio)],
+            ['Version d’iOS', ios()],
+          ];
+          var dl = document.getElementById('vals');
+          dl.innerHTML = '';
+          rows.forEach(function (r) {
+            var dt = document.createElement('dt');
+            dt.textContent = r[0];
+            var dd = document.createElement('dd');
+            dd.textContent = r[1];
+            dl.appendChild(dt);
+            dl.appendChild(dd);
+          });
+        }
+        show();
+        addEventListener('resize', show);
+      })();
+    </script>
+  </body>
+</html>

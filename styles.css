@@ -1,0 +1,6443 @@
+/* Jardin des Esprits — interface au style estampe.
+   Encre, papier washi, aplats indigo / vermillon / crème, sceaux or et vermillon.
+   Les textures (--washi, --stroke-*, --band, --edge) sont peintes en Canvas 2D
+   au démarrage (src/ui/screens.js) ; sans elles, l'interface reste lisible. */
+:root {
+  --ink: #1d1b22;
+  --ink-soft: rgba(29, 27, 34, 0.74);
+  --indigo: #1f2f4f;
+  --indigo-deep: #16223a;
+  --indigo-2: #2d4270;
+  --indigo-3: #3b5280;
+  --vermillion: #c8402a;
+  --vermillion-2: #e05a3c;
+  --vermillion-dark: #9a2f1d;
+  /* vermillion des aplats qui portent du texte crème (contraste AA ≥ 4,5) */
+  --vermillion-ui: #b0361f;
+  --cream: #f2e8d0;
+  --cream-2: #e6d9b8;
+  --cream-3: #d9ccaa;
+  --paper: #efe4c8;
+  --moss: #6f7f3c;
+  --moss-dark: #4a5628;
+  --gold: #c99a2e;
+  --gold-2: #f0cf6a;
+  --gold-dark: #8a6618;
+  --font-title: 'Shippori Mincho', 'Hiragino Mincho ProN', 'Yu Mincho', 'Times New Roman', serif;
+  --font-ui: 'Zen Kaku Gothic New', -apple-system, 'Hiragino Sans', 'Helvetica Neue', sans-serif;
+  --sat: env(safe-area-inset-top, 0px);
+  --sab: env(safe-area-inset-bottom, 0px);
+  --sal: env(safe-area-inset-left, 0px);
+  --sar: env(safe-area-inset-right, 0px);
+  /* textures (remplacées au démarrage) */
+  --washi: none;
+  --stroke-ink: none;
+  --stroke-red: none;
+  --stroke-gold: none;
+  --band: none;
+  --edge: none;
+  --washi-size: 128px 128px;
+  /* étoile à cinq branches (sceaux, résultats, carte) */
+  --star: polygon(50% 0%, 61.2% 34.6%, 97.6% 34.6%, 68.2% 56%, 79.4% 90.5%, 50% 69.2%, 20.6% 90.5%, 31.8% 56%, 2.4% 34.6%, 38.8% 34.6%);
+  --sheet-h: 220px;
+
+  /* ── Système visuel v4 (docs/UI-UX.md §5.1) ── */
+  /* texte : couleurs pleines (contraste stable, pas d'alpha sur washi) */
+  --on-dark: #f2e8d0; /* crème sur indigo : 10,9 */
+  --on-dark-2: #c8bfa6; /* secondaire sur indigo : 7,3 */
+  --ink-2: #54504f; /* secondaire sur crème : 6,5 */
+  /* éléments : teinte « ui » dès qu'un texte crème est posé dessus */
+  --fire: #c8402a;
+  --fire-ui: #b0361f;
+  --water: #2f5f8f;
+  --water-ui: #2f5f8f;
+  --wind: #5f8f6a;
+  --wind-ui: #476b50;
+  --earth: #8a6a32;
+  --earth-ui: #7c5f2d;
+  --moss-ui: #5e6c33;
+  --slate: #5a5850; /* outil Pierre (crème dessus : 5,85) */
+  --gold-on-dark: #f0cf6a; /* or vif : actif, ×2 */
+  --veil: rgba(16, 22, 40, 0.45); /* voile des feuilles modales hors partie */
+  /* espacements (base 4) */
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 24px;
+  --s6: 32px;
+  --gutter-game: 8px;
+  --gutter-menu: 16px;
+  /* rayons */
+  --r-s: 6px;
+  --r-m: 10px;
+  --r-l: 14px;
+  --r-xl: 20px;
+  --r-pill: 999px;
+  /* ombres d'encre (décalage net, sans flou), sauf les calques flottants */
+  --sh-1: 0 2px 0 var(--ink);
+  --sh-2: 0 3px 0 var(--ink);
+  --sh-float: 0 4px 0 var(--ink), 0 10px 24px rgba(16, 20, 30, 0.3);
+  --sh-sheet: 0 -8px 24px rgba(10, 14, 26, 0.28);
+  --glow-press: 0 0 0 3px rgba(240, 207, 106, 0.55); /* lueur hors du doigt */
+  /* typographie */
+  --fs-scale: 1;
+  --fs-display: clamp(40px, 12.3vw, 52px);
+  --fs-banner: 34px;
+  --fs-h1: 28px;
+  --fs-hero: 24px;
+  --fs-h2: 22px;
+  --fs-counter: 20px;
+  --fs-h3: 18px;
+  --fs-body: 16px;
+  --fs-body-s: 15px;
+  --fs-label: 15px;
+  --fs-label-s: 14px;
+  --fs-caption: 13px;
+  --fs-micro: 12px;
+  /* mouvement */
+  --d-quick: 140ms;
+  --d-short: 200ms;
+  --d-med: 280ms;
+  --d-long: 420ms;
+  --e-out: cubic-bezier(0.2, 0.8, 0.2, 1); /* standard */
+  --e-emph: cubic-bezier(0.05, 0.7, 0.1, 1); /* entrées */
+  --e-in: cubic-bezier(0.3, 0, 0.8, 0.15); /* sorties, chutes, aspiration */
+  --e-spring: cubic-bezier(0.3, 1.5, 0.5, 1); /* sceaux, rebonds */
+  /* gabarit de la partie : bas = 4 + 46 + 6 + 34 + 62 + 4 = 156 */
+  --hud-top-h: 44px;
+  --action-h: 46px;
+  --tabs-h: 34px;
+  --cards-h: 62px;
+  --foot-pt: 4px;
+  --foot-gap: 6px;
+  --foot-pb: 4px;
+  --wave-w: 148px;
+  --gauge-d: 46px;
+  --chip: 44px;
+}
+
+/* Garde-fou : une installation faite avant le correctif reste en black-translucent (iOS
+   fige la balise à l'installation). On la reconnaît à un encart haut non nul : on réserve
+   alors 40 px d'aplat uni sous la zone sûre, où tombe la rampe floue. Nouvelle
+   installation : encart 0, sans effet. min(40px, encart × 1000) vaut 0 si l'encart est
+   nul, 40px sinon. */
+:root.ios26-app {
+  --sat: calc(env(safe-area-inset-top, 0px) + min(40px, env(safe-area-inset-top, 0px) * 1000));
+}
+
+@media (max-height: 720px) {
+  :root {
+    --action-h: 44px;
+    --tabs-h: 32px;
+    --cards-h: 52px;
+    --wave-w: 136px;
+  } /* bas = 4 + 44 + 6 + 32 + 52 + 4 = 142 */
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+  touch-action: none;
+  background: var(--indigo);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  -webkit-text-size-adjust: 100%;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  position: fixed;
+  inset: 0;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  border: none;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-feature-settings: 'palt';
+}
+
+.hidden {
+  display: none !important;
+}
+
+#app {
+  position: fixed;
+  inset: 0;
+  background: var(--paper);
+}
+
+.screen {
+  position: absolute;
+  inset: 0;
+  display: none;
+}
+
+.screen.active {
+  display: flex;
+  animation: screenIn 0.28s ease-out;
+}
+
+@keyframes screenIn {
+  from {
+    opacity: 0;
+  }
+}
+
+/* ───────────── Sceaux (hanko) ───────────── */
+
+.seal {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 5px;
+  font-family: var(--font-title);
+  font-size: 15px;
+  font-weight: 800;
+  line-height: 1;
+  color: var(--cream);
+  background-image: var(--washi);
+  background-size: var(--washi-size);
+  box-shadow: inset 0 0 0 1.5px rgba(255, 244, 222, 0.38), 0 1.5px 0 rgba(0, 0, 0, 0.35);
+  vertical-align: middle;
+}
+
+.seal-red {
+  background-color: var(--vermillion);
+}
+
+.seal-gold {
+  background-color: var(--gold);
+  color: var(--ink);
+  box-shadow: inset 0 0 0 1.5px rgba(255, 248, 220, 0.5), 0 1.5px 0 rgba(0, 0, 0, 0.35);
+}
+
+/* Étoile dessinée (contour d'encre + aplat), indépendante des polices. */
+.map-stars .seal::before,
+.mw-stars i {
+  clip-path: var(--star);
+}
+
+/* ───────────── Boutons ───────────── */
+
+/* Composants v4 (docs/UI-UX.md §5.6) : .btn.primary | .secondary | .dark | .quiet | .text |
+   .hero, tailles .L (56) / .M (48) / .S (44). État pressé commun : classe .is-pressed posée
+   au pointerdown (src/ui/press.js) : enfoncé de 2 px, ombre réduite, lueur hors du doigt ;
+   relâché : retour en ressort (140 ms). Un seul primaire (vermillon) par écran. */
+.btn {
+  position: relative;
+  min-height: 48px;
+  padding: 0 18px;
+  border-radius: var(--r-l);
+  border: 2px solid var(--ink);
+  background-color: var(--cream);
+  background-image: var(--washi);
+  background-size: var(--washi-size);
+  color: var(--ink);
+  font-weight: 700;
+  font-size: 16px;
+  line-height: 1.2;
+  letter-spacing: 0.01em;
+  box-shadow: var(--sh-2);
+  transition: transform var(--d-quick) var(--e-spring), box-shadow var(--d-quick) var(--e-spring), background-color var(--d-quick);
+  flex: 1;
+}
+
+.btn:active,
+.btn.is-pressed {
+  transform: translateY(2px);
+  box-shadow: 0 1px 0 var(--ink), var(--glow-press);
+  background-color: var(--cream-2);
+  transition-duration: 0s;
+}
+
+.btn.primary {
+  background-color: var(--vermillion-ui);
+  color: var(--cream);
+}
+
+.btn.primary:active,
+.btn.primary.is-pressed {
+  background-color: var(--vermillion-dark);
+}
+
+.btn.dark {
+  background-color: var(--indigo);
+  color: var(--cream);
+}
+
+.btn.dark:active,
+.btn.dark.is-pressed {
+  background-color: var(--indigo-deep);
+}
+
+/* discret (contour) : porte la confirmation en deux temps (Recommencer, Quitter, Vendre) */
+.btn.quiet {
+  background: transparent;
+  border: 1.5px solid rgba(29, 27, 34, 0.45);
+  box-shadow: none;
+}
+
+.btn.quiet:active,
+.btn.quiet.is-pressed {
+  transform: none;
+  background-color: rgba(29, 27, 34, 0.06);
+  box-shadow: var(--glow-press);
+}
+
+/* texte souligné (« Carte » des résultats) */
+.btn.text {
+  flex: 0 0 auto;
+  min-height: 44px;
+  padding: 0 10px;
+  background: none;
+  border: none;
+  box-shadow: none;
+  text-decoration: underline;
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 4px;
+}
+
+.btn.text:active,
+.btn.text.is-pressed {
+  transform: none;
+  background: none;
+  box-shadow: none;
+  opacity: 0.6;
+}
+
+.btn.L {
+  min-height: 56px;
+  font-size: 18px;
+}
+
+.btn.M {
+  min-height: 48px;
+}
+
+.btn.S {
+  min-height: 44px;
+  padding: 0 14px;
+  font-size: 15px;
+}
+
+/* héros (accueil) : 64, pilule, sceau 44 à gauche, libellé 24 + sous-ligne 13 */
+.btn.hero {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 64px;
+  padding: 0 20px 0 10px;
+  border-radius: 32px;
+  text-align: left;
+  background-color: var(--vermillion-ui);
+  color: var(--cream);
+}
+
+.btn.hero:active,
+.btn.hero.is-pressed {
+  background-color: var(--vermillion-dark);
+}
+
+.btn:disabled,
+.btn.disabled {
+  opacity: 0.45;
+  pointer-events: none;
+  box-shadow: 0 1px 0 var(--ink);
+}
+
+.btn.quiet:disabled,
+.btn.quiet.disabled,
+.btn.text:disabled,
+.btn.text.disabled {
+  box-shadow: none;
+}
+
+/* Confirmation en deux temps (armConfirm, src/ui/press.js) : vermillon, « Confirmer… »,
+   anneau or qui se vide pendant le délai. */
+.armed,
+.btn.armed,
+.btn.quiet.armed {
+  background-color: var(--vermillion-ui);
+  background-image: none;
+  color: var(--cream);
+  border-color: var(--ink);
+}
+
+/* le libellé armé tient sur une ligne, au-dessus du filet or qui se vide */
+.arm-label {
+  white-space: nowrap;
+}
+
+.arm-ring {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 4px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--gold-on-dark);
+  transform-origin: 0 50%;
+  animation: armDrain var(--arm-ms, 2600ms) linear forwards;
+  pointer-events: none;
+}
+
+@keyframes armDrain {
+  to {
+    transform: scaleX(0);
+  }
+}
+
+.btn-kanji {
+  display: inline-grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  margin-right: 12px;
+  border-radius: 50%;
+  background: var(--cream);
+  color: var(--vermillion);
+  font-size: 22px;
+  box-shadow: inset 0 0 0 2px rgba(29, 27, 34, 0.55);
+  vertical-align: middle;
+}
+
+/* Bouton icône : cible 44 × 44, boîte visible 40 × 32 sur fond sombre. */
+.icon-btn {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  border-radius: 11px;
+  display: grid;
+  place-items: center;
+  color: var(--cream);
+  font-family: var(--font-title);
+  font-weight: 800;
+  font-size: 17px;
+  line-height: 1;
+  transition: transform var(--d-quick) var(--e-spring);
+}
+
+.icon-btn::before {
+  content: '';
+  position: absolute;
+  inset: 6px 2px;
+  border-radius: var(--r-m);
+  background-color: rgba(242, 232, 208, 0.08);
+  border: 1.5px solid rgba(242, 232, 208, 0.32);
+  transition: background-color var(--d-quick), border-color var(--d-quick);
+  pointer-events: none;
+}
+
+/* (variante claire de l'accueil : sa propre boîte) */
+.icon-btn.light::before {
+  content: none;
+}
+
+.icon-btn > * {
+  position: relative;
+}
+
+.icon-btn:active,
+.icon-btn.pressed,
+.icon-btn.is-pressed {
+  transform: scale(0.94);
+  transition-duration: 0s;
+}
+
+.icon-btn:active::before,
+.icon-btn.pressed::before,
+.icon-btn.is-pressed::before {
+  background-color: rgba(242, 232, 208, 0.24);
+}
+
+/* Son coupé : un coup de pinceau vermillon barre le pictogramme. */
+.icon-btn.off > * {
+  opacity: 0.55;
+}
+
+.icon-btn.off::after {
+  content: '';
+  position: absolute;
+  left: 18%;
+  right: 18%;
+  top: 50%;
+  height: 3px;
+  margin-top: -1.5px;
+  border-radius: 2px;
+  background: var(--vermillion-2);
+  box-shadow: 0 0 0 1px rgba(29, 27, 34, 0.5);
+  transform: rotate(-38deg);
+  pointer-events: none;
+}
+
+.icon-btn.on {
+  color: var(--ink);
+}
+
+.icon-btn.on::before {
+  background-color: var(--gold-on-dark);
+  border-color: var(--gold-2);
+}
+
+/* pictogramme SVG en trait (cadre 20, currentColor) */
+.ico {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.ico-pause {
+  display: block;
+  width: 14px;
+  height: 16px;
+  border-left: 4.5px solid currentColor;
+  border-right: 4.5px solid currentColor;
+  border-radius: 1px;
+}
+
+/* Interrupteur 50 × 30 : la ligne entière (≥ 48) est la cible, libellé à gauche. */
+.switch {
+  position: relative;
+  flex: none;
+  display: inline-block;
+  width: 50px;
+  height: 30px;
+  border-radius: 15px;
+  border: 2px solid var(--ink);
+  background: var(--cream-3);
+  transition: background-color var(--d-short) var(--e-out);
+}
+
+.switch::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--ink);
+  transition: transform var(--d-short) var(--e-spring), background-color var(--d-short);
+}
+
+.switch.on,
+[aria-checked='true'] > .switch,
+[aria-pressed='true'] > .switch {
+  background: var(--moss-ui);
+}
+
+.switch.on::after,
+[aria-checked='true'] > .switch::after,
+[aria-pressed='true'] > .switch::after {
+  transform: translateX(20px);
+  background: var(--cream);
+}
+
+/* Contrôle segmenté : sur fond sombre par défaut, .seg.light sur papier. */
+.seg {
+  display: flex;
+  gap: 8px;
+}
+
+.seg > button {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 8px;
+  border-radius: var(--r-m);
+  border: 1.5px solid rgba(242, 232, 208, 0.28);
+  background-color: rgba(242, 232, 208, 0.08);
+  color: var(--cream);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.15;
+}
+
+.seg > button.on,
+.seg > button[aria-pressed='true'],
+.seg > button[aria-selected='true'],
+.seg > button[aria-checked='true'] {
+  background-color: var(--cream);
+  background-image: var(--washi);
+  background-size: var(--washi-size);
+  border: 2px solid var(--ink);
+  color: var(--ink);
+}
+
+.seg.light > button {
+  border-color: rgba(29, 27, 34, 0.3);
+  background-color: var(--cream-2);
+  color: var(--ink);
+}
+
+.seg > button.is-pressed {
+  box-shadow: var(--glow-press);
+}
+
+/* Chiffres en cases fixes (src/ui/fmt.js) : ni Zen Kaku Gothic New ni Shippori Mincho
+   n'ont de chiffres tabulaires ; chaque chiffre occupe 0,52 em, rien ne glisse. */
+.dgr {
+  display: inline-block;
+  white-space: nowrap;
+}
+
+.dg {
+  display: inline-block;
+  width: 0.52em;
+  text-align: center;
+  font-style: normal;
+}
+
+/* Sceaux (hanko) : tailles 18 / 24 / 32 / 44 / 56, inclinés, liseré crème intérieur.
+   Vermillon = action, vie ; indigo = information ; or = or, défi ; encre = Difficile. */
+.seal-indigo {
+  background-color: var(--indigo-2);
+}
+
+.seal-ink {
+  background-color: var(--ink);
+  color: var(--vermillion-2);
+}
+
+.seal-18 {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.seal-24 {
+  width: 24px;
+  height: 24px;
+  border-radius: 5px;
+  font-size: 14px;
+}
+
+.seal-32 {
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  font-size: 19px;
+}
+
+.seal-44 {
+  width: 44px;
+  height: 44px;
+  border-radius: 8px;
+  font-size: 26px;
+}
+
+.seal-56 {
+  width: 56px;
+  height: 56px;
+  border-radius: 9px;
+  font-size: 32px;
+}
+
+.seal.tilt {
+  transform: rotate(-3deg);
+}
+
+/* Feuille du bas (src/ui/sheet.js) : poignée 36 × 5 à 8 px du haut, en-tête ≥ 52. */
+.sheet-grabber {
+  position: relative;
+  flex: none;
+  display: block;
+  width: 36px;
+  height: 5px;
+  margin: 0 auto;
+  border-radius: 3px;
+  background: rgba(29, 27, 34, 0.28);
+  touch-action: none;
+}
+
+/* zone de prise : toute la largeur, 20 px de haut (le corps défile normalement) */
+.sheet-grabber::before {
+  content: '';
+  position: absolute;
+  left: -160px;
+  right: -160px;
+  top: -8px;
+  bottom: -8px;
+}
+
+/* Ondulation d'encre sur chaque tap (calque rogné dédié, cf. hud.js) */
+/* (« > * { position: relative } » des boutons icône ne doit pas le remettre dans le flux) */
+.ripple-box,
+button > .ripple-box {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 3;
+}
+
+.ripple {
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+  background: currentColor;
+  opacity: 0.22;
+  transform: scale(0);
+  animation: ripple 0.36s ease-out forwards;
+}
+
+@keyframes ripple {
+  to {
+    transform: scale(2.3);
+    opacity: 0;
+  }
+}
+
+/* sur fond sombre (HUD, barre d'actions, boutons encre) l'onde crème reste discrète */
+.hud-top .ripple,
+.tower-bar .ripple,
+.btn.dark .ripple,
+.btn.primary .ripple,
+.wave-btn .ripple {
+  opacity: 0.18;
+}
+
+/* « Effets sobres » : pas d'onde ni de boucle décorative ; les informations restent */
+.fx-sober .ripple {
+  display: none;
+}
+
+.fx-sober .lc-arrow,
+.fx-sober .rewind.urgent .rewind-track {
+  animation-iteration-count: 1;
+}
+
+/* ───────────── Titre ───────────── */
+
+/* Accueil (docs/UI-UX.md §6.15) : son et réglages en haut à droite, titre, scène
+   peinte qui respire, puis zone d'annonce, héros « Continuer », « Niveaux » et « À
+   plusieurs ». Le ciel (canvas) part d'un indigo opaque : la bande de la barre d'état
+   (ou le garde-fou d'une ancienne installation) reste un aplat sans texte. */
+#screen-title {
+  flex-direction: column;
+  align-items: stretch;
+  padding: calc(var(--sat) + 6px) calc(var(--sar) + 16px) calc(var(--sab) + 16px) calc(var(--sal) + 16px);
+  overflow: hidden;
+  background: var(--paper);
+}
+
+#screen-title canvas.bg,
+.map-body canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+}
+
+.title-tools {
+  position: relative;
+  z-index: 1;
+  flex: none;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  height: 44px;
+  margin-right: -4px;
+}
+
+.title-ico svg {
+  display: block;
+}
+
+/* sur le ciel (dégradé indigo → crème) : aplat indigo plein, pas de verre ; le
+   pictogramme garde tout son contraste, coupé ou non */
+.title-ico::before {
+  background-color: var(--indigo);
+  border-color: rgba(242, 232, 208, 0.4);
+  box-shadow: 0 2px 0 rgba(16, 22, 40, 0.45);
+}
+
+.title-ico.is-pressed::before {
+  background-color: var(--indigo-2);
+}
+
+.title-ico.off > * {
+  opacity: 0.9;
+}
+
+#btn-title-sound .spk-off,
+#btn-title-sound.off .spk-on {
+  display: none;
+}
+
+#btn-title-sound.off .spk-off {
+  display: inline;
+}
+
+/* le haut-parleur barré dit déjà « coupé » : pas de second trait */
+#btn-title-sound.off::after {
+  content: none;
+}
+
+.title-wrap {
+  position: relative;
+  flex: none;
+  text-align: center;
+  margin-top: 2px;
+}
+
+.title-kanji {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-title);
+  font-weight: 800;
+  font-size: 17px;
+  letter-spacing: 0.5em;
+  text-indent: 0.5em;
+  color: var(--cream);
+  text-shadow: 0 1px 0 rgba(29, 27, 34, 0.35);
+}
+
+.title-kanji::before,
+.title-kanji::after {
+  content: '';
+  width: 30px;
+  height: 7px;
+  background: var(--stroke-gold) center / 100% 100% no-repeat;
+}
+
+.title-kanji::after {
+  transform: scaleX(-1);
+}
+
+#screen-title h1 {
+  margin: 10px 0 6px;
+  font-family: var(--font-title);
+  font-weight: 800;
+  font-size: var(--fs-display);
+  line-height: 1;
+  letter-spacing: 0.005em;
+  color: var(--ink);
+  text-shadow: 0 2px 0 rgba(242, 232, 208, 0.9);
+}
+
+#screen-title h1::after {
+  content: '';
+  display: block;
+  width: 58%;
+  height: 12px;
+  margin: 10px auto 0;
+  background: var(--stroke-red) center / 100% 100% no-repeat;
+}
+
+.tagline {
+  margin: 0;
+  font-family: var(--font-title);
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.3;
+  color: var(--indigo);
+}
+
+/* boutons de l'accueil, sous le pouce : annonce, héros, « Niveaux » | « À plusieurs » */
+.title-actions {
+  position: relative;
+  z-index: 1;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  max-width: 440px;
+  margin: auto auto 0;
+}
+
+#screen-title .btn.hero {
+  flex: none;
+  width: 100%;
+  box-shadow: var(--sh-float);
+}
+
+.hero-seal {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--cream);
+  color: var(--vermillion);
+  font-family: var(--font-title);
+  font-weight: 800;
+  font-size: 24px;
+  box-shadow: inset 0 0 0 2px rgba(29, 27, 34, 0.55);
+}
+
+.hero-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.hero-text b {
+  font-family: var(--font-title);
+  font-weight: 800;
+  font-size: var(--fs-hero);
+  line-height: 1;
+  letter-spacing: 0.02em;
+}
+
+.hero-text small {
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.2;
+  color: #f8ecd6;
+}
+
+.hero-chev {
+  flex: none;
+  font-size: 28px;
+  font-weight: 500;
+  line-height: 1;
+  opacity: 0.9;
+}
+
+.title-row {
+  display: flex;
+  gap: 12px;
+}
+
+.title-row .btn {
+  min-height: 48px;
+  padding: 0 12px;
+  font-size: 16px;
+}
+
+#btn-multi {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  white-space: nowrap; /* « À plusieurs (2) » se cassait en deux lignes en 375 */
+}
+
+@media (max-width: 380px) {
+  #btn-multi {
+    gap: 6px;
+    padding: 0 8px;
+    font-size: 15px;
+  }
+}
+
+.multi-seal {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 5px;
+  background: var(--indigo-2);
+  color: var(--cream);
+  font-family: var(--font-title);
+  font-size: 14px;
+  font-weight: 800;
+  box-shadow: inset 0 0 0 1.5px rgba(255, 244, 222, 0.4);
+  transform: rotate(-3deg);
+}
+
+.multi-count {
+  display: grid;
+  place-items: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 11px;
+  background: var(--vermillion-ui);
+  color: var(--cream);
+  font-style: normal;
+  font-size: 13px;
+  font-weight: 700;
+  box-shadow: 0 0 0 1.5px var(--cream);
+}
+
+/* ───────────── Carte ───────────── */
+
+/* En-tête 44 indigo uni : « ‹ Accueil », « Niveaux », étoiles (chiffres en cases).
+   La carte défile (sous l'indicateur d'accueil), et s'ouvre sur le niveau à jouer. */
+#screen-map {
+  flex-direction: column;
+  padding: var(--sat) var(--sar) 0 var(--sal);
+  background: var(--indigo);
+}
+
+.map-head {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 auto;
+  height: 44px;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  background-color: var(--indigo);
+  color: var(--cream);
+}
+
+.map-head::after,
+.hud-top::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -6px;
+  height: 8px;
+  background: var(--edge) 0 0 / 100% 100% no-repeat;
+  pointer-events: none;
+}
+
+.map-back {
+  justify-self: start;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0 10px 0 4px;
+  border-radius: var(--r-m);
+  color: var(--cream);
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.map-back.is-pressed,
+.map-back:active {
+  background: rgba(242, 232, 208, 0.14);
+}
+
+.map-head h2 {
+  margin: 0;
+  font-family: var(--font-title);
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.map-stars {
+  justify-self: end;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-right: 4px;
+  font-weight: 700;
+  font-size: 16px;
+  white-space: nowrap;
+}
+
+.map-stars-of {
+  color: var(--on-dark-2);
+}
+
+.map-stars .seal {
+  width: 24px;
+  height: 24px;
+  font-size: 0;
+  color: transparent;
+}
+
+.map-stars .seal::before {
+  content: '';
+  width: 15px;
+  height: 15px;
+  background: var(--ink);
+}
+
+.map-body {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+  background: var(--paper);
+}
+
+/* contenu de la carte : sa hauteur est posée par MapScreen ; la marge du bas laisse
+   l'indicateur d'accueil sur le papier, sans nœud dessous */
+.map-inner {
+  position: relative;
+  min-height: 100%;
+  padding-bottom: var(--sab);
+}
+
+.map-nodes {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+}
+
+/* chemin d'encre tracé à la célébration (sous les nœuds) */
+.map-fx {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+
+/* Cartouche d'un monde : sceau vertical vermillon + nom. */
+.map-world {
+  position: absolute;
+  right: calc(10px + var(--sar));
+  display: flex;
+  flex-direction: row-reverse;
+  align-items: center;
+  gap: 9px;
+  pointer-events: none;
+  text-align: right;
+}
+
+.mw-seal {
+  writing-mode: vertical-rl;
+  padding: 5px 4px;
+  border-radius: 4px;
+  background-color: var(--vermillion);
+  background-image: var(--washi);
+  background-size: var(--washi-size);
+  color: var(--cream);
+  font-family: var(--font-title);
+  font-weight: 800;
+  font-size: 15px;
+  line-height: 1.05;
+  letter-spacing: 0.06em;
+  box-shadow: inset 0 0 0 1.5px rgba(255, 244, 222, 0.42), 0 2px 0 rgba(29, 27, 34, 0.55);
+  transform: rotate(-2deg);
+}
+
+.mw-text b {
+  display: block;
+  font-family: var(--font-title);
+  font-weight: 800;
+  font-size: 18px;
+  line-height: 1.15;
+  color: var(--ink);
+  text-shadow: 0 1px 0 rgba(242, 232, 208, 0.9), 0 0 6px rgba(242, 232, 208, 0.9);
+}
+
+.mw-text small {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--ink-2);
+  text-shadow: 0 0 5px rgba(242, 232, 208, 0.95);
+}
+
+.mw-stars {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  letter-spacing: 0;
+  padding: 0 7px 0 5px;
+  border-radius: 9px;
+  background: rgba(29, 27, 34, 0.86);
+  color: var(--gold-2);
+  line-height: 18px;
+  text-shadow: none;
+}
+
+.mw-stars .dg {
+  clip-path: none;
+}
+
+.mw-stars .mw-star {
+  width: 11px;
+  height: 11px;
+  background: var(--gold-2);
+}
+
+/* monde encore scellé : lisible (plus d'opacité réduite), sceau gris */
+.map-world.locked .mw-seal {
+  background-color: #6d6a62;
+}
+
+.map-world.locked .mw-text b {
+  color: #3d3a3c;
+}
+
+/* Nœuds-sceaux (cible 62 ; boss 72) ; l'étiquette « 1-1 · Nom » + leçon est dans le bouton */
+.map-node {
+  --size: 62px;
+  position: absolute;
+  width: var(--size);
+  height: var(--size);
+  margin: calc(var(--size) / -2) 0 0 calc(var(--size) / -2);
+  border-radius: 50%;
+  color: var(--ink);
+  text-align: left;
+}
+
+.map-node .face {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  border-radius: inherit;
+  background-color: var(--cream);
+  background-image: var(--washi);
+  background-size: var(--washi-size);
+  border: 3px solid var(--ink);
+  box-shadow: 0 4px 0 var(--ink), 0 9px 14px rgba(29, 27, 34, 0.22);
+  transition: transform var(--d-quick) var(--e-spring);
+}
+
+.map-node:active .face,
+.map-node.is-pressed .face {
+  transform: scale(0.92);
+  transition-duration: 0s;
+}
+
+.map-node:focus-visible .face {
+  outline: 3px solid var(--gold-2);
+  outline-offset: 3px;
+}
+
+.map-node.cleared .face {
+  box-shadow: 0 4px 0 var(--ink), 0 9px 14px rgba(29, 27, 34, 0.22), inset 0 0 0 3px var(--cream), inset 0 0 0 5px var(--gold);
+}
+
+.map-node .num {
+  font-family: var(--font-title);
+  font-weight: 800;
+  font-size: 27px;
+  line-height: 1;
+}
+
+.map-node .stars {
+  position: absolute;
+  bottom: -21px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 1px;
+}
+
+.map-node .stars i,
+.result-stars i {
+  position: relative;
+  display: block;
+  font-style: normal;
+  clip-path: var(--star);
+}
+
+.map-node .stars i {
+  width: 17px;
+  height: 17px;
+  background: rgba(29, 27, 34, 0.55);
+}
+
+.map-node .stars i::before,
+.result-stars i::before {
+  content: '';
+  position: absolute;
+  inset: 15%;
+  top: 19%;
+  clip-path: var(--star);
+  background: var(--cream-2);
+}
+
+.map-node .stars i.on {
+  background: var(--ink);
+}
+
+.map-node .stars i.on::before {
+  background: var(--gold-2);
+}
+
+.map-node.boss {
+  --size: 72px;
+  border-radius: 18px;
+}
+
+.map-node.boss .face {
+  background-color: var(--vermillion);
+  color: var(--cream);
+  transform: rotate(-4deg);
+  box-shadow: 0 4px 0 var(--ink), 0 10px 16px rgba(29, 27, 34, 0.28), inset 0 0 0 3px var(--vermillion), inset 0 0 0 5px var(--gold-2);
+}
+
+.map-node.boss:active .face,
+.map-node.boss.is-pressed .face {
+  transform: rotate(-4deg) scale(0.92);
+}
+
+.map-node.boss .num {
+  font-size: 31px;
+}
+
+.boss-tag {
+  position: absolute;
+  z-index: 1;
+  top: -11px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0 7px;
+  border-radius: 8px;
+  background: var(--ink);
+  color: var(--gold-2);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 16px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  box-shadow: 0 0 0 2px var(--paper);
+}
+
+/* scellé : 封 + cadenas, encre à 70 % (4,9:1), nom en encre secondaire, « Scellé » */
+.map-node.locked .face {
+  background-color: #d2c9b2;
+  border-color: rgba(29, 27, 34, 0.55);
+  box-shadow: 0 2px 0 rgba(29, 27, 34, 0.5);
+}
+
+.map-node.locked.boss .face {
+  background-color: #c4b99f;
+}
+
+.map-node.locked .num {
+  color: rgba(29, 27, 34, 0.7);
+  font-size: 24px;
+}
+
+.node-lock {
+  position: absolute;
+  z-index: 1;
+  top: -6px;
+  right: -6px;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #4a4744;
+  color: var(--cream);
+  box-shadow: 0 0 0 2px var(--paper);
+}
+
+.map-node.locked .boss-tag {
+  color: var(--cream);
+  background: #4a4744;
+}
+
+.map-node.locked .stars {
+  display: none;
+}
+
+/* Étiquette du nœud : nom 13/700 (deux lignes au plus, jamais de « … »), leçon 12/500 */
+.map-label {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: max-content;
+  max-width: var(--lw, 220px);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 4px 10px 5px;
+  border-radius: var(--r-m);
+  background: rgba(250, 245, 232, 0.96);
+  box-shadow: inset 0 0 0 1.5px rgba(29, 27, 34, 0.24), 0 2px 0 rgba(29, 27, 34, 0.16);
+  color: var(--ink);
+  text-align: left;
+}
+
+.map-label.right {
+  left: calc(100% + 10px);
+}
+
+.map-label.left {
+  right: calc(100% + 10px);
+}
+
+.map-node.boss .map-label.right {
+  left: calc(100% + 8px);
+}
+
+.map-label b {
+  font-size: calc(13px * var(--fs-scale, 1));
+  font-weight: 700;
+  line-height: 1.25;
+  text-wrap: balance; /* pas de mot orphelin (« Torii », « l'Oni ») seul sur la 2e ligne */
+}
+
+/* numéro du niveau en encre secondaire : le nom porte la lecture ; seul sur sa ligne
+   quand le nom passe dessous, il ne pèse pas */
+.map-label .ml-id {
+  color: var(--ink-2);
+}
+
+.map-label small {
+  font-size: calc(12px * var(--fs-scale, 1));
+  font-weight: 500;
+  line-height: 1.25;
+  color: var(--ink-2);
+}
+
+.map-label em {
+  font-style: normal;
+  font-weight: 700;
+  color: var(--vermillion-ui);
+}
+
+.map-label .lock {
+  margin-right: 4px;
+  vertical-align: -1px;
+}
+
+.map-node.next .map-label {
+  box-shadow: inset 0 0 0 2px var(--vermillion-ui), 0 2px 0 rgba(29, 27, 34, 0.16);
+}
+
+.map-node.locked .map-label {
+  background: rgba(236, 229, 210, 0.95);
+}
+
+.map-node.locked .map-label b {
+  color: var(--ink-2);
+}
+
+/* Prochain niveau : un anneau vermillon se diffuse trois fois, puis reste fixe. */
+.map-node.next::before {
+  content: '';
+  position: absolute;
+  inset: -5px;
+  border-radius: inherit;
+  border: 3px solid var(--vermillion);
+  animation: ringOut 1.6s var(--e-out) 3 both;
+  pointer-events: none;
+}
+
+.map-node.next .face {
+  box-shadow: 0 4px 0 var(--ink), 0 9px 14px rgba(29, 27, 34, 0.22), 0 0 0 3px var(--paper), 0 0 0 6px var(--vermillion);
+}
+
+@keyframes ringOut {
+  0% {
+    transform: scale(0.92);
+    opacity: 0.95;
+  }
+  100% {
+    transform: scale(1.38);
+    opacity: 0;
+  }
+}
+
+/* Retour d'une victoire : étoiles tamponnées, puis le sceau 封 du niveau suivant se brise */
+.map-node.celebrate .stars i.on {
+  animation: starStamp 0.42s var(--e-spring) both;
+}
+
+.map-node.celebrate .stars i:nth-child(1) {
+  animation-delay: 0.26s;
+}
+
+.map-node.celebrate .stars i:nth-child(2) {
+  animation-delay: 0.38s;
+}
+
+.map-node.celebrate .stars i:nth-child(3) {
+  animation-delay: 0.5s;
+}
+
+.map-node.unseal:not(.broken)::before {
+  animation: none;
+  opacity: 0;
+}
+
+.map-node.unseal .face::after {
+  content: '封';
+  position: absolute;
+  inset: -3px;
+  display: grid;
+  place-items: center;
+  border-radius: inherit;
+  border: 3px solid rgba(29, 27, 34, 0.55);
+  background: #d2c9b2;
+  color: rgba(29, 27, 34, 0.7);
+  font-family: var(--font-title);
+  font-size: 24px;
+  font-weight: 800;
+}
+
+.map-node.unseal.broken .face::after {
+  animation: sealBreak 0.32s var(--e-in) forwards;
+}
+
+@keyframes sealBreak {
+  35% {
+    transform: scale(1.08) rotate(4deg);
+  }
+  100% {
+    transform: scale(0.5) rotate(-14deg);
+    opacity: 0;
+  }
+}
+
+/* ───────────── Écran de jeu ───────────── */
+
+/* Gabarit (docs/UI-UX.md §6.1) : HUD 44 en haut, plateau au milieu, bas de 156 (142 sur
+   petit écran) = 4 + rangée d'action 46 + 6 + onglets 34 + cartes 62 + 4. Le même
+   gabarit sert à la palette groupée, à la palette simple et à la coopération. */
+#screen-game {
+  flex-direction: column;
+  padding: var(--sat) var(--sar) var(--sab) var(--sal);
+  background-color: var(--indigo);
+}
+
+/* ── HUD du haut : indigo uni (sans washi), positions fixes ── */
+.hud-top {
+  flex: 0 0 auto;
+  height: var(--hud-top-h);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 var(--gutter-game);
+  background-color: var(--indigo);
+  color: var(--on-dark);
+  position: relative;
+  z-index: 2;
+}
+
+.stat {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 32px;
+  padding: 0 7px 0 4px;
+  border-radius: var(--r-m);
+  background: rgba(10, 14, 26, 0.32);
+  box-shadow: inset 0 0 0 1px rgba(242, 232, 208, 0.14);
+  font-size: var(--fs-counter);
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.stat .seal {
+  flex: none;
+}
+
+.stat-lives {
+  min-width: 60px;
+}
+
+/* or : 4 cases au moins ; un 5e chiffre s'étend dans la case réservée */
+.stat-goldzone {
+  flex: 0 0 128px;
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: 32px;
+}
+
+.stat-gold {
+  min-width: 84px;
+}
+
+/* or promis aux constructions : case réservée de 40, toujours là, vide à 0 (rien ne glisse) */
+.stat-reserve-slot {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.stat-reserved {
+  padding: 4px 5px;
+  border-radius: var(--r-s);
+  background: var(--ink);
+  box-shadow: inset 0 0 0 1px rgba(242, 232, 208, 0.2);
+  color: #ffc9b5;
+  font-size: 13px;
+  font-style: normal;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.stat b {
+  display: inline-block;
+  transition: transform var(--d-quick) var(--e-spring), color var(--d-med);
+}
+
+.stat b.bump {
+  transform: scale(1.12);
+  color: var(--gold-on-dark);
+}
+
+.stat b.spend {
+  transform: scale(0.9);
+  color: #ffb39c;
+}
+
+.stat b.hurt {
+  animation: hurt 0.26s ease-out;
+  color: var(--vermillion-2);
+}
+
+@keyframes hurt {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-3px) scale(1.15);
+  }
+  60% {
+    transform: translateX(3px) scale(1.1);
+  }
+}
+
+/* vie perdue : la pastille passe au vermillon 200 ms ; or gagné (pièces) : rebond */
+.stat.hurt {
+  animation: statHurt 0.2s ease-out;
+}
+
+@keyframes statHurt {
+  0%,
+  60% {
+    background-color: var(--vermillion-ui);
+  }
+}
+
+.stat.gain .seal {
+  animation: sealGain 0.18s var(--e-spring);
+}
+
+@keyframes sealGain {
+  50% {
+    transform: scale(1.18);
+  }
+}
+
+.stat-lives.low b {
+  color: #ff8a6e;
+}
+
+.stat-lives.low .seal {
+  animation: sealBeat 0.9s ease-in-out infinite;
+}
+
+@keyframes sealBeat {
+  50% {
+    transform: scale(1.14);
+  }
+}
+
+/* bloc vague : « VAGUE » (难 en Difficile), n/N en cases fixes, barre de progression */
+.wave-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.wave-label small {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  height: 12px;
+  font-size: var(--fs-micro);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--on-dark-2);
+}
+
+.wave-label .hard-seal {
+  display: none;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 3px;
+  background: var(--ink);
+  color: var(--vermillion-2);
+  font-family: var(--font-title);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0;
+  box-shadow: inset 0 0 0 1px rgba(242, 232, 208, 0.3);
+}
+
+.mode-hard .wave-label .hard-seal {
+  display: inline-grid;
+}
+
+.wave-num {
+  font-size: var(--fs-counter);
+  font-weight: 700;
+  color: var(--on-dark);
+}
+
+.wave-num i {
+  font-style: normal;
+  color: var(--on-dark-2);
+}
+
+/* le chiffre roule au début d'une vague (240 ms) */
+.wave-cur {
+  display: inline-block;
+  overflow: hidden;
+  vertical-align: top;
+  height: 1.05em;
+}
+
+.roll {
+  display: inline-grid;
+}
+
+.roll > span {
+  grid-area: 1 / 1;
+}
+
+.roll-old {
+  animation: rollOut 0.24s var(--e-out) forwards;
+}
+
+.roll-new {
+  animation: rollIn 0.24s var(--e-out) both;
+}
+
+@keyframes rollOut {
+  to {
+    transform: translateY(-100%);
+    opacity: 0;
+  }
+}
+
+@keyframes rollIn {
+  from {
+    transform: translateY(100%);
+    opacity: 0;
+  }
+}
+
+.wave-bar {
+  position: relative;
+  width: min(64px, 100%);
+  height: 3px;
+  margin-top: 1px;
+  border-radius: 2px;
+  background: rgba(242, 232, 208, 0.22);
+}
+
+.wave-bar-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  border-radius: inherit;
+  background: var(--gold-on-dark);
+  transition: width 0.3s var(--e-out);
+}
+
+/* repère du climax annoncé */
+.wave-bar-climax {
+  position: absolute;
+  top: -2px;
+  width: 3px;
+  height: 7px;
+  margin-left: -1.5px;
+  border-radius: 1px;
+  background: var(--vermillion-2);
+}
+
+/* capsule du temps : « ×1 / ×2 » et pause, deux cibles de 44 séparées de 8 px */
+.time-capsule {
+  flex: 0 0 auto;
+  position: relative;
+  display: flex;
+  gap: 8px;
+  height: 44px;
+  align-items: center;
+}
+
+.time-capsule::before {
+  content: '';
+  position: absolute;
+  inset: 4px 0;
+  border-radius: 12px;
+  border: 1.5px solid rgba(242, 232, 208, 0.32);
+  background: rgba(242, 232, 208, 0.06);
+  pointer-events: none;
+}
+
+.time-capsule::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 13px;
+  bottom: 13px;
+  width: 1px;
+  background: rgba(242, 232, 208, 0.32);
+  pointer-events: none;
+}
+
+.tc-btn {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  color: var(--on-dark);
+  font-size: var(--fs-label);
+  font-weight: 700;
+  line-height: 1;
+  transition: transform var(--d-quick) var(--e-spring);
+}
+
+.tc-btn::before {
+  content: '';
+  position: absolute;
+  inset: 6px 1px;
+  border-radius: 10px;
+  transition: background-color var(--d-quick);
+  pointer-events: none;
+}
+
+.tc-btn > * {
+  position: relative;
+}
+
+.tc-btn.is-pressed {
+  transform: scale(0.94);
+  transition-duration: 0s;
+}
+
+.tc-btn.is-pressed::before {
+  background-color: rgba(242, 232, 208, 0.24);
+}
+
+/* ×2 actif, pause active : or vif, texte encre */
+.tc-btn.on {
+  color: var(--ink);
+}
+
+.tc-btn.on::before {
+  background-color: var(--gold-on-dark);
+}
+
+#stage {
+  flex: 1 1 auto;
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--paper);
+}
+
+#board {
+  position: absolute;
+  inset: 0;
+  touch-action: none;
+  display: block;
+}
+
+/* ── Bas de l'écran ── */
+.hud-bottom {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--foot-gap);
+  padding: var(--foot-pt) var(--gutter-game) var(--foot-pb);
+  background-color: var(--indigo);
+  position: relative;
+  z-index: 2;
+}
+
+.hud-bottom::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -6px;
+  height: 8px;
+  background: var(--edge) 0 0 / 100% 100% no-repeat;
+  transform: scaleY(-1);
+  pointer-events: none;
+}
+
+/* rangée d'action (46) : jauge, aperçu (collé au bouton), « Annuler », bouton de vague */
+.action-row {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+  height: var(--action-h);
+}
+
+.wave-preview {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+}
+
+.action-row.has-undo .wave-preview {
+  display: none;
+}
+
+/* Bouton de vague : largeur fixe, cadran (anneau du compte à rebours), « Vague N », prime */
+.wave-btn {
+  position: relative;
+  flex: 0 0 var(--wave-w);
+  width: var(--wave-w);
+  height: var(--action-h);
+  border-radius: calc(var(--action-h) / 2);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px 0 2px;
+  background-color: var(--vermillion-ui);
+  color: var(--cream);
+  border: 2px solid var(--ink);
+  box-shadow: var(--sh-2);
+  text-align: left;
+  white-space: nowrap;
+  transition: transform var(--d-quick) var(--e-spring), box-shadow var(--d-quick) var(--e-spring), background-color 0.2s, color 0.2s;
+}
+
+.wave-btn:active,
+.wave-btn.is-pressed {
+  transform: translateY(2px);
+  box-shadow: 0 1px 0 var(--ink), var(--glow-press);
+  background-color: var(--vermillion-dark);
+  transition-duration: 0s;
+}
+
+/* cadran 38 : anneau or qui se vide (--k = temps restant ÷ pause), secondes ou 波 */
+.wave-dial {
+  --k: 1;
+  flex: 0 0 auto;
+  position: relative;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: conic-gradient(var(--gold-on-dark) calc(var(--k) * 1turn), rgba(29, 27, 34, 0.45) 0);
+}
+
+.wave-dial::before {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: var(--cream);
+  box-shadow: inset 0 0 0 1.5px rgba(29, 27, 34, 0.55);
+}
+
+.wave-dial-txt {
+  position: relative;
+  font-family: var(--font-title);
+  font-size: 19px;
+  font-weight: 800;
+  line-height: 1;
+  color: var(--vermillion-ui);
+}
+
+.wave-dial.secs .wave-dial-txt {
+  font-family: var(--font-ui);
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.wave-dial.stamp {
+  animation: dialStamp 0.22s var(--e-spring);
+}
+
+@keyframes dialStamp {
+  from {
+    transform: scale(1.25) rotate(-8deg);
+  }
+}
+
+.wave-btn-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
+  line-height: 1.05;
+}
+
+#btn-wave-label {
+  font-family: var(--font-title);
+  font-size: var(--fs-h3);
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+
+#btn-wave-sub {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+  font-family: var(--font-ui);
+  font-size: var(--fs-caption);
+  font-weight: 700;
+}
+
+/* pièce percée « mon » : signe de tout prix et des vols de pièces */
+.coin {
+  flex: none;
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--ink);
+  box-shadow: inset 0 0 0 2.5px var(--gold), 0 0 0 1px var(--ink);
+  vertical-align: -1px;
+}
+
+#btn-wave-sub .coin {
+  box-shadow: inset 0 0 0 2.5px var(--gold-on-dark), 0 0 0 1px var(--ink);
+}
+
+/* la vague arrive (≤ 5 s) : le cadran bat doucement */
+.wave-btn[data-mode='soon'] .wave-dial {
+  animation: sealBeat 0.9s ease-in-out infinite;
+}
+
+/* climax suivant : filet or autour du bouton */
+.wave-btn.climax {
+  box-shadow: var(--sh-2), 0 0 0 3px var(--gold-on-dark);
+}
+
+.wave-btn.disabled {
+  pointer-events: none;
+  background-color: var(--indigo-2);
+  color: rgba(242, 232, 208, 0.82);
+  border-color: rgba(10, 14, 26, 0.7);
+  box-shadow: 0 2px 0 rgba(10, 14, 26, 0.6);
+}
+
+.wave-btn.disabled .wave-dial {
+  background: rgba(242, 232, 208, 0.14);
+}
+
+.wave-btn.disabled .wave-dial::before {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px rgba(242, 232, 208, 0.3);
+}
+
+.wave-btn.disabled .wave-dial-txt {
+  color: rgba(242, 232, 208, 0.86);
+}
+
+/* avant la première vague, une lanterne posée : un anneau or invite à lancer */
+.wave-btn.pulse::after {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: inherit;
+  border: 3px solid var(--gold-2);
+  animation: ringWide 1.4s ease-out infinite;
+  pointer-events: none;
+}
+
+@keyframes ringWide {
+  0% {
+    transform: scale(1);
+    opacity: 0.95;
+  }
+  100% {
+    transform: scale(1.1, 1.32);
+    opacity: 0;
+  }
+}
+
+/* puces de l'aperçu (44) */
+.wchip {
+  position: relative;
+  flex: 0 0 var(--chip);
+  width: var(--chip);
+  height: var(--chip);
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-m);
+  background-color: var(--cream);
+  background-image: var(--washi);
+  background-size: var(--washi-size);
+  border: 2px solid var(--ink);
+  box-shadow: var(--sh-1);
+  transition: transform var(--d-quick) var(--e-spring);
+}
+
+.wchip:active,
+.wchip.is-pressed {
+  transform: translateY(1px);
+  box-shadow: 0 1px 0 var(--ink), var(--glow-press);
+  transition-duration: 0s;
+}
+
+.wchip img {
+  width: 38px;
+  height: 38px;
+  pointer-events: none;
+}
+
+.wchip b {
+  position: absolute;
+  right: -3px;
+  bottom: -4px;
+  min-width: 20px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 9px;
+  background: var(--ink);
+  color: var(--cream);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+}
+
+.wchip .el-badge {
+  position: absolute;
+  top: -6px;
+  left: -6px;
+}
+
+.wchip.boss {
+  box-shadow: var(--sh-1), inset 0 0 0 2px var(--vermillion);
+}
+
+.wave-preview.climax .wchip {
+  box-shadow: var(--sh-1), 0 0 0 2px var(--gold-on-dark);
+}
+
+/* yokai présenté pour la première fois : « nouveau » au-dessus de sa puce */
+.wchip-new {
+  position: absolute;
+  left: 50%;
+  top: -11px;
+  transform: translateX(-50%) rotate(-3deg);
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--vermillion-ui);
+  color: var(--cream);
+  box-shadow: 0 0 0 1.5px var(--ink);
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 700;
+  line-height: 15px;
+  white-space: nowrap;
+}
+
+.wchip.more {
+  align-content: center;
+  gap: 0;
+}
+
+.wchip.more b {
+  position: static;
+  min-width: 0;
+  height: auto;
+  padding: 0;
+  background: none;
+  color: var(--ink);
+  font-size: 15px;
+  line-height: 1;
+}
+
+.wchip.more small {
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--ink-2);
+}
+
+/* ── Jauge 巻 (46) ── */
+.rewind {
+  position: relative;
+  flex: 0 0 var(--gauge-d);
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  --k: 0;
+  transition: flex-basis var(--d-med) var(--e-out);
+}
+
+.rewind-track {
+  position: relative;
+  width: 100%;
+  height: var(--action-h);
+  border-radius: calc(var(--action-h) / 2);
+  background: rgba(8, 12, 24, 0.42);
+  border: 2px solid rgba(242, 232, 208, 0.34);
+  box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+  touch-action: none;
+  transition: border-color 0.2s, background-color 0.2s;
+}
+
+/* piste : remplissage en aplat bleuté terminé par un trait (pas de dégradé « numérique ») */
+.rewind-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0%;
+  background: rgba(157, 184, 255, 0.3);
+  border-right: 2px solid rgba(220, 230, 255, 0.7);
+  transition: width 0.2s linear;
+}
+
+.rewind-label {
+  position: absolute;
+  inset: 0 calc(var(--action-h) - 4px) 0 10px;
+  display: grid;
+  place-items: center;
+  color: var(--cream);
+  font-size: var(--fs-caption);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.rewind-knob {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: calc(var(--action-h) - 8px);
+  height: calc(var(--action-h) - 8px);
+  border-radius: 50%;
+  background-color: var(--cream);
+  background-image: var(--washi);
+  background-size: var(--washi-size);
+  color: var(--indigo);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--ink);
+  box-shadow: 0 2px 0 rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+}
+
+.rewind-knob b {
+  font-family: var(--font-title);
+  font-size: 18px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.rewind-pct {
+  display: none;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+/* disque (pas encore utilisable) : anneau or = charge, arc fantôme pointillé = ce que
+   rapporterait un appel anticipé maintenant ; pourcentage sous le kanji */
+.rewind-ring {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg);
+  pointer-events: none;
+  display: none;
+}
+
+.rewind.compact .rewind-ring {
+  display: block;
+}
+
+.rr-bg {
+  fill: rgba(8, 12, 24, 0.42);
+  stroke: rgba(242, 232, 208, 0.28);
+  stroke-width: 3.5;
+}
+
+.rr-fill,
+.rr-ghost {
+  fill: none;
+  stroke-width: 3.5;
+  stroke-dasharray: 0 200;
+}
+
+.rr-fill {
+  stroke: var(--gold-on-dark);
+  stroke-linecap: round;
+  transition: stroke-dasharray 0.3s var(--e-out);
+}
+
+.rr-ghost {
+  stroke: rgba(240, 207, 106, 0.6);
+}
+
+.rewind.compact .rewind-track {
+  border: none;
+  background: none;
+  box-shadow: none;
+  overflow: visible;
+}
+
+.rewind.compact .rewind-label,
+.rewind.compact .rewind-fill {
+  display: none;
+}
+
+/* armée ou dernière chance : la piste est vermillon franc ; le voile bleu de la charge
+   (pleine de toute façon) la virait au rose */
+.rewind.armed .rewind-fill,
+.rewind.urgent .rewind-fill {
+  display: none;
+}
+
+.rewind.compact .rewind-knob {
+  top: 6px;
+  right: 6px;
+  width: calc(var(--gauge-d) - 12px);
+  height: calc(var(--gauge-d) - 12px);
+  border-width: 1.5px;
+  gap: 1px;
+}
+
+.rewind.compact .rewind-knob b {
+  font-size: 14px;
+}
+
+.rewind.compact .rewind-pct {
+  display: block;
+}
+
+/* pleine (pas encore utilisable) : anneau plein, lueur */
+.rewind.full.compact .rewind-knob {
+  background-color: var(--gold-2);
+  color: var(--ink);
+}
+
+.rewind.full .rr-bg {
+  stroke: rgba(240, 207, 106, 0.6);
+}
+
+.rewind.full .rewind-ring {
+  filter: drop-shadow(0 0 5px rgba(240, 207, 106, 0.8));
+}
+
+/* prête : piste de 130 px, poignée à droite, flèches ◀◀, une pulsation toutes les 4 s */
+/* piste allongée : prête, et aussi pendant le rembobinage (« Recule… » reste lisible) */
+.rewind:not(.compact) {
+  flex-basis: 130px;
+}
+
+.rewind.ready .rewind-track {
+  border-color: var(--gold-2);
+  animation: gaugeCall 4s ease-out infinite;
+}
+
+.rewind.ready .rewind-knob {
+  background-color: var(--gold-2);
+  color: var(--ink);
+}
+
+@keyframes gaugeCall {
+  0%,
+  80% {
+    box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.3);
+  }
+  88% {
+    box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.3), 0 0 0 4px rgba(240, 207, 106, 0.55);
+  }
+}
+
+/* glissée au-delà du seuil, ou premier toucher du double toucher : vermillon */
+/* (la règle commune .armed peindrait le conteneur rectangulaire : seule la piste change) */
+.rewind.armed {
+  background: none;
+  border-color: transparent;
+}
+
+.rewind.armed .rewind-track {
+  background-color: var(--vermillion-ui);
+  border-color: var(--gold-2);
+  animation: none;
+}
+
+.rewind.armed .rewind-knob {
+  background-color: var(--vermillion-ui);
+  color: var(--cream);
+}
+
+.rewind .arm-ring {
+  bottom: 3px;
+  left: 14px;
+  right: 46px;
+}
+
+.rewind.used .rewind-knob::before {
+  content: '';
+  position: absolute;
+  left: 16%;
+  right: 16%;
+  top: 50%;
+  height: 3px;
+  margin-top: -1.5px;
+  border-radius: 2px;
+  background: var(--vermillion-ui);
+  transform: rotate(-38deg);
+}
+
+.rewind.gain .rewind-ring {
+  animation: gaugeGain 0.45s ease-out;
+}
+
+@keyframes gaugeGain {
+  40% {
+    transform: rotate(-90deg) scale(1.08);
+  }
+}
+
+/* « +12 巻 » : gain de charge (élimination, appel anticipé) */
+.rewind-float {
+  position: absolute;
+  z-index: 25;
+  left: 0;
+  bottom: calc(100% + 4px);
+  padding: 1px 7px;
+  border-radius: 9px;
+  background: var(--ink);
+  color: var(--gold-2);
+  border: 1.5px solid var(--gold-2);
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 18px;
+  white-space: nowrap;
+  pointer-events: none;
+  animation: gainUp 1.2s ease-out forwards;
+}
+
+.rewind-float.big {
+  font-size: 15px;
+  line-height: 20px;
+}
+
+@keyframes gainUp {
+  0% {
+    opacity: 0;
+    translate: 0 6px;
+  }
+  15% {
+    opacity: 1;
+    translate: 0 0;
+  }
+  75% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    translate: 0 -14px;
+  }
+}
+
+/* ── « Annuler » : place fixe, à la place de l'aperçu ── */
+.undo-pill {
+  --k: 1;
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  height: var(--action-h);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px 0 4px;
+  border-radius: calc(var(--action-h) / 2);
+  background-color: var(--ink);
+  background-image: var(--washi);
+  background-size: var(--washi-size);
+  color: var(--cream);
+  border: 2px solid var(--gold-on-dark);
+  box-shadow: 0 3px 0 rgba(0, 0, 0, 0.45);
+  text-align: left;
+  animation: undoIn 0.18s var(--e-emph);
+  transition: transform var(--d-quick) var(--e-spring);
+}
+
+.undo-pill.is-pressed {
+  transform: translateY(2px);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.45), var(--glow-press);
+  transition-duration: 0s;
+}
+
+/* cadran ↶ 34 qui se vide avec l'anneau de construction du socle */
+.undo-dial {
+  flex: 0 0 auto;
+  position: relative;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: conic-gradient(var(--gold-on-dark) calc(var(--k) * 1turn), rgba(242, 232, 208, 0.18) 0);
+}
+
+.undo-dial::before {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: var(--ink);
+}
+
+/* pendant la construction : anneau hachuré (rien n'est encore payé) */
+.undo-pill.building .undo-dial {
+  background: conic-gradient(transparent calc(var(--k) * 1turn), rgba(242, 232, 208, 0.18) 0), repeating-conic-gradient(var(--gold-on-dark) 0 10deg, rgba(240, 207, 106, 0.45) 10deg 18deg);
+}
+
+.undo-ico {
+  position: relative;
+  font-size: 19px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--gold-on-dark);
+}
+
+.undo-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.1;
+}
+
+.undo-text b {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.undo-text small {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--on-dark-2);
+}
+
+@keyframes undoIn {
+  from {
+    transform: translateX(-16px);
+    opacity: 0;
+  }
+}
+
+/* ── Palette : onglets (ou équipe) soudés à la boîte, pierre épinglée à droite ── */
+.palette-area {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: var(--tabs-h) var(--cards-h);
+  column-gap: 8px;
+}
+
+.palette-area.has-pin {
+  grid-template-columns: minmax(0, 1fr) 56px;
+}
+
+.palette-tabs,
+.team-row {
+  grid-column: 1;
+  grid-row: 1;
+  position: relative;
+  z-index: 3;
+  display: flex;
+  gap: 8px;
+}
+
+.palette {
+  grid-column: 1;
+  grid-row: 2;
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+  display: flex;
+  gap: 8px;
+  padding: 2px 0 0;
+  border: 2px solid var(--ink);
+  border-radius: 12px;
+  background-color: var(--cream);
+  background-image: var(--washi);
+  background-size: var(--washi-size);
+  box-shadow: var(--sh-2);
+  --icon-g: 40px;
+  --icon-s: 48px;
+}
+
+/* l'onglet (ou la puce « Vous ») de gauche se soude au coin de la boîte */
+[data-palette='tabs'] .palette-area[data-tab='0'] .palette,
+[data-palette='team'] .palette {
+  border-top-left-radius: 0;
+}
+
+/* palette simple (une lanterne par élément) : la boîte prend onglets + cartes */
+[data-palette='simple'] .palette {
+  grid-row: 1 / span 2;
+  padding: 0;
+}
+
+.palette.slide-r .tool:not(.off-tab) {
+  animation: tabSlideR 0.16s var(--e-out);
+}
+
+.palette.slide-l .tool:not(.off-tab) {
+  animation: tabSlideL 0.16s var(--e-out);
+}
+
+@keyframes tabSlideR {
+  from {
+    opacity: 0;
+    transform: translateX(8px);
+  }
+}
+
+@keyframes tabSlideL {
+  from {
+    opacity: 0;
+    transform: translateX(-8px);
+  }
+}
+
+/* onglets : contrôle segmenté de 34 (zone tactile prolongée : 44) */
+.ptab {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  height: calc(var(--tabs-h) - 4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 0 6px;
+  border-radius: var(--r-m);
+  background-color: rgba(242, 232, 208, 0.08);
+  border: 1.5px solid rgba(242, 232, 208, 0.28);
+  color: var(--cream);
+  font-size: var(--fs-label-s);
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+  transition: background-color var(--d-quick), color var(--d-quick);
+}
+
+/* zone tactile 44 : la boîte visible (30) s'étend de 6 px vers le haut et de 8 px vers
+   le bas (repère : boîte de remplissage, d'où le 1,5 du bord en plus) */
+.ptab::before {
+  content: '';
+  position: absolute;
+  left: -1.5px;
+  right: -1.5px;
+  top: -7.5px;
+  bottom: -9.5px;
+}
+
+.ptab .el-badge {
+  flex: 0 0 auto;
+}
+
+.ptab-label {
+  overflow: hidden;
+}
+
+.ptab.is-pressed {
+  background-color: rgba(242, 232, 208, 0.2);
+  box-shadow: var(--glow-press);
+}
+
+/* onglet choisi : crème, cerné d'encre, ouvert vers la boîte */
+.ptab.on {
+  height: calc(var(--tabs-h) + 2px);
+  align-self: flex-start;
+  background-color: var(--cream);
+  background-image: var(--washi);
+  background-size: var(--washi-size);
+  color: var(--ink);
+  border: 2px solid var(--ink);
+  border-bottom: none;
+  border-radius: var(--r-m) var(--r-m) 0 0;
+  padding-bottom: 4px;
+  box-shadow: inset 0 3px 0 var(--el, var(--gold));
+}
+
+.ptab.on::before {
+  top: -8px;
+  bottom: -2px;
+}
+
+/* l'outil choisi appartient à cet onglet (on regarde un autre élément) */
+.ptab.has-tool:not(.on)::after {
+  content: '';
+  position: absolute;
+  top: -5px;
+  right: 6px;
+  width: 10px;
+  height: 10px;
+  background: var(--vermillion);
+  border: 2px solid var(--ink);
+  transform: rotate(45deg);
+}
+
+/* rangée d'équipe (coopération) : la puce du joueur soudée à la boîte, l'or des autres */
+.mate {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  height: calc(var(--tabs-h) - 4px);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px 0 4px;
+  border-radius: var(--r-m);
+  background: rgba(242, 232, 208, 0.08);
+  box-shadow: inset 0 0 0 1.5px rgba(242, 232, 208, 0.28);
+  color: var(--on-dark);
+  font-size: var(--fs-micro);
+  font-weight: 700;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+
+.mate.me {
+  height: calc(var(--tabs-h) + 2px);
+  align-self: flex-start;
+  padding-bottom: 4px;
+  background-color: var(--cream);
+  background-image: var(--washi);
+  background-size: var(--washi-size);
+  color: var(--ink);
+  border: 2px solid var(--ink);
+  border-bottom: none;
+  border-radius: var(--r-m) var(--r-m) 0 0;
+  box-shadow: none;
+  font-size: var(--fs-label-s);
+}
+
+.mate .el-badge,
+.mate .seal-any {
+  flex: none;
+}
+
+.mate-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mate-host {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  background: var(--gold);
+  color: var(--ink);
+  font-family: var(--font-title);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.mate-gold {
+  margin-left: auto;
+  flex: none;
+  color: var(--on-dark-2);
+}
+
+.mate-gold:not(:empty):not(.offline)::before {
+  content: '';
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-right: 2px;
+  border-radius: 50%;
+  background: var(--ink);
+  box-shadow: inset 0 0 0 2px var(--gold), 0 0 0 1px rgba(242, 232, 208, 0.4);
+  vertical-align: -1px;
+}
+
+.mate.off {
+  opacity: 0.55;
+}
+
+.mate.pulse .el-badge,
+.mate.pulse .seal-any {
+  animation: pop 0.2s ease-out;
+}
+
+/* Rangée d'équipe à 3 ou 4 : sur une ligne, « Esprit 286 » tombait à « E… » (même en
+   430). La puce des coéquipiers passe sur deux lignes (nom, puis or et 主), la mienne
+   prend sa largeur (« Vous »), l'écart entre puces (non touchables) passe à 4. À deux,
+   la puce du coéquipier garde sa ligne (elle a la place). */
+.team-row {
+  gap: 4px;
+}
+
+.mate.me {
+  flex: none;
+  padding-right: 8px;
+}
+
+.team-row:has(> .mate:nth-child(3)) .mate:not(.me) {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
+  align-content: center;
+  column-gap: 4px;
+  row-gap: 1px;
+  padding: 0 4px 0 3px;
+}
+
+.team-row:has(> .mate:nth-child(3)) .mate:not(.me) > .el-badge,
+.team-row:has(> .mate:nth-child(3)) .mate:not(.me) > .seal-any {
+  grid-column: 1;
+  grid-row: 1 / span 2;
+  align-self: center;
+}
+
+.team-row:has(> .mate:nth-child(3)) .mate:not(.me) .mate-name {
+  grid-column: 2 / span 2;
+  grid-row: 1;
+}
+
+.team-row:has(> .mate:nth-child(3)) .mate:not(.me) .mate-gold {
+  grid-column: 2;
+  grid-row: 2;
+  margin-left: 0;
+}
+
+.team-row:has(> .mate:nth-child(3)) .mate:not(.me) .mate-host {
+  grid-column: 3;
+  grid-row: 2;
+  align-self: center;
+}
+
+/* cartes de lanterne (groupée : ≈ 96 × 56) — dessin en haut à gauche, coût et rôle en
+   haut à droite, nom court en bas ; séparées par un tiret d'encre */
+.tool {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  border-radius: 9px;
+  color: var(--ink);
+  transition: transform 0.12s var(--e-out), background-color var(--d-quick), opacity var(--d-quick);
+}
+
+/* une ou deux lanternes seulement (coop, onglet incomplet) : la carte garde sa
+   proportion au lieu de s'étirer sur toute la boîte (dessin, coût et rôle à 300 px
+   les uns des autres) */
+[data-palette='tabs'] .palette .tool,
+[data-palette='team'] .palette .tool {
+  max-width: 140px;
+}
+
+.tool + .tool::after {
+  content: '';
+  position: absolute;
+  left: -5px;
+  top: 10px;
+  bottom: 10px;
+  border-left: 1.5px dashed rgba(29, 27, 34, 0.35);
+  pointer-events: none;
+}
+
+.tool canvas {
+  position: absolute;
+  pointer-events: none;
+  transition: opacity var(--d-quick);
+}
+
+.tool.g canvas {
+  top: 2px;
+  left: 3px;
+}
+
+.tool .cost {
+  position: absolute;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-size: var(--fs-caption);
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+/* pièce d'or percée (mon) devant le coût */
+.tool .cost::before {
+  content: '';
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--ink);
+  box-shadow: inset 0 0 0 2.5px var(--gold), 0 0 0 1px var(--ink);
+}
+
+.tool.g .cost {
+  top: 6px;
+  right: 6px;
+}
+
+.tool-role {
+  position: absolute;
+  top: 22px;
+  right: 6px;
+  font-size: var(--fs-micro);
+  font-weight: 700;
+  line-height: 1;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+.tool-name {
+  position: absolute;
+  z-index: 1;
+  left: 4px;
+  bottom: 4px;
+  max-width: calc(100% - 8px);
+  padding: 1px 3px;
+  border-radius: 5px;
+  background: var(--cream);
+  font-size: var(--fs-label-s);
+  font-weight: 700;
+  line-height: 1.15;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.tool.is-pressed,
+.tool:active {
+  background-color: var(--cream-2);
+  transition-duration: 0s;
+}
+
+.tool.is-pressed canvas {
+  transform: translateY(1px);
+}
+
+.tool.selected {
+  background-color: #f6dc8c;
+  box-shadow: inset 0 0 0 2.5px var(--vermillion);
+  transform: translateY(-2px);
+}
+
+.tool.selected .tool-name {
+  background: #f6dc8c;
+}
+
+.tool.selected + .tool::after,
+.tool.selected::after {
+  opacity: 0;
+}
+
+.tool.poor,
+.tool.spent {
+  background-color: var(--cream-3);
+}
+
+.tool.poor .tool-name,
+.tool.spent .tool-name {
+  background: var(--cream-3);
+}
+
+.tool.poor canvas,
+.tool.spent canvas {
+  opacity: 0.45;
+}
+
+.tool.poor .cost {
+  color: var(--vermillion-dark);
+}
+
+.tool.poor .cost::before {
+  box-shadow: inset 0 0 0 2.5px #a39b88, 0 0 0 1px var(--ink);
+}
+
+.tool.selected.poor {
+  background-color: #e9d59c;
+}
+
+/* socle d'abord : les cartes qui ne peuvent pas aller sur le socle choisi s'effacent */
+.tool.forbid {
+  opacity: 0.35;
+}
+
+.tool.locked {
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+.tool.off-tab {
+  display: none;
+}
+
+/* palette simple : 4 grandes cartes (≈ 87 × 92) — forme + kanji + mot de l'élément,
+   dessin 48, coût, nom */
+.tool.s .tool-id {
+  position: absolute;
+  z-index: 1;
+  top: 5px;
+  left: 5px;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  pointer-events: none;
+}
+
+.tool-el {
+  font-size: var(--fs-caption);
+  font-weight: 700;
+  line-height: 1;
+  color: var(--ink-2);
+}
+
+.tool.s .cost {
+  top: 7px;
+  right: 6px;
+}
+
+.tool.s canvas {
+  top: 22px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.tool.s.is-pressed canvas {
+  transform: translate(-50%, 1px);
+}
+
+.tool.s .tool-name {
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 5px;
+  max-width: calc(100% - 4px);
+  padding: 1px;
+  font-size: var(--fs-label);
+}
+
+/* « Bourrasque » entier dans une carte de 79 (390) ou 75 (375) */
+@media (max-width: 420px) {
+  .tool.s .tool-name {
+    font-size: var(--fs-label-s);
+  }
+}
+
+@media (max-width: 380px) {
+  .tool.s .tool-name {
+    font-size: var(--fs-caption);
+  }
+}
+
+/* pierre épinglée (56 × 96) : ardoise, galet, « Pierre », coût, pierres restantes */
+.palette-pin {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  display: flex;
+  min-width: 0;
+}
+
+.tool.pin {
+  flex: 1 1 auto;
+  border-radius: 12px;
+  border: 2px solid var(--ink);
+  background-color: var(--slate);
+  background-image: var(--washi);
+  background-size: var(--washi-size);
+  background-blend-mode: soft-light;
+  color: var(--cream);
+  box-shadow: var(--sh-2);
+}
+
+.tool.pin canvas {
+  top: 22px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.tool.pin.is-pressed {
+  background-color: #4a4842;
+}
+
+.tool.pin.is-pressed canvas {
+  transform: translate(-50%, 1px);
+}
+
+.tool.pin .tool-name {
+  left: 0;
+  right: 0;
+  bottom: 21px;
+  max-width: none;
+  padding: 0;
+  background: none;
+  text-align: center;
+  font-size: var(--fs-caption);
+  color: var(--cream);
+}
+
+.tool.pin .cost {
+  left: 0;
+  right: 0;
+  bottom: 5px;
+  justify-content: center;
+  font-size: var(--fs-micro);
+  color: var(--cream);
+}
+
+.tool.pin .cost::before {
+  width: 9px;
+  height: 9px;
+  box-shadow: inset 0 0 0 2px var(--gold), 0 0 0 1px rgba(242, 232, 208, 0.5);
+}
+
+.tool-count {
+  position: absolute;
+  z-index: 1;
+  top: 4px;
+  right: 4px;
+  min-width: 30px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 9px;
+  background: var(--indigo);
+  color: var(--cream);
+  font-size: var(--fs-micro);
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+  pointer-events: none;
+}
+
+.tool.pin.selected {
+  background-color: #f6dc8c;
+  color: var(--ink);
+  transform: translateY(-2px);
+  box-shadow: var(--sh-2), inset 0 0 0 2.5px var(--vermillion);
+}
+
+.tool.pin.selected .tool-name,
+.tool.pin.selected .cost {
+  color: var(--ink);
+}
+
+.tool.pin.poor {
+  background-color: #6c6a63;
+}
+
+.tool.pin.poor .cost {
+  color: #ffc9b5;
+}
+
+.tool.pin.empty canvas {
+  opacity: 0.32;
+}
+
+.tool.pin.empty .tool-count {
+  background: var(--vermillion-ui);
+}
+
+/* petit rebond d'un bouton (retour d'action) */
+.pop {
+  animation: pop 0.3s var(--e-spring);
+}
+
+@keyframes pop {
+  40% {
+    transform: scale(1.09);
+  }
+}
+
+/* petits écrans (iPhone SE) : bas de 142 = 4 + 44 + 6 + 32 + 52 + 4 */
+@media (max-height: 720px) {
+  .palette {
+    padding-top: 2px;
+    --icon-g: 32px;
+    --icon-s: 40px;
+  }
+  /* onglet de 28 : 6 px au-dessus, 10 px dessous */
+  .ptab::before {
+    bottom: -11.5px;
+  }
+  .ptab.on::before {
+    bottom: -4px;
+  }
+  .wave-dial {
+    width: 34px;
+    height: 34px;
+  }
+  .wave-dial-txt {
+    font-size: 17px;
+  }
+  #btn-wave-label {
+    font-size: 16px;
+  }
+  .tool.g canvas {
+    top: 1px;
+  }
+  /* carte de 46 : dessin, coût, nom ; le rôle (« Dégâts ») est dans la fiche — il
+     chevauchait le nom */
+  .tool-role {
+    display: none;
+  }
+  .tool-name {
+    bottom: 2px;
+  }
+  .tool.s canvas {
+    top: 20px;
+  }
+  .tool.pin canvas {
+    top: 19px;
+  }
+  .tool.pin .tool-name {
+    bottom: 18px;
+  }
+  .tool.pin .cost {
+    bottom: 3px;
+  }
+  .undo-dial {
+    width: 32px;
+    height: 32px;
+  }
+}
+
+/* écrans étroits (≤ 380) : onglets de ≈ 67, « Terre » entier ; bloc de vague de 57 :
+   « VAGUE 難 » (Difficile) tient sans espacement des lettres */
+@media (max-width: 380px) {
+  .ptab {
+    gap: 3px;
+    padding: 0 3px;
+  }
+  .wave-label small {
+    gap: 2px;
+    letter-spacing: 0.01em;
+  }
+}
+
+/* ───────────── Messages ───────────── */
+
+/* Pilule de message (hors partie : #app-toast ; sa place est réglée dans lobby.css).
+   En partie, plus de toast : couloir de messages en haut du plateau (#lane). */
+.toast {
+  position: absolute;
+  left: 50%;
+  bottom: calc(var(--sab) + 16px);
+  transform: translate(-50%, 8px);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: max-content;
+  max-width: calc(100% - 24px);
+  padding: 8px 16px;
+  border-radius: 12px;
+  background-color: var(--ink);
+  color: var(--cream);
+  border: 1.5px solid rgba(242, 232, 208, 0.22);
+  box-shadow: var(--sh-float);
+  font-weight: 700;
+  font-size: var(--fs-label);
+  line-height: 1.25;
+  text-align: center;
+  white-space: normal;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s, transform 0.18s;
+  z-index: 20;
+}
+
+.toast.show {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.toast.bad {
+  background-color: var(--vermillion-ui);
+  border-color: var(--ink);
+}
+
+/* Couloir de messages : encre, filet or, une bulle à la fois (src/ui/lane.js) */
+.lane {
+  position: absolute;
+  z-index: 7;
+  left: 12px;
+  top: 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: max-content;
+  max-width: min(340px, calc(100% - 24px));
+  min-height: 36px;
+  padding: 5px 14px 5px 5px;
+  border-radius: var(--r-m);
+  background-color: var(--ink);
+  background-image: var(--washi);
+  background-size: var(--washi-size);
+  color: var(--cream);
+  border: 1.5px solid rgba(240, 207, 106, 0.6);
+  box-shadow: var(--sh-float);
+  pointer-events: auto;
+}
+
+/* Réglages : taille du texte (×1 / ×1,15 / ×1,3) dans les fiches, la pause, les combos,
+   le couloir et les bulles du tutoriel — pas dans le HUD ni la palette (gabarit fixe) */
+#info.sheet,
+.lane,
+.hint,
+.modal-card.pause-card,
+.modal-card.combos-card {
+  --fs-body: calc(16px * var(--fs-scale, 1));
+  --fs-body-s: calc(15px * var(--fs-scale, 1));
+  --fs-label: calc(15px * var(--fs-scale, 1));
+  --fs-label-s: calc(14px * var(--fs-scale, 1));
+  --fs-caption: calc(13px * var(--fs-scale, 1));
+  --fs-micro: calc(12px * var(--fs-scale, 1));
+}
+
+/* Réglages : « Bouton de vague à gauche » (gaucher) — rangée d'action inversée */
+.left-handed .action-row {
+  flex-direction: row-reverse;
+}
+
+.left-handed .wave-preview {
+  justify-content: flex-start;
+}
+
+/* pendant un geste de pose, le message laisse passer le doigt vers le socle dessous */
+.placing .lane {
+  pointer-events: none;
+  opacity: 0.82;
+}
+
+.lane.in {
+  animation: laneIn 0.2s var(--e-emph);
+}
+
+.lane.in.swap {
+  animation: laneSwap 0.12s linear;
+}
+
+.lane.out {
+  animation: laneOut 0.14s var(--e-in) forwards;
+}
+
+@keyframes laneIn {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}
+
+@keyframes laneSwap {
+  from {
+    opacity: 0.2;
+  }
+}
+
+@keyframes laneOut {
+  to {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
+
+/* alerte : filet vermillon */
+.lane.p2 {
+  border-color: var(--vermillion-2);
+  box-shadow: var(--sh-float), inset 3px 0 0 var(--vermillion-2);
+}
+
+/* consigne (tutoriel, fusion guidée) : filet or plein */
+.lane.p3 {
+  border: 2px solid var(--gold-on-dark);
+}
+
+.lane.act.is-pressed {
+  transform: translateY(1px);
+  box-shadow: 0 2px 0 var(--ink), var(--glow-press);
+}
+
+.lane-ico {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+}
+
+.lane-ico img {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: radial-gradient(circle at 50% 45%, #fff8e6, #e6d9b8 75%);
+  box-shadow: 0 0 0 1.5px rgba(242, 232, 208, 0.6);
+}
+
+.lane-seal {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  background: var(--indigo-2);
+  color: var(--cream);
+  font-family: var(--font-title);
+  font-size: 15px;
+  font-weight: 800;
+  line-height: 1;
+  transform: rotate(-3deg);
+  box-shadow: inset 0 0 0 1.5px rgba(255, 244, 222, 0.38);
+}
+
+.lane.p2 .lane-seal {
+  background: var(--vermillion-ui);
+}
+
+.lane-txt {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.lane-txt b {
+  font-size: var(--fs-label);
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.lane-txt small {
+  font-size: var(--fs-caption);
+  font-weight: 500;
+  line-height: 1.3;
+  color: var(--on-dark-2);
+}
+
+.lane-more {
+  flex: none;
+  margin-left: auto;
+  color: var(--gold-on-dark);
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+/* Indication près d'un contrôle (jauge, carte trop chère, « Annuler »…) */
+.tip {
+  position: absolute;
+  z-index: 45;
+  max-width: min(300px, calc(100% - 16px));
+  width: max-content;
+  padding: 7px 12px;
+  border-radius: var(--r-m);
+  background-color: var(--ink);
+  color: var(--cream);
+  border: 1.5px solid rgba(240, 207, 106, 0.6);
+  box-shadow: var(--sh-float);
+  font-size: var(--fs-label-s);
+  font-weight: 700;
+  line-height: 1.3;
+  text-align: center;
+  pointer-events: none;
+}
+
+.tip.bad {
+  background-color: var(--vermillion-ui);
+  border: 2px solid var(--ink);
+}
+
+.tip::after {
+  content: '';
+  position: absolute;
+  left: var(--ax, 50%);
+  bottom: -6px;
+  width: 10px;
+  height: 10px;
+  margin-left: -5px;
+  background: inherit;
+  border-right: inherit;
+  border-bottom: inherit;
+  transform: rotate(45deg);
+}
+
+.tip.below::after {
+  top: -6px;
+  bottom: auto;
+  transform: rotate(225deg);
+}
+
+.tip.show {
+  animation: tipIn 0.16s var(--e-emph);
+}
+
+@keyframes tipIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+/* Vol de pièces vers le sceau 金 (src/ui/coins.js) */
+.coin-fly {
+  position: absolute;
+  z-index: 50;
+  left: -5px;
+  top: -5px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--ink);
+  box-shadow: inset 0 0 0 2.5px var(--gold-on-dark), 0 0 0 1px var(--ink), 0 1px 3px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+}
+
+/* Bannière au grand pinceau : moments forts seulement (titre, climax, boss, dernière
+   vague, victoire, défaite), 1,8 s, à 30 % de la scène. */
+.banner {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(var(--sat) + var(--hud-top-h) + 26%);
+  text-align: center;
+  pointer-events: none;
+  z-index: 15;
+  opacity: 0;
+  font-family: var(--font-title);
+  color: var(--ink);
+}
+
+.banner.show {
+  animation: banner 1.8s ease-out forwards;
+}
+
+.banner .big {
+  position: relative;
+  z-index: 0;
+  display: inline-block;
+  max-width: calc(100% - 16px);
+  font-size: var(--fs-banner);
+  font-weight: 800;
+  line-height: 1.15;
+  letter-spacing: 0.03em;
+  color: var(--cream);
+  padding: 12px 46px 16px;
+  text-shadow: 0 2px 0 rgba(10, 14, 26, 0.55);
+}
+
+.banner .big::before {
+  content: '';
+  position: absolute;
+  inset: 0 -6px;
+  z-index: -1;
+  background: var(--band) center / 100% 100% no-repeat;
+  transform-origin: 0 50%;
+}
+
+.banner.show .big::before {
+  animation: sweep 0.38s cubic-bezier(0.2, 0.8, 0.3, 1) both;
+}
+
+.banner.show .big {
+  animation: textIn 0.5s ease-out both;
+}
+
+.banner .small {
+  display: block;
+  font-size: var(--fs-label);
+  font-weight: 800;
+  color: var(--cream);
+  margin: 2px auto 0;
+  padding: 3px 12px;
+  max-width: calc(100% - 32px);
+  width: fit-content;
+  line-height: 1.3;
+  background-color: var(--vermillion-ui);
+  border: 1.5px solid var(--ink);
+  border-radius: 6px;
+  box-shadow: 0 2px 0 var(--ink);
+}
+
+/* climax : bannière vermillon cernée d'or */
+.banner.climax .big::before {
+  background: var(--stroke-red) center / 100% 100% no-repeat;
+}
+
+.banner.climax .small {
+  background-color: var(--ink);
+  color: var(--gold-2);
+  border-color: var(--gold-2);
+}
+
+@keyframes sweep {
+  from {
+    transform: scaleX(0.05);
+    opacity: 0.4;
+  }
+}
+
+@keyframes textIn {
+  0%,
+  30% {
+    color: transparent;
+    text-shadow: none;
+  }
+}
+
+@keyframes banner {
+  0% {
+    opacity: 0;
+    transform: translateX(-14px);
+  }
+  10% {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  78% {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(18px);
+  }
+}
+
+/* ───────────── Fiche d'information (appui long) ───────────── */
+
+/* Feuille du bas non modale (docs/UI-UX.md §6.9) : hauteur du contenu plafonnée à 56 %
+   de la page (moyenne), jusqu'à 8 px sous le HUD (grande, .sheet-large) ; poignée et
+   en-tête se glissent (src/ui/sheet.js). Variante haute (.top) quand le sujet est dans
+   le bas du plateau. */
+.sheet {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  max-height: calc((100% - var(--sat)) * 0.56);
+  /* « Détails ⌃ » (44, texte centré) peut descendre dans la zone de l'indicateur d'accueil */
+  padding: 7px calc(14px + var(--sar)) max(6px, calc(var(--sab) - 14px)) calc(14px + var(--sal));
+  background-color: var(--cream);
+  background-image: var(--washi);
+  background-size: var(--washi-size);
+  color: var(--ink);
+  border-top: 2px solid var(--ink);
+  border-radius: var(--r-xl) var(--r-xl) 0 0;
+  box-shadow: var(--sh-sheet);
+  animation: sheetIn var(--d-med) var(--e-emph);
+}
+
+.sheet.sheet-large {
+  top: calc(var(--sat) + var(--hud-top-h) + 8px);
+  max-height: none;
+}
+
+/* petits écrans (SE) : à 56 %, la fiche n'affichait que Force / Faiblesse ; les 4 chiffres
+   et les combos passaient sous le pli. 64 % les montre, le haut du plateau reste visible. */
+@media (max-height: 720px) {
+  .sheet:not(.sheet-large) {
+    max-height: calc((100% - var(--sat)) * 0.64);
+  }
+}
+
+@keyframes sheetIn {
+  from {
+    transform: translateY(40px);
+    opacity: 0;
+  }
+}
+
+.sheet > .sheet-grabber {
+  margin: 0 auto 4px;
+}
+
+.sheet-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 52px;
+  padding: 0 0 4px;
+  border-bottom: 1px solid rgba(29, 27, 34, 0.16);
+  touch-action: none;
+}
+
+.sheet-pic {
+  flex: 0 0 48px;
+  width: 48px;
+  height: 48px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: var(--r-m);
+  border: 2px solid var(--ink);
+  background: radial-gradient(circle at 50% 45%, #fff8e6, #e6d9b8 75%);
+  font-family: var(--font-title);
+  font-size: 24px;
+  font-weight: 800;
+}
+
+.sheet-pic img {
+  width: 44px;
+  height: 44px;
+}
+
+.sheet-pic.stone {
+  background: var(--indigo);
+  color: var(--cream);
+}
+
+.sheet-pic.el {
+  background: var(--cream-2);
+}
+
+.sheet-pic.climax {
+  background: var(--vermillion-ui);
+  color: var(--gold-2);
+}
+
+.sheet-title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.sheet .sheet-title h3 {
+  margin: 0;
+  font-family: var(--font-title);
+  font-size: var(--fs-h2);
+  font-weight: 800;
+  line-height: 1.15;
+}
+
+.sheet-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 5px;
+  margin-top: 3px;
+  font-size: var(--fs-caption);
+  font-weight: 700;
+  line-height: 1.25;
+  color: var(--ink-2);
+}
+
+.sheet-tags .dot {
+  opacity: 0.7;
+}
+
+.tag {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: 5px;
+  background: var(--indigo);
+  color: var(--cream);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.tag.boss {
+  background: var(--vermillion-ui);
+}
+
+/* sceau de niveau 壱 / 弐 / 参 : or clair sur encre, incliné ; tamponné à la fusion */
+.lvl-seal {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  background: var(--ink);
+  color: var(--gold-on-dark);
+  font-family: var(--font-title);
+  font-size: 18px;
+  font-weight: 800;
+  line-height: 1;
+  transform: rotate(-3deg);
+  box-shadow: inset 0 0 0 1.5px rgba(242, 232, 208, 0.4);
+}
+
+.lvl-seal.stamp {
+  animation: stampIn 0.36s var(--e-spring) both;
+}
+
+.sheet-cost {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--fs-label);
+  font-weight: 700;
+}
+
+.sheet-close {
+  flex: 0 0 44px;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border: 2px solid var(--ink);
+  background: var(--cream-2);
+  font-size: 17px;
+  font-weight: 800;
+  transition: transform var(--d-quick) var(--e-spring);
+}
+
+.sheet-close.is-pressed {
+  transform: scale(0.92);
+  box-shadow: var(--glow-press);
+}
+
+.sheet-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+  padding: 8px 0 0;
+  font-size: var(--fs-body-s);
+  line-height: 1.45;
+}
+
+/* encore du contenu plus bas : le bord inférieur s'estompe (invite à faire défiler) */
+.sheet-body.more {
+  -webkit-mask-image: linear-gradient(180deg, #000 calc(100% - 26px), rgba(0, 0, 0, 0.15));
+  mask-image: linear-gradient(180deg, #000 calc(100% - 26px), rgba(0, 0, 0, 0.15));
+}
+
+/* détails : seulement en grande hauteur, sous un trait de pinceau */
+.sheet-details {
+  display: none;
+}
+
+.sheet.sheet-large .sheet-details,
+.sheet.top .sheet-details {
+  display: block;
+  margin-top: 10px;
+  padding-top: 12px;
+  background: var(--stroke-ink) 50% 0 / 60% 8px no-repeat;
+}
+
+.sheet-desc {
+  margin: 0 0 8px;
+  font-size: var(--fs-body-s);
+  color: var(--ink-2);
+}
+
+/* force / faiblesse : deux tuiles, légende micro, filet mousse / vermillon */
+.fw {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 0 0 8px;
+}
+
+.fw > span {
+  padding: 5px 8px 6px;
+  border-radius: var(--r-m);
+  font-size: var(--fs-label-s);
+  font-weight: 500;
+  line-height: 1.3;
+}
+
+.fw i {
+  display: block;
+  margin-bottom: 1px;
+  font-style: normal;
+  font-size: var(--fs-micro);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.fw-plus {
+  background: rgba(111, 127, 60, 0.14);
+  box-shadow: inset 3px 0 0 var(--moss-ui);
+}
+
+.fw-plus i {
+  color: #3f4a1b;
+}
+
+.fw-minus {
+  background: rgba(200, 64, 42, 0.1);
+  box-shadow: inset 3px 0 0 var(--vermillion-ui);
+}
+
+.fw-minus i {
+  color: var(--vermillion-dark);
+}
+
+/* quatre chiffres : légende 12, valeur 17/700 */
+.sheet .stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  margin: 0 0 8px;
+}
+
+.sheet .stats span {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 46px;
+  padding: 3px 2px;
+  border-radius: var(--r-s);
+  background: rgba(29, 27, 34, 0.06);
+  box-shadow: inset 0 0 0 1px rgba(29, 27, 34, 0.14);
+}
+
+.sheet .stats i {
+  font-style: normal;
+  font-size: var(--fs-micro);
+  color: var(--ink-2);
+}
+
+.sheet .stats b {
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+/* combos de la lanterne : puces (toucher : le combo dans la liste) */
+.combo-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+}
+
+.cc-label {
+  font-size: var(--fs-micro);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+
+.combo-chip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 36px;
+  padding: 0 10px 0 6px;
+  border-radius: var(--r-pill);
+  background: var(--cream-2);
+  border: 1.5px solid var(--ink);
+  font-size: var(--fs-caption);
+  font-weight: 700;
+}
+
+.combo-chip::before {
+  content: '';
+  position: absolute;
+  inset: -4px 0;
+}
+
+.combo-chip b {
+  font-family: var(--font-title);
+}
+
+.combo-chip.is-pressed {
+  box-shadow: var(--glow-press);
+  background: var(--cream-3);
+}
+
+/* action principale : fusionner avec la jumelle (or clair, filet = opportunité) */
+.sheet-main {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 56px;
+  margin: 0 0 8px;
+  padding: 6px 12px 6px 8px;
+  border-radius: var(--r-l);
+  border: 2px solid var(--ink);
+  background-color: #f6dc8c;
+  box-shadow: var(--sh-2), inset 0 0 0 2px var(--gold);
+  text-align: left;
+  transition: transform var(--d-quick) var(--e-spring);
+}
+
+.sheet-main.is-pressed {
+  transform: translateY(2px);
+  box-shadow: 0 1px 0 var(--ink), inset 0 0 0 2px var(--gold), var(--glow-press);
+}
+
+.sheet-main > span:nth-child(2) {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.sheet-main b {
+  font-size: var(--fs-label);
+  font-weight: 700;
+}
+
+.sheet-main small {
+  font-size: var(--fs-caption);
+  font-weight: 500;
+  color: var(--ink-2);
+}
+
+.sm-more {
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.counters {
+  margin: 0 0 8px;
+  font-size: var(--fs-label-s);
+  line-height: 1.35;
+}
+
+.counters i {
+  font-style: normal;
+  font-size: var(--fs-micro);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--indigo);
+  margin-right: 4px;
+}
+
+.sheet-row {
+  display: grid;
+  grid-template-columns: 84px 1fr;
+  gap: 8px;
+  padding: 5px 0;
+  border-top: 1px solid rgba(29, 27, 34, 0.16);
+  font-size: var(--fs-label-s);
+}
+
+.sheet-row > i {
+  font-style: normal;
+  font-size: var(--fs-micro);
+  font-weight: 700;
+  color: var(--indigo);
+  padding-top: 2px;
+}
+
+.sheet-row small {
+  font-size: var(--fs-micro);
+  color: var(--ink-2);
+}
+
+.combo-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 1px 0 3px;
+}
+
+.combo-line .el-badge {
+  margin-top: 1px;
+}
+
+.combo-mini {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-right: 6px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.muted {
+  color: var(--ink-2);
+}
+
+/* actions collées en bas (M 48) et « Détails ⌃ » */
+.sheet-actions {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  padding-top: 8px;
+  border-top: 1px solid rgba(29, 27, 34, 0.1);
+}
+
+.sa-row {
+  display: flex;
+  gap: 8px;
+}
+
+.sheet .sheet-actions .btn {
+  min-height: 48px;
+  font-size: var(--fs-label);
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.sheet .btn.sell.armed,
+.sheet .btn.sell.confirm {
+  background-color: var(--vermillion-ui);
+  color: var(--cream);
+}
+
+.sheet-more {
+  min-height: 44px;
+  margin-top: 0;
+  font-size: var(--fs-caption);
+  font-weight: 700;
+  color: var(--ink-2);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+.sheet-more.is-pressed {
+  opacity: 0.6;
+}
+
+/* choix de priorité ouvert dans la fiche */
+.prio-seg {
+  margin: 0 0 8px;
+}
+
+.seg-k {
+  font-family: var(--font-title);
+  font-weight: 800;
+}
+
+.sheet .btn .tb-ico {
+  display: inline-grid;
+}
+
+.hpbar {
+  position: relative;
+  height: 24px;
+  margin: 0 0 8px;
+  overflow: hidden;
+  border: 2px solid var(--ink);
+  border-radius: 12px;
+  background: rgba(29, 27, 34, 0.14);
+}
+
+.hpbar i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--vermillion-ui);
+  border-right: 2px solid var(--ink);
+  transition: width 0.15s linear;
+}
+
+/* PV : texte encre sur une pastille crème, lisible sur la partie rouge comme sur la partie vide */
+.hpbar span {
+  position: relative;
+  display: table;
+  margin: 2px auto 0;
+  padding: 0 8px;
+  border-radius: 8px;
+  background: var(--cream);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  color: var(--ink);
+}
+
+.hpbar.dead {
+  opacity: 0.5;
+}
+
+.wave-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.wave-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 48px;
+  padding: 2px 10px;
+  border-radius: var(--r-m);
+  background: rgba(29, 27, 34, 0.06);
+  box-shadow: inset 0 0 0 1px rgba(29, 27, 34, 0.12);
+  text-align: left;
+  font-size: var(--fs-label-s);
+}
+
+.wave-line.is-pressed {
+  background: rgba(29, 27, 34, 0.12);
+}
+
+.wave-line img {
+  width: 36px;
+  height: 36px;
+}
+
+.wave-line span {
+  flex: 1 1 auto;
+}
+
+/* sujet de la fiche au bas du plateau : la fiche passe en haut, sous le HUD */
+.sheet.top {
+  top: calc(var(--sat) + var(--hud-top-h));
+  bottom: auto;
+  border-top: none;
+  border-bottom: 2px solid var(--ink);
+  border-radius: 0 0 var(--r-xl) var(--r-xl);
+  padding-top: 4px;
+  padding-bottom: 10px;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.28);
+  animation: sheetDown var(--d-med) var(--e-emph);
+}
+
+.sheet.top > .sheet-grabber {
+  display: none;
+}
+
+@keyframes sheetDown {
+  from {
+    transform: translateY(-30px);
+    opacity: 0;
+  }
+}
+
+/* ───────────── Indications de tutoriel ───────────── */
+
+.hint {
+  position: absolute;
+  /* origine explicite (boîte de padding de #screen-game, celle de getBoundingClientRect) :
+     sinon le calque se place sous le padding des zones sûres et le doigt est décalé */
+  inset: 0;
+  z-index: 12;
+  pointer-events: none;
+  font-family: var(--font-ui);
+  font-weight: 700;
+  font-size: calc(15px * var(--fs-scale, 1));
+  line-height: 1.35;
+  color: var(--ink);
+}
+
+.hint .bubble {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  white-space: normal;
+  width: max-content;
+  max-width: min(330px, calc(100vw - 24px));
+  text-align: center;
+  background-color: var(--cream);
+  background-image: var(--washi);
+  background-size: var(--washi-size);
+  border: 2px solid var(--ink);
+  border-radius: 11px;
+  padding: 6px 12px;
+  box-shadow: var(--sh-float);
+  animation: bubbleIn 0.25s ease-out;
+}
+
+@keyframes bubbleIn {
+  from {
+    opacity: 0;
+    transform: translate(-50%, calc(-100% + 6px));
+  }
+}
+
+.hint .finger {
+  position: absolute;
+  width: 36px;
+  height: 36px;
+  margin: -18px 0 0 -18px;
+  border-radius: 50%;
+  border: 3px solid var(--vermillion);
+  background: rgba(200, 64, 42, 0.16);
+  box-shadow: 0 0 0 2px rgba(242, 232, 208, 0.8);
+  animation: tapHint 1.2s ease-in-out infinite;
+}
+
+.hint .finger::after {
+  content: '';
+  position: absolute;
+  inset: 9px;
+  border-radius: 50%;
+  background: var(--vermillion);
+}
+
+/* halo : anneau vide autour du cadran du bouton de vague, qui s'élargit sans le couvrir */
+.hint .finger.halo {
+  background: none;
+  border-color: var(--gold-on-dark);
+  box-shadow: 0 0 0 2px var(--ink), inset 0 0 0 1.5px var(--ink);
+  animation: haloHint 1.2s ease-out infinite;
+}
+
+.hint .finger.halo::after {
+  content: none;
+}
+
+@keyframes haloHint {
+  0% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1.22);
+    opacity: 0.25;
+  }
+}
+
+@keyframes tapHint {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(0.72);
+    opacity: 0.75;
+  }
+}
+
+.hint .finger.drag {
+  animation: dragHint 1.6s ease-in-out infinite;
+}
+
+@keyframes dragHint {
+  0% {
+    transform: translate(0, 0) scale(1);
+    opacity: 0;
+  }
+  15% {
+    opacity: 1;
+    transform: translate(0, 0) scale(0.85);
+  }
+  70% {
+    transform: translate(var(--dx), var(--dy)) scale(0.85);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(var(--dx), var(--dy)) scale(1);
+    opacity: 0;
+  }
+}
+
+/* ───────────── Boss ───────────── */
+
+/* Une seule ligne compacte (sceau du nom + jauge) : la barre ne couvre presque
+   pas la première rangée du plateau, où se trouvent souvent les portails. */
+.bossbar {
+  position: absolute;
+  top: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(76%, 310px);
+  z-index: 5;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  font-family: var(--font-title);
+}
+
+.boss-name {
+  flex: none;
+  position: relative;
+  z-index: 1;
+  margin-right: -7px;
+  font-weight: 800;
+  font-size: 13px;
+  line-height: 17px;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  color: var(--cream);
+  background-color: var(--vermillion-ui);
+  background-image: var(--washi);
+  background-size: var(--washi-size);
+  border: 2px solid var(--ink);
+  padding: 0 10px;
+  border-radius: 6px;
+  box-shadow: inset 0 0 0 1px rgba(255, 244, 222, 0.35), 0 2px 0 var(--ink);
+}
+
+.boss-track {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 13px;
+  border: 2px solid var(--ink);
+  border-radius: 0 7px 7px 0;
+  background: rgba(242, 232, 208, 0.9);
+  overflow: hidden;
+  box-shadow: 0 2px 0 var(--ink);
+}
+
+.boss-fill {
+  height: 100%;
+  width: 100%;
+  background: linear-gradient(180deg, var(--vermillion-2), var(--vermillion) 60%, var(--vermillion-dark));
+  border-right: 2px solid var(--ink);
+  transition: width 0.15s linear;
+}
+
+/* ───────────── Fenêtre modale ───────────── */
+
+.modal {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  background: rgba(18, 26, 46, 0.6);
+  padding: calc(var(--sat) + 16px) calc(var(--sar) + 16px) calc(var(--sab) + 16px) calc(var(--sal) + 16px);
+  animation: fadeIn 0.2s ease-out;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+}
+
+.modal-card {
+  width: 100%;
+  max-width: 360px;
+  max-height: 100%;
+  overflow: auto;
+  overscroll-behavior: contain;
+  background-color: var(--cream);
+  background-image: var(--washi);
+  background-size: var(--washi-size);
+  border: 2px solid var(--ink);
+  border-radius: 20px;
+  padding: 18px 18px 16px;
+  box-shadow: 0 6px 0 var(--ink), 0 18px 44px rgba(0, 0, 0, 0.42), inset 0 0 0 5px var(--cream), inset 0 0 0 6px rgba(29, 27, 34, 0.2);
+  text-align: center;
+  animation: cardIn 0.3s cubic-bezier(0.2, 0.9, 0.3, 1.12);
+}
+
+@keyframes cardIn {
+  from {
+    transform: translateY(24px) scale(0.96);
+    opacity: 0;
+  }
+}
+
+.modal-card h2 {
+  margin: 4px 0 10px;
+  font-family: var(--font-title);
+  font-size: 25px;
+  font-weight: 800;
+  line-height: 1.2;
+  text-wrap: balance; /* « Le sanctuaire / est tombé », pas « … est / tombé » */
+}
+
+.modal-card h2::after {
+  content: '';
+  display: block;
+  width: 46%;
+  height: 9px;
+  margin: 7px auto 0;
+  background: var(--stroke-ink) center / 100% 100% no-repeat;
+  opacity: 0.75;
+}
+
+.modal-card p {
+  margin: 0 0 10px;
+  font-size: 15px;
+  line-height: 1.5;
+  text-wrap: pretty; /* pas de dernier mot seul (« moment. ») */
+}
+
+.modal-card p b {
+  color: var(--vermillion-dark);
+}
+
+/* Sceau en tête de fenêtre : vertical s'il compte plusieurs kanji. */
+.modal-kanji {
+  display: inline-block;
+  writing-mode: vertical-rl;
+  margin: 2px auto 2px;
+  padding: 7px 6px;
+  border-radius: 6px;
+  background-color: var(--vermillion);
+  background-image: var(--washi);
+  background-size: var(--washi-size);
+  color: var(--cream);
+  font-family: var(--font-title);
+  font-weight: 800;
+  font-size: 26px;
+  line-height: 1.05;
+  letter-spacing: 0.04em;
+  box-shadow: inset 0 0 0 2px rgba(255, 244, 222, 0.42), 0 2px 0 var(--ink);
+  transform: rotate(-3deg);
+  animation: stampIn 0.42s cubic-bezier(0.3, 1.5, 0.5, 1) 0.08s both;
+}
+
+/* Défaite : le sceau est à l'encre indigo (le vermillon reste celui de la victoire). */
+.modal-card.result-lose .modal-kanji {
+  background-color: var(--indigo);
+}
+
+.modal-card.result-lose h2 {
+  color: var(--indigo);
+}
+
+@keyframes stampIn {
+  0% {
+    transform: scale(1.8) rotate(-14deg);
+    opacity: 0;
+  }
+  60% {
+    transform: scale(0.92) rotate(-2deg);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1) rotate(-3deg);
+  }
+}
+
+.modal-card .actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.modal-card .actions.col {
+  flex-direction: column;
+  gap: 9px;
+}
+
+.modal-card .actions.col .btn {
+  flex: 0 0 auto;
+}
+
+/* Tours disponibles (fiche de niveau) */
+.modal-card p .seal {
+  width: 32px;
+  height: 32px;
+  margin: 0 2px;
+  border-radius: 6px;
+  font-size: 18px;
+  box-shadow: inset 0 0 0 1.5px rgba(255, 244, 222, 0.38), 0 2px 0 var(--ink);
+}
+
+/* Résultats : étoiles qui s'impriment une à une comme des sceaux. */
+.result-stars {
+  display: flex;
+  justify-content: center;
+  align-items: flex-end;
+  gap: 8px;
+  margin: 4px 0 12px;
+  font-size: 0;
+}
+
+.result-stars i {
+  width: 54px;
+  height: 54px;
+  background: rgba(29, 27, 34, 0.22);
+  opacity: 0;
+  transform: scale(0.4);
+}
+
+.result-stars i:nth-child(2) {
+  width: 64px;
+  height: 64px;
+}
+
+.result-stars i::before {
+  background: var(--cream-2);
+}
+
+.result-stars i.on {
+  background: var(--ink);
+}
+
+.result-stars i.on::before {
+  background: linear-gradient(160deg, var(--gold-2) 20%, var(--gold) 75%);
+}
+
+.result-stars i.show {
+  opacity: 1;
+  transform: none;
+  animation: starStamp 0.42s cubic-bezier(0.3, 1.4, 0.5, 1) both;
+}
+
+@keyframes starStamp {
+  0% {
+    opacity: 0;
+    transform: scale(2.3) rotate(-24deg);
+  }
+  55% {
+    opacity: 1;
+    transform: scale(0.86) rotate(4deg);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) rotate(0);
+  }
+}
+
+/* halo doré, très doux, derrière les étoiles de victoire */
+.result-stars:not(.small) {
+  background: radial-gradient(ellipse 50% 60% at 50% 55%, rgba(240, 207, 106, 0.38), rgba(240, 207, 106, 0) 100%);
+}
+
+.result-stars.small {
+  gap: 4px;
+  margin: 0 0 10px;
+}
+
+.result-stars.small i,
+.result-stars.small i:nth-child(2) {
+  width: 34px;
+  height: 34px;
+}
+
+.result-stars.small i:nth-child(2) {
+  animation-delay: 0.08s;
+}
+
+.result-stars.small i:nth-child(3) {
+  animation-delay: 0.16s;
+}
+
+.result-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  font-size: 13.5px;
+  margin: 0 0 6px;
+  text-align: left;
+}
+
+.result-stats > span {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 4px;
+  padding: 5px 9px;
+  border-radius: 8px;
+  background: rgba(29, 27, 34, 0.06);
+  box-shadow: inset 0 0 0 1px rgba(29, 27, 34, 0.12);
+}
+
+.result-stats > span:empty {
+  visibility: hidden;
+}
+
+.result-stats b {
+  font-variant-numeric: tabular-nums;
+}
+
+.toggle-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+/* Démonstration de la jauge (tutoriel du Rembobinage) */
+.demo-gauge {
+  position: relative;
+  height: 42px;
+  margin: 8px auto 4px;
+  max-width: 240px;
+  border-radius: 21px;
+  background-color: var(--indigo);
+  background-image: var(--washi);
+  background-size: var(--washi-size);
+  border: 2px solid var(--ink);
+  box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.35), 0 2px 0 var(--ink);
+  overflow: hidden;
+}
+
+.demo-gauge::before {
+  content: '◀◀';
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: rgba(242, 232, 208, 0.55);
+  font-size: 12px;
+  letter-spacing: 0.1em;
+}
+
+.demo-knob {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: var(--gold-2);
+  border: 2px solid var(--ink);
+  display: grid;
+  place-items: center;
+  font-family: var(--font-title);
+  font-weight: 800;
+  color: var(--ink);
+  animation: demoSwipe 1.8s ease-in-out infinite;
+}
+
+@keyframes demoSwipe {
+  0%,
+  15% {
+    transform: translateX(0);
+  }
+  65%,
+  85% {
+    transform: translateX(-190px);
+  }
+  100% {
+    transform: translateX(0);
+  }
+}
+
+/* ───────────── Orientation ───────────── */
+
+/* Paysage (§6.22) : aplat indigo, sceau 縦, consigne, et ce que devient la partie. */
+.rotate {
+  display: none;
+}
+
+@media (orientation: landscape) and (max-height: 500px) {
+  .rotate {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    display: grid;
+    place-items: center;
+    padding: 16px calc(var(--sar) + 24px) 16px calc(var(--sal) + 24px);
+    background: var(--indigo);
+    color: var(--cream);
+    text-align: center;
+    font-family: var(--font-ui);
+  }
+  .rotate p {
+    margin: 16px 0 0;
+    font-size: 17px;
+    font-weight: 700;
+    line-height: 1.4;
+  }
+  .rotate .rotate-sub {
+    margin-top: 8px;
+    font-size: 15px;
+    font-weight: 500;
+    color: var(--on-dark-2);
+  }
+  .rotate .rotate-sub:empty {
+    display: none;
+  }
+  .rotate-seal {
+    display: inline-grid;
+    place-items: center;
+    width: 64px;
+    height: 64px;
+    border-radius: 10px;
+    background: var(--vermillion);
+    color: var(--cream);
+    font-family: var(--font-title);
+    font-size: 36px;
+    font-weight: 800;
+    box-shadow: inset 0 0 0 2px rgba(255, 244, 222, 0.42), 0 3px 0 var(--ink);
+    animation: rotateHint 2.4s var(--e-out) infinite;
+  }
+}
+
+@keyframes rotateHint {
+  0%,
+  30% {
+    transform: rotate(-90deg);
+  }
+  55%,
+  100% {
+    transform: rotate(0deg);
+  }
+}
+
+/* ───────────── Petits écrans (iPhone SE…) ───────────── */
+
+@media (max-height: 720px) {
+  /* (gabarit de la partie : jetons de :root, en tête du fichier) */
+  #screen-title {
+    padding-top: calc(var(--sat) + 18px);
+  }
+  #screen-title h1 {
+    font-size: clamp(38px, 11.6vw, 52px);
+  }
+  #screen-title h1::after {
+    margin-top: 7px;
+    height: 10px;
+  }
+  .tagline {
+    font-size: 14.5px;
+  }
+  .btn.big {
+    min-height: 58px;
+  }
+  .map-node {
+    --size: 56px;
+  }
+  .map-node.boss {
+    --size: 64px;
+  }
+  .map-node .num {
+    font-size: 24px;
+  }
+  .map-node.boss .num {
+    font-size: 27px;
+  }
+  .map-node .stars i {
+    width: 15px;
+    height: 15px;
+  }
+  .modal-card {
+    padding: 14px 16px 14px;
+  }
+  .modal-card h2 {
+    font-size: 23px;
+    margin-bottom: 8px;
+  }
+  .modal-card p {
+    font-size: 14.5px;
+    line-height: 1.42;
+  }
+  .modal-kanji {
+    font-size: 23px;
+  }
+  .result-stars i {
+    width: 46px;
+    height: 46px;
+  }
+  .result-stars i:nth-child(2) {
+    width: 56px;
+    height: 56px;
+  }
+  .banner .big {
+    font-size: 30px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  /* Les bannières restent lisibles : simple fondu, sans déplacement. */
+  .banner.show {
+    animation: bannerStill 1.8s linear forwards !important;
+  }
+}
+
+@keyframes bannerStill {
+  0%,
+  85% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* ═════════════ UX mobile : pose, fiches, aperçus, accessibilité ═════════════ */
+
+/* ───────────── Pastilles d'élément : forme + couleur + kanji ───────────── */
+
+.el-badge {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: var(--s, 24px);
+  height: var(--s, 24px);
+  vertical-align: middle;
+}
+
+.el-badge > svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  filter: drop-shadow(0 1px 0 rgba(0, 0, 0, 0.3));
+}
+
+.el-badge > b {
+  position: relative;
+  font-family: var(--font-title);
+  font-weight: 800;
+  font-size: max(12px, calc(var(--s, 24px) * 0.5));
+  line-height: 1;
+  color: var(--cream);
+}
+
+/* le kanji se cale dans la partie large de la forme */
+.el-badge.el-triangle > b {
+  top: calc(var(--s, 24px) * 0.13);
+  font-size: max(12px, calc(var(--s, 24px) * 0.44));
+}
+
+.el-badge.el-drop > b {
+  top: calc(var(--s, 24px) * 0.1);
+}
+
+.el-badge.el-diamond > b {
+  font-size: max(12px, calc(var(--s, 24px) * 0.46));
+}
+
+.el-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-weight: 700;
+  color: var(--el-ink, var(--ink));
+  white-space: nowrap;
+}
+
+/* ───────────── Annuler sous la feuille de pause ───────────── */
+
+/* « Annuler » est dans la rangée d'action ; sous la feuille de pause, il se cache
+   (une construction en cours s'annule encore en la touchant : barre « En construction »). */
+.pause-on .undo-pill {
+  display: none;
+}
+
+/* ───────────── Anneau d'appui long (ensō qui se remplit) ───────────── */
+
+.hold {
+  position: absolute;
+  z-index: 46;
+  width: 84px;
+  height: 84px;
+  margin: -42px 0 0 -42px;
+  pointer-events: none;
+}
+
+.hold svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  transform: rotate(-80deg);
+}
+
+.hold circle {
+  fill: none;
+  stroke-linecap: round;
+}
+
+.hold-bg {
+  stroke: rgba(242, 232, 208, 0.5);
+  stroke-width: 10;
+}
+
+.hold-ink,
+.hold-fill {
+  stroke-dasharray: 195;
+  stroke-dashoffset: 195;
+  transition: stroke-dashoffset var(--hold-ms, 320ms) linear;
+}
+
+.hold-ink {
+  stroke: rgba(29, 27, 34, 0.6);
+  stroke-width: 9;
+}
+
+.hold-fill {
+  stroke: var(--gold-2);
+  stroke-width: 5;
+}
+
+/* l'ensō reste ouvert : il ne se referme jamais tout à fait */
+.hold.run .hold-ink,
+.hold.run .hold-fill {
+  stroke-dashoffset: 10;
+}
+
+/* ───────────── Barre d'actions de la lanterne sélectionnée ───────────── */
+
+/* Fond encre, rayon 14, cadre 6, boutons 64 × 52 (sceau 22 + libellé 13/700), flèche 12
+   vers la lanterne ; entrée 160 ms depuis l'ancrage (échelle 0,9 → 1), sortie 100 ms. */
+.tower-bar {
+  position: absolute;
+  z-index: 8;
+  left: 0;
+  top: 0;
+  display: flex;
+  gap: 8px;
+  padding: 6px;
+  border-radius: var(--r-l);
+  background-color: var(--ink);
+  background-image: var(--washi);
+  background-size: var(--washi-size);
+  border: 1.5px solid rgba(242, 232, 208, 0.3);
+  box-shadow: var(--sh-float);
+  transform-origin: var(--ax, 50%) 100%;
+  animation: barIn 0.16s var(--e-emph);
+}
+
+.tower-bar.below {
+  transform-origin: var(--ax, 50%) 0;
+}
+
+.tower-bar::after {
+  content: '';
+  position: absolute;
+  left: var(--ax, 50%);
+  bottom: -7px;
+  width: 12px;
+  height: 12px;
+  margin-left: -6px;
+  background: var(--ink);
+  border-right: 1.5px solid rgba(242, 232, 208, 0.3);
+  border-bottom: 1.5px solid rgba(242, 232, 208, 0.3);
+  transform: rotate(45deg);
+}
+
+.tower-bar.below::after {
+  top: -7px;
+  bottom: auto;
+  transform: rotate(225deg);
+}
+
+@keyframes barIn {
+  from {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+}
+
+.tb-btn {
+  position: relative;
+  min-width: 64px;
+  height: 52px;
+  padding: 3px 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  border-radius: var(--r-m);
+  background-color: var(--cream);
+  background-image: var(--washi);
+  background-size: var(--washi-size);
+  color: var(--ink);
+  border: 1.5px solid var(--ink);
+  font-size: var(--fs-caption);
+  font-weight: 700;
+  line-height: 1.1;
+  white-space: nowrap;
+  transition: transform var(--d-quick) var(--e-spring);
+}
+
+.tb-btn:active,
+.tb-btn.is-pressed {
+  transform: scale(0.96);
+  box-shadow: var(--glow-press);
+  transition-duration: 0s;
+}
+
+.tb-ico {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  background: var(--indigo);
+  color: var(--cream);
+  font-family: var(--font-title);
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+/* Fusionner : or clair, filet d'or (opportunité) */
+.tb-fuse {
+  background-color: #f6dc8c;
+  box-shadow: inset 0 0 0 2px var(--gold);
+}
+
+.tb-fuse .tb-ico {
+  background: var(--gold-dark);
+}
+
+/* priorité choisie (les quatre choix ouverts) : or vif */
+.tb-pick.on {
+  background-color: var(--gold-on-dark);
+  background-image: none;
+  box-shadow: inset 0 0 0 2px var(--ink);
+}
+
+.tb-pick.on .tb-ico {
+  background: var(--ink);
+  color: var(--gold-on-dark);
+}
+
+/* Construction en cours touchée : « En construction · 2 s » et « Annuler » */
+.tb-build .tb-owner-seal {
+  font-family: var(--font-title);
+  font-weight: 800;
+  background: var(--el, var(--indigo));
+}
+
+.tb-cancel .tb-ico {
+  background: var(--gold);
+  color: var(--ink);
+  font-family: var(--font-ui);
+}
+
+/* Vendre : contour, confirmé par un second toucher */
+.tb-sell {
+  background: transparent;
+  color: var(--cream);
+  border-color: rgba(242, 232, 208, 0.55);
+}
+
+.tb-sell .tb-ico {
+  background: var(--gold);
+  color: var(--ink);
+}
+
+.tb-sell.confirm {
+  background-color: var(--vermillion-ui);
+  border-color: var(--cream);
+}
+
+.tb-sell.confirm .tb-ico {
+  background: var(--cream);
+}
+
+.tb-sell .arm-ring {
+  left: 6px;
+  right: 6px;
+  bottom: 3px;
+}
+
+/* déplacer le mur d'un Gardien */
+.tb-rally .tb-ico {
+  background: #6e5428;
+}
+
+.tb-rally.on {
+  background-color: var(--gold-on-dark);
+  border-color: var(--ink);
+  box-shadow: inset 0 0 0 2px var(--ink);
+}
+
+/* ───────────── Pause : feuille du bas, sans voile ───────────── */
+
+/* Feuilles de showModal (opts.sheet) : en partie, sans voile, le plateau reste visible
+   et touchable (pause, combos) ; hors partie, voile --veil et toucher le voile ferme
+   (fiche de niveau, salon, réglages). Poignée et en-tête se glissent (src/ui/sheet.js). */
+.modal.as-sheet {
+  background: none;
+  pointer-events: none;
+  place-items: end stretch;
+  padding: 0;
+  animation: none;
+}
+
+.modal.as-sheet.veil {
+  background: var(--veil);
+  pointer-events: auto;
+  animation: fadeIn 0.2s ease-out;
+}
+
+.modal.as-sheet .modal-card {
+  pointer-events: auto;
+  width: 100%;
+  max-width: none;
+  max-height: calc(100% - var(--sat) - 56px);
+  border-width: 2px 0 0;
+  border-radius: var(--r-xl) var(--r-xl) 0 0;
+  padding: 8px calc(16px + var(--sar)) calc(var(--sab) + 12px) calc(16px + var(--sal));
+  text-align: left;
+  box-shadow: var(--sh-sheet);
+  animation: sheetIn var(--d-med) var(--e-emph);
+}
+
+#screen-game.active ~ .modal.as-sheet .modal-card {
+  max-height: calc(100% - var(--sat) - var(--hud-top-h) - 8px);
+}
+
+.modal.as-sheet .modal-card.sheet-large {
+  height: calc(100% - var(--sat) - 56px);
+}
+
+#screen-game.active ~ .modal.as-sheet .modal-card.sheet-large {
+  height: calc(100% - var(--sat) - var(--hud-top-h) - 8px);
+}
+
+.modal-card > .sheet-grabber {
+  margin: 0 auto 6px;
+}
+
+.modal.as-sheet.peek .modal-card {
+  display: none;
+}
+
+.modal-card .actions:empty {
+  display: none;
+}
+
+/* en-tête de feuille (pause, combos) : sceau 32 incliné, titre h2 */
+.pause-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  min-height: 52px;
+  touch-action: none;
+}
+
+.ph-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.modal-card .ph-text h2 {
+  margin: 0;
+  font-size: var(--fs-h2);
+  line-height: 1.15;
+}
+
+.modal-card .ph-text h2::after {
+  display: none;
+}
+
+.modal-card .ph-text p {
+  margin: 2px 0 0;
+  font-size: var(--fs-caption);
+  line-height: 1.3;
+  color: var(--ink-2);
+}
+
+.pause-head .mode-line {
+  flex-basis: 100%;
+}
+
+.modal-card p.pause-coop {
+  margin: 6px 0 0;
+  font-size: var(--fs-caption);
+  font-weight: 700;
+  color: var(--indigo);
+}
+
+/* Reprendre (seul plein, vermillon) puis Combos */
+.pause-main {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.pause-main .btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.pause-combos small {
+  margin-left: 2px;
+  font-size: var(--fs-caption);
+  color: var(--ink-2);
+}
+
+/* réglages rapides : 4 × (80 × 56), picto 20 + libellé, fond or si actif */
+.pause-quick {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.pq {
+  min-height: 56px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  border-radius: var(--r-m);
+  border: 1.5px solid rgba(29, 27, 34, 0.32);
+  background: var(--cream-2);
+  color: var(--ink);
+  font-size: var(--fs-caption);
+  font-weight: 700;
+  transition: transform var(--d-quick) var(--e-spring), background-color var(--d-quick);
+}
+
+.pq.on {
+  background: var(--gold-on-dark);
+  border-color: var(--ink);
+}
+
+/* l'icône dit l'état : barrée quand le son ou la musique sont coupés */
+.pq .ico-off,
+.pq:not(.on) .ico-on {
+  display: none;
+}
+
+.pq:not(.on) .ico-off {
+  display: inline;
+}
+
+.pq.is-pressed {
+  transform: translateY(1px);
+  box-shadow: var(--glow-press);
+  transition-duration: 0s;
+}
+
+/* Recommencer, Quitter : discrets, sous un trait de pinceau, confirmés */
+.pause-danger {
+  position: relative;
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+  padding-top: 16px;
+}
+
+.pause-danger::before {
+  content: '';
+  position: absolute;
+  left: 8%;
+  right: 8%;
+  top: 0;
+  height: 8px;
+  background: var(--stroke-ink) center / 100% 100% no-repeat;
+  opacity: 0.45;
+}
+
+.pause-danger .btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 8px;
+  font-size: var(--fs-label-s);
+}
+
+/* hôte en coop : « Recommencer / pour tous », « Quitter / fin pour tous » sur deux lignes voulues */
+/* texte agrandi (Réglages) : « Cible : » tombe, « Premier ▾ » reste sur une ligne */
+.text-big .sheet .prio .prio-k {
+  display: none;
+}
+
+.pause-danger .pd-txt {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: 1.1;
+  text-align: left;
+}
+
+.pause-danger .pd-txt small {
+  font-size: var(--fs-micro);
+  font-weight: 700;
+  color: var(--ink-2);
+}
+
+.modal-card p.pause-note {
+  margin: 6px 0 0;
+  font-size: var(--fs-caption);
+  font-weight: 500;
+  color: var(--ink-2);
+  text-align: center;
+}
+
+.pause-debug {
+  display: block;
+  margin: 4px auto 0;
+}
+
+/* ───────────── Combos : liste des six paires ───────────── */
+
+.combos-head {
+  flex-wrap: nowrap;
+}
+
+/* l'en-tête (« ‹ Pause », titre) reste en haut quand la liste défile : il partait avec
+   elle, et revenir à la pause demandait de remonter toute la liste */
+.modal-card.combos-card .combos-head {
+  position: sticky;
+  top: -8px;
+  z-index: 3;
+  margin: 0 calc(-16px - var(--sar)) 0 calc(-16px - var(--sal));
+  padding-left: calc(16px + var(--sal));
+  padding-right: calc(16px + var(--sar));
+  background-color: var(--cream);
+  background-image: var(--washi);
+  background-size: var(--washi-size);
+}
+
+.ch-back {
+  min-height: 44px;
+  padding: 0 6px;
+  text-decoration: none;
+  font-size: var(--fs-label);
+}
+
+.combo-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.combo-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 62px 1fr;
+  align-items: start;
+  gap: 10px;
+  min-height: 56px;
+  padding: 10px;
+  border-radius: var(--r-l);
+  background: rgba(29, 27, 34, 0.05);
+  box-shadow: inset 0 0 0 1px rgba(29, 27, 34, 0.12), inset 4px 0 0 var(--c, var(--gold));
+}
+
+.combo-row.on {
+  background: rgba(240, 207, 106, 0.28);
+}
+
+.combo-row.off {
+  opacity: 0.55;
+}
+
+.combo-row.focus {
+  box-shadow: inset 0 0 0 2.5px var(--vermillion-ui), inset 4px 0 0 var(--c, var(--gold));
+}
+
+.cr-pair {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-top: 2px;
+}
+
+.cr-pair > b {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ink-2);
+}
+
+.cr-text {
+  min-width: 0;
+}
+
+.cr-name {
+  display: block;
+  font-family: var(--font-title);
+  font-size: var(--fs-h3);
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.modal-card .cr-text p {
+  margin: 2px 0 0;
+  font-size: var(--fs-label-s);
+  line-height: 1.38;
+}
+
+.modal-card .cr-text p.cr-counter {
+  font-size: var(--fs-caption);
+  color: var(--ink-2);
+}
+
+.cr-counter i {
+  font-style: normal;
+  font-weight: 700;
+  color: var(--indigo);
+  margin-right: 4px;
+}
+
+/* place de l'étiquette (« actif ×N », « absent du niveau ») à droite du nom */
+.combo-row.on .cr-name {
+  padding-right: 84px;
+}
+
+.combo-row.off .cr-name {
+  padding-right: 126px;
+}
+
+.cr-tag {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  padding: 2px 7px;
+  border-radius: var(--r-s);
+  background: var(--moss-ui);
+  color: var(--cream);
+  font-size: var(--fs-micro);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.cr-tag.off {
+  background: none;
+  color: var(--ink-2);
+  box-shadow: inset 0 0 0 1px rgba(29, 27, 34, 0.3);
+}
+
+/* « Reprendre » reste collé en bas de la feuille */
+.combos-actions {
+  position: sticky;
+  bottom: calc(-12px - var(--sab));
+  margin: 12px -16px calc(-12px - var(--sab));
+  padding: 10px 16px calc(var(--sab) + 12px);
+  background-color: var(--cream);
+  border-top: 1px solid rgba(29, 27, 34, 0.14);
+}
+
+.combos-actions .btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+/* l'anneau d'appui long garde sa durée même avec « réduire les animations » :
+   c'est une information (progression), pas un effet */
+@media (prefers-reduced-motion: reduce) {
+  .hold .hold-ink,
+  .hold .hold-fill {
+    transition-duration: var(--hold-ms, 320ms) !important;
+  }
+  /* le filet or d'une confirmation est une information (temps restant pour confirmer) :
+     la règle générale le vidait d'un coup */
+  .arm-ring {
+    animation-duration: var(--arm-ms, 2600ms) !important;
+  }
+}
+
+/* ═════════════ Moteur v3 : éléments, socles gravés, murs, vagues, jauge ═════════════ */
+
+/* ───────────── Dernière chance : « Rembobinez ! » ───────────── */
+
+.last-chance {
+  position: absolute;
+  inset: 0;
+  z-index: 34;
+  display: grid;
+  place-items: end center;
+  padding: 0 16px 28px;
+  background: rgba(16, 22, 40, 0.5);
+  pointer-events: auto; /* le plateau est inactif */
+}
+
+.lc-card {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 4px 12px;
+  width: min(100%, 360px);
+  padding: 12px 14px;
+  border-radius: 16px;
+  background-color: var(--ink);
+  background-image: var(--washi);
+  background-size: var(--washi-size);
+  color: var(--cream);
+  border: 2px solid var(--gold-2);
+  box-shadow: 0 5px 0 rgba(0, 0, 0, 0.5), 0 0 26px rgba(240, 207, 106, 0.45);
+  animation: cardIn 0.25s cubic-bezier(0.2, 0.9, 0.3, 1.12);
+}
+
+.lc-kanji {
+  grid-row: span 2;
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 10px;
+  background: var(--vermillion-ui);
+  font-family: var(--font-title);
+  font-size: 28px;
+  font-weight: 800;
+  box-shadow: inset 0 0 0 2px rgba(255, 244, 222, 0.4);
+}
+
+.lc-title {
+  font-family: var(--font-title);
+  font-size: 26px;
+  font-weight: 800;
+  line-height: 1.1;
+  color: var(--gold-2);
+}
+
+.lc-count {
+  grid-row: span 2;
+  min-width: 52px;
+  height: 52px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--cream);
+  color: var(--vermillion-dark);
+  font-size: 28px;
+  font-weight: 700;
+  border: 2px solid var(--gold-2);
+}
+
+.lc-text {
+  font-size: var(--fs-caption);
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+/* flèche vers la poignée de la jauge (sous le plateau) */
+.lc-arrow {
+  position: absolute;
+  bottom: 2px;
+  left: 50%;
+  width: 0;
+  height: 0;
+  margin-left: -11px;
+  border-left: 11px solid transparent;
+  border-right: 11px solid transparent;
+  border-top: 16px solid var(--gold-2);
+  animation: arrowNudge 0.8s ease-in-out infinite;
+}
+
+@keyframes arrowNudge {
+  50% {
+    transform: translateY(5px);
+  }
+}
+
+/* le reste de l'interface est inactif ; la rangée entière devient la piste de la jauge,
+   poignée à droite avec le compte (un toucher rembobine aussitôt) */
+.lc-on .hud-top .time-capsule,
+.lc-on .palette-area,
+.lc-on .wave-preview,
+.lc-on .wave-btn,
+.lc-on .undo-pill {
+  pointer-events: none;
+  opacity: 0.35;
+  filter: grayscale(0.6);
+}
+
+.lc-on .rewind {
+  position: relative;
+  z-index: 3;
+  flex: 1 1 auto;
+}
+
+.lc-on .action-row .wave-preview,
+.lc-on .action-row .wave-btn,
+.lc-on .action-row .undo-pill {
+  display: none;
+}
+
+/* aplat vermillon franc (l'ancien rouge à 60 % virait au mauve sur l'indigo grisé) */
+.rewind.urgent .rewind-track {
+  border-color: var(--ink);
+  background-color: var(--vermillion-ui);
+  box-shadow: 0 0 0 3px var(--gold-2), 0 0 22px rgba(240, 207, 106, 0.9);
+  animation: urgentGlow 0.8s ease-in-out infinite;
+}
+
+.rewind.urgent .rewind-label {
+  font-size: var(--fs-label);
+}
+
+.rewind-knob.count b {
+  font-family: var(--font-ui);
+  font-size: 20px;
+  font-weight: 700;
+}
+
+@keyframes urgentGlow {
+  50% {
+    box-shadow: 0 0 0 5px var(--gold-2), 0 0 30px rgba(240, 207, 106, 1);
+  }
+}
+
+/* ───────────── Résultat : victoire et défaite ───────────── */
+
+/* carte 358 centrée, plateau visible (voile léger), HUD et bas à 60 % ; « Suivant »
+   seul en vermillon, « Rejouer » secondaire, « Carte » en texte ; boutons inactifs
+   700 ms (verrou contre les touchers involontaires) */
+.modal.result-modal {
+  background: rgba(18, 26, 46, 0.32);
+}
+
+.result-on .hud-top,
+.result-on .hud-bottom {
+  opacity: 0.6;
+  transition: opacity var(--d-med);
+}
+
+.lost #board {
+  filter: grayscale(0.6) brightness(0.9);
+  transition: filter 0.9s ease-out;
+}
+
+.modal-card.result {
+  max-width: 358px;
+  padding: 18px 18px 16px;
+}
+
+.result-seal {
+  display: grid;
+  margin: 0 auto 4px;
+  transform: rotate(-3deg);
+  animation: stampIn 0.42s var(--e-spring) 0.08s both;
+}
+
+.modal-card.result h2 {
+  margin: 4px 0 2px;
+  font-size: var(--fs-h1);
+}
+
+.modal-card.result h2::after {
+  display: none;
+}
+
+.modal-card.result-lose h2 {
+  color: var(--indigo);
+}
+
+.modal-card p.res-sub {
+  margin: 0 0 8px;
+  font-size: var(--fs-caption);
+  font-weight: 700;
+  color: var(--ink-2);
+}
+
+.result-stats {
+  display: flex;
+  justify-content: space-around;
+  gap: 8px;
+  margin: 0 0 8px;
+  font-size: var(--fs-body-s);
+  font-weight: 500;
+}
+
+/* (enfants directs seulement : les chiffres en cases sont aussi des <span class="dgr">,
+   qui prenaient la tuile et cassaient « 17/20 » sur trois lignes) */
+.result-stats > span {
+  display: block;
+  flex: 1 1 0;
+  min-width: 0;
+  text-align: center;
+  padding: 6px 4px;
+  border-radius: var(--r-m);
+  background: rgba(29, 27, 34, 0.06);
+  box-shadow: inset 0 0 0 1px rgba(29, 27, 34, 0.12);
+  color: var(--ink-2);
+}
+
+.result-stats b {
+  font-size: var(--fs-counter);
+  font-weight: 700;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+.result-stats b + i {
+  font-style: normal;
+  font-size: var(--fs-label-s);
+  font-weight: 700;
+}
+
+.result-stats small {
+  display: block;
+  font-size: var(--fs-caption);
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.result-lose .result-actions .btn.text {
+  grid-column: 1 / -1;
+  justify-self: center;
+}
+
+.modal-card p.res-coop {
+  margin: 6px 0 0;
+  font-size: var(--fs-caption);
+  font-weight: 700;
+  color: var(--indigo);
+}
+
+.modal-card p.res-record {
+  margin: 0 0 6px;
+  font-size: var(--fs-caption);
+  font-weight: 700;
+  color: var(--vermillion-ui);
+}
+
+.modal-card p.res-chip,
+.modal-card p.res-end,
+.modal-card p.res-tip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin: 4px 0 6px;
+  font-size: var(--fs-label-s);
+  font-weight: 700;
+}
+
+.modal-card p.res-tip,
+.modal-card p.res-end {
+  font-weight: 500;
+  color: var(--ink-2);
+}
+
+.modal-card .actions.result-actions {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px 12px;
+  margin-top: 14px;
+}
+
+.result-actions .btn.L,
+.result-actions .btn.primary {
+  grid-column: 1 / -1;
+}
+
+.result-actions .res-next {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 16px;
+  text-align: left;
+}
+
+.result-actions .res-next .bl {
+  font-family: var(--font-title);
+  font-size: var(--fs-h3);
+  font-weight: 800;
+}
+
+.result-actions .res-next small {
+  font-size: var(--fs-caption);
+  font-weight: 700;
+}
+
+.result-actions.locked .btn {
+  pointer-events: none;
+  opacity: 0.55;
+}
+
+/* ───────────── Fiches v3 ───────────── */
+
+.hpbar.wall i {
+  background: linear-gradient(180deg, #a39d8e, #6e6a60);
+}
+
+.enemy-state {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--indigo);
+}
+
+.enemy-state b {
+  font-family: var(--font-title);
+}
+
+.res-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-right: 8px;
+  white-space: nowrap;
+}
+
+.sheet .btn.rally .tb-ico,
+.sheet .btn.prio .tb-ico {
+  display: inline-grid;
+}
+
+.sheet .btn.rally .tb-ico {
+  background: #6e5428;
+}
+
+.wave-line small {
+  color: var(--ink-soft);
+  font-weight: 700;
+  font-size: 12px; /* « — Dégâts » : <small> seul tombait à 11,7 px (fiche d'élément) */
+}
+
+/* règle du Rembobinage dans la fenêtre du tutoriel */
+.modal-card .rules {
+  margin-top: 8px;
+  text-align: left;
+  font-size: 13px;
+  line-height: 1.38;
+}
+
+.modal-card .rules .sheet-row {
+  margin-bottom: 4px;
+}
+
+/* ───────────── Fiche de niveau : leçon, Difficile, défi ───────────── */
+
+/* Feuille moyenne, modale (§6.18) : en-tête (sceau du monde 48, « NIVEAU 3 · JARDIN DE
+   MOUSSE », nom), sous-titre et record, leçon, nouveaux yokai, lanternes, règles,
+   variantes (après une première victoire), « Jouer » collé en bas. */
+.level-card .lv-subrow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+}
+
+.level-card .lv-sub {
+  margin: 0;
+  font-size: calc(15px * var(--fs-scale, 1));
+  line-height: 1.35;
+  color: var(--ink-2);
+}
+
+.lv-record {
+  flex: none;
+  display: flex;
+  gap: 2px;
+}
+
+.lv-record i {
+  position: relative;
+  display: block;
+  width: 26px;
+  height: 26px;
+  clip-path: var(--star);
+  background: rgba(29, 27, 34, 0.3);
+}
+
+.lv-record i::before {
+  content: '';
+  position: absolute;
+  inset: 15%;
+  top: 19%;
+  clip-path: var(--star);
+  background: var(--cream-2);
+}
+
+.lv-record i.on {
+  background: var(--ink);
+}
+
+.lv-record i.on::before {
+  background: var(--gold-2);
+}
+
+.lv-concept {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  border-top: 1px solid rgba(29, 27, 34, 0.16);
+  text-align: left;
+}
+
+.lv-concept-k {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  background: var(--indigo-2);
+  color: var(--cream);
+  font-family: var(--font-title);
+  font-size: 19px;
+  font-weight: 800;
+  box-shadow: inset 0 0 0 1.5px rgba(255, 244, 222, 0.4);
+  transform: rotate(-3deg);
+}
+
+.lv-concept small {
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+
+.lv-concept b {
+  display: block;
+  font-family: var(--font-title);
+  font-size: 18px;
+  font-weight: 800;
+  line-height: 1.2;
+  color: var(--ink);
+}
+
+.lv-sec {
+  padding: 10px 0;
+  border-top: 1px solid rgba(29, 27, 34, 0.16);
+}
+
+.lv-inline {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+}
+
+.lv-inline > .menu-sec {
+  margin: 0;
+}
+
+.lv-yokai {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.lv-yk {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  min-width: 64px;
+  min-height: 44px;
+  padding: 4px 4px 2px;
+  border-radius: var(--r-m);
+}
+
+.lv-yk img {
+  width: 48px;
+  height: 48px;
+  border-radius: 10px;
+  border: 2px solid var(--ink);
+  background: radial-gradient(circle at 50% 45%, #fff8e6, #e6d9b8 75%);
+  box-shadow: var(--sh-1);
+}
+
+.lv-yk span {
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.lv-yk[aria-expanded='true'] img {
+  box-shadow: 0 0 0 3px var(--gold-2), var(--sh-1);
+}
+
+.lv-els {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+}
+
+.lv-el {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.lv-el .el-label {
+  font-size: 14px;
+}
+
+.lv-el small {
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
+.lv-rules {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.lv-rule {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  padding: 0 12px 0 6px;
+  border-radius: 22px;
+  border: 1.5px solid rgba(29, 27, 34, 0.35);
+  background: var(--cream-2);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.lv-rule b {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: var(--indigo-2);
+  color: var(--cream);
+  font-family: var(--font-title);
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.lv-rule[aria-expanded='true'] {
+  border-color: var(--ink);
+  box-shadow: inset 0 0 0 1.5px var(--gold);
+}
+
+.lv-info {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border-radius: var(--r-m);
+  background: rgba(29, 27, 34, 0.06);
+  font-size: calc(14px * var(--fs-scale, 1));
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.modal-card p.lv-line {
+  margin: 4px 0;
+  font-size: 14px;
+}
+
+.lv-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.lv-opt {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 56px;
+  padding: 6px 10px 6px 6px;
+  border-radius: 12px;
+  border: 2px solid var(--ink);
+  background: #fbf5e6;
+  text-align: left;
+  box-shadow: var(--sh-1);
+}
+
+.lv-opt.is-pressed {
+  transform: translateY(1px);
+  box-shadow: 0 1px 0 var(--ink), var(--glow-press);
+}
+
+.lv-opt.on {
+  background: #f6dc8c;
+}
+
+.lv-opt.locked {
+  border-style: dashed;
+  border-color: rgba(29, 27, 34, 0.45);
+  box-shadow: none;
+  background: none;
+  color: var(--ink-2);
+}
+
+.lv-opt-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.lv-opt-text b {
+  font-size: 15px;
+  line-height: 1.2;
+}
+
+.lv-opt-text b em {
+  font-style: normal;
+  font-size: 13px;
+  color: var(--vermillion-dark);
+}
+
+.lv-opt-text small {
+  font-size: 13px;
+  line-height: 1.3;
+  color: var(--ink-2);
+}
+
+.lv-seal {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  font-family: var(--font-title);
+  font-size: 20px;
+  font-weight: 800;
+  color: var(--cream);
+  box-shadow: inset 0 0 0 1.5px rgba(255, 244, 222, 0.4), 0 1.5px 0 rgba(0, 0, 0, 0.35);
+}
+
+.lv-seal.hard {
+  background: var(--ink);
+  color: var(--vermillion-2);
+  border: 2px solid var(--vermillion);
+}
+
+.lv-seal.ch {
+  background: var(--gold);
+  color: var(--ink);
+}
+
+.lv-seal.ch.done {
+  background: var(--vermillion-ui);
+  color: var(--cream);
+}
+
+.lv-opt.locked .lv-seal {
+  opacity: 0.55;
+}
+
+.lv-lock {
+  display: grid;
+  place-items: center;
+  color: var(--ink-2);
+}
+
+/* ───────────── Carte : leçon de chaque niveau, marques Difficile et défi ───────────── */
+
+.node-mark {
+  position: absolute;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  font-family: var(--font-title);
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1;
+  box-shadow: 0 0 0 2px var(--paper);
+}
+
+.node-mark.hard {
+  top: -7px;
+  left: -7px;
+  background: var(--ink);
+  color: var(--vermillion-2);
+  border: 1.5px solid var(--vermillion);
+}
+
+.node-mark.ch {
+  right: -8px;
+  bottom: 2px;
+  background: var(--vermillion-ui);
+  color: var(--cream);
+  transform: rotate(-6deg);
+}
+
+/* gagné en Difficile : anneau vermillon autour du sceau */
+.map-node.hard .face {
+  box-shadow: 0 4px 0 var(--ink), 0 9px 14px rgba(29, 27, 34, 0.22), inset 0 0 0 3px var(--cream), inset 0 0 0 5px var(--vermillion);
+}
+
+/* ───────────── Résultat et pause : marques du mode ───────────── */
+
+.res-seals {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px 8px;
+  margin: 8px 0 4px;
+}
+
+.res-seal,
+.mode-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 9px 2px 3px;
+  border-radius: 9px;
+  background: rgba(29, 27, 34, 0.07);
+  box-shadow: inset 0 0 0 1px rgba(29, 27, 34, 0.18);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.res-seal b,
+.mode-chip b {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  font-family: var(--font-title);
+  font-size: 14px;
+  background: var(--ink);
+  color: var(--vermillion-2);
+}
+
+.res-seal.ch b,
+.mode-chip.ch b {
+  background: var(--vermillion-ui);
+  color: var(--cream);
+}
+
+.res-seal.lost,
+.mode-chip.lost {
+  text-decoration: line-through;
+  text-decoration-thickness: 1.5px;
+  color: var(--ink-soft);
+}
+
+.res-seal.lost b,
+.mode-chip.lost b {
+  background: #77736a;
+}
+
+.modal-card p.mode-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 6px 0 0;
+}
+
+/* ───────────── Panneau de débogage ───────────── */
+
+.debug-card .dbg-grid {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 8px 12px;
+  margin: 10px 0 4px;
+  text-align: left;
+}
+
+.dbg-l {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.debug-card .dbg-t {
+  flex: none;
+  min-width: 76px;
+  min-height: 44px;
+  font-size: 15px;
+}
+
+.debug-card .dbg-t.on {
+  background-color: var(--gold-2);
+}
+
+.dbg-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dbg-step .btn {
+  flex: none;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0;
+  font-size: 20px;
+}
+
+.dbg-step b {
+  min-width: 28px;
+  text-align: center;
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+}
+
+.modal-card .actions.dbg-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.dbg-actions .btn.primary {
+  grid-column: 1 / -1;
+}
+
+/* « réduire les animations » : les gains de charge restent affichés (information) */
+@media (prefers-reduced-motion: reduce) {
+  .rewind-float {
+    animation: none !important;
+  }
+}
+
+.level-card .actions .btn.primary {
+  flex: 2;
+  line-height: 1.15;
+}
+
+.btn-sub {
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  opacity: 0.92;
+}
+
+.dbg-actions .btn.primary + .btn.dark {
+  grid-column: 1 / -1;
+}
