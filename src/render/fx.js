@@ -770,6 +770,7 @@ export class Fx {
 
   // ───────────────────────── événements du moteur ─────────────────────────
 
+
   // Traduction des événements du moteur en effets.
   onEvent(ev, game) {
     if (game) this.game = game;
@@ -801,12 +802,32 @@ export class Fx {
         break;
       }
       case 'place': {
+        // fin de la construction : la lanterne s'allume (éclat de lumière à sa
+        // fenêtre, étincelles qui montent, onde au sol)
         const t = ev.tower;
         const c = this.colOf(t.type);
         this.ring(t.x, t.y + 0.32, 0.1, 0.7, c.main, 0.5, 0.07, 0.45);
         this.ring(t.x, t.y + 0.32, 0.05, 0.45, INK, 0.35, 0.04, 0.45);
+        this.ring(t.x, t.y - 0.35, 0.05, 0.62, c.light, 0.4, 0.09, 1);
         this.fountain(t.x, t.y + 0.3, 8, 'dust', DUST, 1.2, 0.55, 0.1, { drag: 0.9 });
         this.burst(t.x, t.y - 0.3, 7, 'ember', c.light, 1.3, 0.7, 0.045, { g: -0.9, drag: 0.94 });
+        this.burst(t.x, t.y - 0.4, 6, 'spark', PALETTE.goldLight, 1.6, 0.4, 0.09, { drag: 0.88 });
+        break;
+      }
+      case 'pending': {
+        // une pose commence : trait d'encre au sol, poussière (la construction suit)
+        const p = buildTile(ev.entry);
+        if (!p) break;
+        this.ring(p.x, p.y + 0.3, 0.08, 0.5, INK, 0.35, 0.04, 0.45);
+        this.fountain(p.x, p.y + 0.3, 5, 'dust', DUST, 0.9, 0.45, 0.08, { drag: 0.9 });
+        break;
+      }
+      case 'cancel': {
+        // construction annulée : elle part en fumée d'encre
+        const p = buildTile(ev.entry);
+        if (!p) break;
+        this.burst(p.x, p.y - 0.2, 6, 'smoke', MIST, 0.6, 0.8, 0.14, { g: -0.5, drag: 0.95 });
+        this.ring(p.x, p.y + 0.3, 0.5, 0.1, INK, 0.35, 0.04, 0.45);
         break;
       }
       case 'sell': {
@@ -1853,4 +1874,13 @@ export function drawRouteMarks(ctx, segs, ts, time) {
     ctx.fill();
   }
   ctx.globalAlpha = a0;
+}
+
+// Centre (en cases) de la case visée par une pose en file (lanterne, pierre, mur).
+function buildTile(entry) {
+  if (!entry?.args) return null;
+  const [a, b, c] = entry.args;
+  if (entry.op === 'placeTower' || entry.op === 'setRally') return Number.isFinite(b) && Number.isFinite(c) ? { x: b + 0.5, y: c + 0.5 } : null;
+  if (entry.op === 'placeStone') return Number.isFinite(a) && Number.isFinite(b) ? { x: a + 0.5, y: b + 0.5 } : null;
+  return null;
 }

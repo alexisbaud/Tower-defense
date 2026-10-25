@@ -3,6 +3,9 @@
 // `level.tutorial` : place, wave, early (appel anticipé), fuse, combo, stone,
 // barrier (poser un Gardien et déplacer son mur), priority (régler la cible),
 // rewind (mini-tutoriel dédié de la jauge).
+// Une lanterne en construction (2 s) compte déjà comme posée : le doigt ne redemande
+// pas de choisir une lanterne pendant qu'elle se construit. De même, une pierre ou un
+// mur en construction : la leçon attend qu'ils soient posés, sans réclamer la suite.
 import { T } from '../core/grid.js';
 import { bfs } from '../core/flowfield.js';
 import { rallyTiles, isBarrierTower } from './overlay.js';
@@ -10,6 +13,10 @@ import { rewindRules } from './sheets.js';
 import { aims } from './towerbar.js';
 import { elementWithArticle } from './elements.js';
 import { earlyCharge } from './wavepreview.js';
+import { commands } from './commands.js';
+
+// Lanternes posées ou en construction ?
+const hasTowers = (g) => g.towers.length > 0 || commands.builds().some((b) => b.op === 'placeTower');
 
 export class Tutorial {
   constructor(el, ctx) {
@@ -229,6 +236,7 @@ export class Tutorial {
           this.done.add('place');
           return false;
         }
+        if (hasTowers(g)) return false; // en construction : rien à montrer
         const tool = input.ui.tool;
         if (!tool || tool === 'stone') {
           const first = hud.tools.find((t) => t.id !== 'stone' && !t.el.classList.contains('off-tab'));
@@ -249,7 +257,7 @@ export class Tutorial {
           this.done.add('wave');
           return false;
         }
-        if (!g.towers.length) return false;
+        if (!hasTowers(g)) return false;
         const p = this.elCenter(hud.waveBtn);
         this.show('wave', p.x, p.y, 'Lancez la vague !');
         return true;
@@ -298,11 +306,17 @@ export class Tutorial {
         return true;
       }
       case 'stone': {
-        if (!g.level.stones || g.stonesLeft() <= 0) return false;
-        if (g.waveIndex < 0 && !g.towers.length) return false;
+        // pierre en construction : la leçon attend qu'elle soit posée (le doigt ne
+        // réclame pas déjà la suivante ; refusée, la leçon reprend)
+        if (commands.builds().some((b) => b.op === 'placeStone' && b.mine)) {
+          this.hide();
+          return true;
+        }
+        if (!g.level.stones || commands.stonesLeft() <= 0) return false;
+        if (g.waveIndex < 0 && !hasTowers(g)) return false;
         if (input.ui.tool !== 'stone') {
           const st = hud.tools.find((t) => t.id === 'stone');
-          if (!st || g.gold < g.stoneCost()) return false;
+          if (!st || commands.spendable() < g.stoneCost()) return false;
           const p = this.elCenter(st.el);
           this.show('stone-tool', p.x, p.y - 6, 'Des pierres pour allonger le chemin', null, { above: this.footerTop() });
           return true;
@@ -361,9 +375,10 @@ export class Tutorial {
     if (!guardType) return false;
     if (!guard) {
       if (g.waveIndex < 0 && !g.towers.length) return false; // d'abord les premières lanternes
+      if (commands.builds().some((b) => b.op === 'placeTower' && b.type === guardType)) return false; // il se construit
       if (input.ui.tool !== guardType) {
         const tool = hud.tools.find((t) => t.id === guardType);
-        if (!tool || g.gold < g.defs.towers[guardType].cost) return false;
+        if (!tool || commands.spendable() < g.defs.towers[guardType].cost) return false;
         // palette regroupée : d'abord l'onglet de l'élément
         if (tool.el.classList.contains('off-tab')) {
           const tab = hud.tabsEl?.querySelector(`.ptab[data-el="${tool.element}"]`);
@@ -381,6 +396,12 @@ export class Tutorial {
       if (!slot) return false;
       const p = this.tileToPage(slot.c, slot.r);
       this.show('barrier-slot', p.x, p.y, 'Posez-le près du chemin', null, { avoid: [this.tileRect(slot.c, slot.r, 0)] });
+      return true;
+    }
+    // mur en train de se déplacer (construction de 2 s) : la leçon attend qu'il se
+    // dresse, sans redemander de le déplacer
+    if (commands.builds().some((b) => b.op === 'setRally' && b.towerId === guard.id)) {
+      this.hide();
       return true;
     }
     if (input.ui.rally?.towerId === guard.id) {
@@ -450,7 +471,7 @@ export class Tutorial {
     let best = null;
     let bestN = 0;
     for (let i = 0; i < grid.size; i++) {
-      if (grid.type(i) !== T.SLOT || g.towerAt(grid.col(i), grid.row(i))) continue;
+      if (grid.type(i) !== T.SLOT || g.towerAt(grid.col(i), grid.row(i)) || commands.buildAt(grid.col(i), grid.row(i))) continue;
       const se = grid.slotElement?.[i];
       if (element && se && se !== element) continue;
       let n = 0;
@@ -482,7 +503,7 @@ export class Tutorial {
           const c = t.c + dx;
           const r = t.r + dy;
           if (!grid.inBounds(c, r) || grid.type(grid.idx(c, r)) !== T.SLOT) continue;
-          const chk = g.canPlaceTower(type, c, r);
+          const chk = commands.check('placeTower', type, c, r);
           if (!chk.ok && chk.reason !== 'gold') continue;
           if (g.previewCombos(type, c, r).length) return { c, r };
         }
@@ -493,7 +514,8 @@ export class Tutorial {
 
   // Lanterne (la moins chère, abordable) qui ferait un combo quelque part.
   comboPick(g) {
-    const list = g.availableTowers.filter((t) => g.goldOf() >= g.defs.towers[t].cost).sort((a, b) => g.defs.towers[a].cost - g.defs.towers[b].cost);
+    const gold = commands.spendable();
+    const list = g.availableTowers.filter((t) => gold >= g.defs.towers[t].cost).sort((a, b) => g.defs.towers[a].cost - g.defs.towers[b].cost);
     return list.find((t) => this.comboSpot(g, t)) ?? null;
   }
 
@@ -507,7 +529,7 @@ export class Tutorial {
     let bestScore = -Infinity;
     for (let i = 0; i < grid.size; i++) {
       if (grid.type(i) !== T.OPEN || grid.stone[i]) continue;
-      if (!g.canPlaceStone(grid.col(i), grid.row(i)).ok) continue;
+      if (!commands.check('placeStone', grid.col(i), grid.row(i)).ok) continue;
       const dist = bfs(grid, i);
       let len = 0;
       for (const s of grid.spawns) len += dist[s];

@@ -1,7 +1,10 @@
 // Interface DOM de la partie : compteurs, palette (regroupée par élément quand
 // un élément a plusieurs lanternes), bouton et aperçu de vague, messages,
 // bouton « Annuler ».
+// Or : le compteur montre l'or DISPONIBLE (commands.spendable : bourse moins l'or
+// promis aux constructions en cours) ; « −X » à côté, discret, dit l'or promis.
 import { drawTowerIcon } from '../render/towers.js';
+import { commands } from './commands.js';
 import { elementOf, elementInfo, elementBadge, shapeSvg, readable, shortName, roleWord, elementWithArticle, toElement } from './elements.js';
 import { WavePreview, earlyCharge } from './wavepreview.js';
 import { LONG_PRESS_MS } from './input.js';
@@ -27,6 +30,7 @@ const REASONS = {
   owner: 'Lanterne d’un autre joueur',
   barrier: 'Une barrière occupe cette case',
   unknown: 'Indisponible dans ce niveau',
+  pending: 'Une construction occupe déjà cette case',
 };
 
 // Raisons courtes, écrites à côté du fantôme de pose.
@@ -44,19 +48,21 @@ const SHORT = {
   lastChance: 'Rembobinez !',
   challenge: 'Défi',
   barrier: 'Barrière',
+  late: 'Trop tard pour annuler', // (coopération : annulation refusée par l'hôte)
+  busy: 'Déjà en cours', // (coopération : fusion ou vente en route)
 };
 
 const STONE_COLOR = '#7d7a70';
 // Texte inséré dans le HTML : le nom d'une vague peut venir de l'hôte (réseau).
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const ICON = 52; // taille CSS par défaut des icônes de la palette
-const UNDO_SECONDS = 3;
+const UNDO_SECONDS = 3; // après l'activation d'une lanterne (la construction s'y ajoute)
 
 export class Hud {
   /**
    * @param {HTMLElement} root  #screen-game
    * @param {object} handlers  onWave, onPause, onSpeed, onTool(tool), onToolInfo(id),
-   *                           onUndo(id), onHold(state, p, ms), onEnemyInfo(type, absorb), onWaveInfo(),
+   *                           onUndo(ticket), onHold(state, p, ms), onEnemyInfo(type, absorb), onWaveInfo(),
    *                           onElementInfo(element), onTab(element)
    */
   constructor(root, handlers) {
@@ -65,6 +71,7 @@ export class Hud {
     this.$ = (id) => root.querySelector('#' + id);
     this.lives = this.$('hud-lives');
     this.gold = this.$('hud-gold');
+    this.reservedEl = this.$('hud-reserved');
     this.wave = this.$('hud-wave');
     this.palette = this.$('palette');
     this.tabsEl = this.$('palette-tabs');
@@ -98,7 +105,7 @@ export class Hud {
     this.waveBtn.addEventListener('click', () => this.h.onWave());
     this.$('btn-pause').addEventListener('click', () => this.h.onPause());
     this.$('btn-speed').addEventListener('click', () => this.h.onSpeed());
-    this.undoEl.addEventListener('click', () => this.undo && this.h.onUndo?.(this.undo.id));
+    this.undoEl.addEventListener('click', () => this.undo && this.h.onUndo?.(this.undo.ticket));
     root.addEventListener('pointerdown', (e) => ripple(e), true);
     // Hauteur de la barre du bas : les toasts, la fiche et « Annuler » se calent dessus.
     const syncFooter = () => {
@@ -367,14 +374,14 @@ export class Hud {
   usable(id) {
     const g = this.game;
     if (!g) return false;
-    if (id === 'stone') return g.stonesLeft() > 0;
+    if (id === 'stone') return commands.stonesLeft() > 0;
     return true;
   }
 
   clickTool(id, b) {
     const g = this.game;
     if (!g) return;
-    if (id === 'stone' && g.stonesLeft() <= 0) {
+    if (id === 'stone' && commands.stonesLeft() <= 0) {
       this.toast('Plus de pierres : touchez une pierre posée pour la retirer');
       if (this.input.ui.tool === 'stone') this.input.setTool('stone');
       this.refreshTools();
@@ -392,8 +399,9 @@ export class Hud {
       t.el.classList.toggle('selected', this.input.ui.tool === t.id);
       if (t.id === 'stone' && g) {
         // Pierres restantes : ressource limitée du niveau, l'outil se grise à 0.
+        // (celles en construction sont déjà comptées)
         const conf = g.stoneConf?.();
-        const left = g.stonesLeft();
+        const left = commands.stonesLeft();
         const txt = conf ? `${left}/${conf.max}` : String(left);
         if (t.countEl.textContent !== txt) t.countEl.textContent = txt;
         t.el.classList.toggle('empty', left <= 0);
@@ -424,7 +432,11 @@ export class Hud {
   update(force = false) {
     const g = this.game;
     if (!g) return;
-    const gold = Math.floor(g.gold);
+    // or disponible : la bourse moins l'or promis aux constructions en cours (jamais
+    // négatif : après un Rembobinage, l'or revenu en arrière peut ne plus couvrir une
+    // construction en cours ; elle sera refusée à son activation, « Pas assez d'or »)
+    const gold = Math.max(0, Math.floor(commands.spendable()));
+    const promised = Math.floor(commands.reserved());
     if (force || gold !== this.last.gold) {
       this.gold.textContent = gold;
       if (!force && this.last.gold != null) bump(this.gold, gold > this.last.gold ? 'bump' : 'spend');
@@ -436,10 +448,19 @@ export class Hud {
         if (t.id === 'stone' && String(cost) !== t.costEl.textContent) t.costEl.textContent = cost;
       }
     }
-    // Défi « N lanternes au plus » : poses épuisées, les lanternes se grisent (sans
-    // le rouge du manque d'or) ; leur libellé le dit.
+    if (force || promised !== this.last.promised || gold !== this.last.goldAria) {
+      this.last.promised = promised;
+      this.last.goldAria = gold;
+      if (this.reservedEl) {
+        this.reservedEl.textContent = promised > 0 ? `−${promised}` : '';
+        this.reservedEl.classList.toggle('hidden', !(promised > 0));
+      }
+      this.gold.parentElement?.setAttribute('aria-label', promised > 0 ? `Or : ${gold} disponible, ${promised} promis aux constructions` : `Or : ${gold}`);
+    }
+    // Défi « N lanternes au plus » : poses épuisées (constructions comprises), les
+    // lanternes se grisent (sans le rouge du manque d'or) ; leur libellé le dit.
     const rule = g.challengeRule;
-    const spent = rule?.maxTowers != null && g.stats.towersBuilt >= rule.maxTowers;
+    const spent = rule?.maxTowers != null && g.stats.towersBuilt + this.buildingTowers() >= rule.maxTowers;
     if (force || spent !== this.last.spent) {
       this.last.spent = spent;
       for (const t of this.tools) {
@@ -455,7 +476,7 @@ export class Hud {
       this.lives.parentElement.classList.toggle('low', g.lives <= Math.max(3, g.maxLives * 0.25));
       this.last.lives = g.lives;
     }
-    const stones = g.level.stones ? `${g.stonesLeft()}` : '';
+    const stones = g.level.stones ? `${commands.stonesLeft()}` : '';
     if (force || stones !== this.last.stones) {
       this.last.stones = stones;
       this.refreshTools();
@@ -477,7 +498,8 @@ export class Hud {
   // Aperçu de la vague suivante à côté.
   updateWaveButton(g) {
     const pv = g.nextWavePreview ? g.nextWavePreview() : null;
-    const canCall = typeof g.canCallNextWave === 'function' ? !!g.canCallNextWave() : g.state === 'build';
+    // (commande acceptée : aussi faux quand un appel est déjà en file)
+    const canCall = commands.check('startNextWave').ok;
     let label;
     let sub = '';
     let enabled;
@@ -535,7 +557,7 @@ export class Hud {
       this.waveKanji.textContent = climax ? '嵐' : '波';
       this.last.climax = climax;
     }
-    const pulse = g.waveIndex < 0 && g.towers.length > 0;
+    const pulse = g.waveIndex < 0 && (g.towers.length > 0 || this.buildingTowers() > 0);
     if (pulse !== this.last.pulse) {
       this.waveBtn.classList.toggle('pulse', pulse);
       this.last.pulse = pulse;
@@ -553,11 +575,23 @@ export class Hud {
     pop(this.waveBtn);
   }
 
-  // ───────────────────────── Annuler (3 s après une pose) ─────────────────────────
+  // Lanternes en construction (tous joueurs).
+  buildingTowers() {
+    let n = 0;
+    for (const b of commands.builds()) if (b.op === 'placeTower') n++;
+    return n;
+  }
 
-  showUndo(tower) {
-    if (!tower) return;
-    this.undo = { id: tower.id, bornAt: tower.bornAt ?? this.game.time };
+  // ───────────────────────── Annuler (construction, puis 3 s) ─────────────────────────
+  //
+  // `ticket` : la commande de pose (commands.issue). Lanterne : « Annuler » reste
+  // pendant la construction (rien n'est payé), puis 3 s après son activation (or
+  // rendu en entier). Pierre et mur : pendant la construction seulement (une pierre
+  // posée ne se reprend qu'à moitié prix, par sa fiche).
+
+  showUndo(ticket, kind = 'tower') {
+    if (!ticket || !this.game) return;
+    this.undo = { ticket, kind };
     this.undoEl.classList.remove('hidden');
     this.root.classList.add('has-undo');
     this.updateUndo(this.game);
@@ -565,22 +599,49 @@ export class Hud {
 
   updateUndo(g) {
     if (!this.undo) return;
-    const t = g.towerById(this.undo.id);
-    const left = UNDO_SECONDS - (g.time - this.undo.bornAt);
-    if (!t || t.level !== 1 || left <= 0 || g.rewindAnim || g.state === 'won' || g.state === 'lost') {
+    const { ticket, kind } = this.undo;
+    const st = commands.status(ticket);
+    const build = g.rules.buildTime ?? 2;
+    const total = kind === 'tower' ? build + UNDO_SECONDS : build;
+    let left = 0;
+    if (st === 'building') left = total - commands.progress(ticket) * build;
+    else if (st === 'built' && kind === 'tower') {
+      const e = commands.entryOf(ticket) || ticket;
+      const t = g.towerById(e.result);
+      if (t && t.level === 1) left = UNDO_SECONDS - (g.time - t.bornAt);
+    }
+    // Pendant l'animation du Rembobinage, « Annuler » s'efface ; une construction en
+    // cours y survit (elle s'achève ensuite) : le bouton revient avec elle.
+    if (g.rewindAnim && st === 'building') {
+      this.undoEl.classList.add('hidden');
+      this.root.classList.remove('has-undo');
+      return;
+    }
+    if (left <= 0 || g.rewindAnim || g.state === 'won' || g.state === 'lost') {
       this.hideUndo();
       return;
     }
-    const k = Math.max(0, Math.min(1, left / UNDO_SECONDS));
+    if (this.undoEl.classList.contains('hidden')) {
+      this.undoEl.classList.remove('hidden');
+      this.root.classList.add('has-undo');
+    }
+    const k = Math.max(0, Math.min(1, left / total));
     const s = k.toFixed(2);
     if (s !== this.last.undo) {
       this.undoBar.style.transform = `scaleX(${s})`;
       this.last.undo = s;
     }
+    const building = st === 'building';
+    if (building !== this.last.undoBuilding) {
+      this.last.undoBuilding = building;
+      this.undoEl.classList.toggle('building', building);
+      this.undoEl.setAttribute('aria-label', building ? 'Annuler la construction : rien n’est payé' : 'Annuler la pose : or rendu en entier');
+    }
   }
 
   hideUndo() {
     this.undo = null;
+    this.last.undoBuilding = null;
     this.undoEl.classList.add('hidden');
     this.root.classList.remove('has-undo');
   }
@@ -610,6 +671,12 @@ export class Hud {
   }
 
   shortReason(code, data = {}) {
+    // case déjà en construction : la sienne, ou celle d'un coéquipier
+    if (code === 'pending') {
+      const g = this.game;
+      if (g && data.owner != null && data.owner !== g.localPlayer && g.players?.length > 1) return `Pris par ${g.players[data.owner]?.name ?? 'un coéquipier'}`;
+      return 'En construction';
+    }
     if (code === 'slotElement' && data.element && this.game) {
       const info = elementInfo(data.element, this.game.defs);
       return `${info.glyph} Socle réservé ${toElement(data.element, this.game.defs)}`;

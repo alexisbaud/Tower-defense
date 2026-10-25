@@ -51,7 +51,10 @@ export const COMMANDS = {
   cyclePriority: 1,
   placeStone: 2,
   removeStone: 2,
-  startNextWave: 0,
+  // [vague attendue] (facultatif) : en coopération, l'appel s'exécute plus tard (délai
+  // réseau) ; si la vague est partie entre-temps (compte à rebours, autre joueur), il
+  // n'en appelle pas une de plus
+  startNextWave: 1,
   rewind: 0,
   setRally: 3,
   cancel: 1,
@@ -554,21 +557,57 @@ export class Game {
   }
 
   // Chemin si l'on posait une pierre en (c, r) : validité, gain de cases et tracés.
+  // Les pierres en construction comptent comme posées : le chemin tel qu'il sera.
   previewStone(c, r, pid = this.localPlayer) {
-    const check = this.canPlaceStone(c, r, pid);
     const g = this.grid;
     if (!g.inBounds(c, r)) return { ok: false, reason: 'bounds', delta: 0, routes: [] };
     const i = g.idx(c, r);
-    const dist = bfs(g, i);
-    const routes = [];
-    let len = 0;
-    for (const s of g.spawns) {
-      if (dist[s] < 0) continue;
-      len += dist[s];
-      // même départage que les yokai (spawnEnemy : ils partent vers le bas)
-      routes.push(routeOf(g, dist, s, 0, 1));
+    return this.withPendingStones((pending) => {
+      const check = this.canPlaceStone(c, r, pid);
+      const dist = bfs(g, i);
+      const routes = [];
+      let len = 0;
+      for (const s of g.spawns) {
+        if (dist[s] < 0) continue;
+        len += dist[s];
+        // même départage que les yokai (spawnEnemy : ils partent vers le bas)
+        routes.push(routeOf(g, dist, s, 0, 1));
+      }
+      let base = this.routeLength();
+      if (pending) {
+        const d0 = bfs(g);
+        base = 0;
+        for (const s of g.spawns) base += Math.max(0, d0[s]);
+      }
+      return { ok: check.ok, reason: check.reason, delta: check.ok || check.reason === 'gold' ? len - base : 0, routes };
+    }, i);
+  }
+
+  // Exécute fn(pending) avec les pierres en construction (file des commandes) posées
+  // sur la grille, puis la rend intacte (lecture seule) : vérification et aperçu d'une
+  // NOUVELLE pierre. Sans cela, deux pierres posées coup sur coup, chacune inoffensive
+  // seule, fermaient ensemble le passage : l'aperçu promettait « +X cases » et la
+  // seconde était refusée 2 s plus tard (« Bloqué ! »). Une pierre en attente sous un
+  // yokai n'est pas comptée (elle-même sera refusée s'il s'y tient encore) ; `except` :
+  // case laissée telle quelle (celle de la pierre examinée).
+  withPendingStones(fn, except = -1) {
+    const g = this.grid;
+    const put = [];
+    for (const e of this.queue) {
+      if (e.cancelled || e.op !== 'placeStone') continue;
+      const [c, r] = e.args;
+      if (!g.inBounds(c, r)) continue;
+      const i = g.idx(c, r);
+      if (i === except || g.type(i) !== T.OPEN || g.stone[i]) continue;
+      if (this.enemies.some((en) => en.alive && !en.flying && (en.cur === i || en.target === i || g.tileAt(en.mx, en.my) === i))) continue;
+      g.stone[i] = 1;
+      put.push(i);
     }
-    return { ok: check.ok, reason: check.reason, delta: check.ok || check.reason === 'gold' ? len - this.routeLength() : 0, routes };
+    try {
+      return fn(put.length > 0);
+    } finally {
+      for (const i of put) g.stone[i] = 0;
+    }
   }
 
   // Composition de la prochaine vague (aperçu du bouton d'appel).
@@ -651,16 +690,17 @@ export class Game {
   }
 
   // Exécute les commandes arrivées à échéance. Pendant l'animation du Rembobinage ou
-  // la dernière chance, elles patientent (sauf le Rembobinage lui-même).
+  // la dernière chance, elles patientent (sauf le Rembobinage lui-même). Chaque
+  // commande reste dans la file jusqu'à son exécution : une annulation exécutée ici
+  // trouve encore la pose plus tardive qu'elle vise (coopération : 'cancel' en file).
   runQueue() {
     if (!this.queue.length) return;
-    const list = this.queue;
-    this.queue = [];
-    for (const entry of list) {
-      if (entry.cancelled) continue;
+    for (const entry of this.queue.slice()) {
+      if (entry.cancelled || !this.queue.includes(entry)) continue;
       const b = this.busy();
-      if (entry.frame > this.frame || b === 'rewinding' || (b === 'lastChance' && entry.op !== 'rewind')) this.queue.push(entry);
-      else this.execute(entry);
+      if (entry.frame > this.frame || b === 'rewinding' || (b === 'lastChance' && entry.op !== 'rewind')) continue;
+      this.queue.splice(this.queue.indexOf(entry), 1);
+      this.execute(entry);
     }
     if (this.queue.some((e) => e.cancelled)) this.queue = this.queue.filter((e) => !e.cancelled);
   }
@@ -669,7 +709,7 @@ export class Game {
     const { op, args, pid } = entry;
     let res = null;
     if (op === 'cancel') res = this.cancelEntry(args[0], pid);
-    else if (op === 'startNextWave') res = this.startNextWave(pid, true);
+    else if (op === 'startNextWave') res = args[0] != null && args[0] !== this.waveIndex + 1 ? false : this.startNextWave(pid, true);
     else if (op === 'undoPlace') res = this.undoPlace(args[0], this.undoWindow(), pid);
     else if (op === 'setRally') res = this.setRally(args[0], args[1], args[2], pid);
     else if (typeof this[op] === 'function') res = this[op](...args, pid);
@@ -703,8 +743,34 @@ export class Game {
     const r = this.recent.find((e) => e.id === entryId);
     if (!r || r.pid !== pid || !r.result) return false;
     if (r.op === 'placeTower') return this.undoPlace(r.result, this.undoWindow(), pid);
-    if (r.op === 'placeStone') return this.removeStone(r.args[0], r.args[1], pid);
+    if (r.op === 'placeStone') {
+      // « Annuler » touché pendant la construction, mais exécuté juste après l'activation
+      // (coopération : délai des commandes, latence) : la pierre est reprise comme si
+      // elle n'avait jamais été posée — prix rendu en entier, pierre rendue à la réserve.
+      // (Sans cela : moitié du prix et une pierre de la réserve perdues, en silence.)
+      if (this.frame - r.frame <= this.commandDelay + 90) return this.undoStone(r.args[0], r.args[1], pid);
+      return this.removeStone(r.args[0], r.args[1], pid);
+    }
     return false;
+  }
+
+  // Reprise d'une pierre tout juste posée (voir cancelEntry).
+  undoStone(c, r, pid = this.localPlayer) {
+    const g = this.grid;
+    if (!g.inBounds(c, r) || this.busy()) return false;
+    const i = g.idx(c, r);
+    if (!g.stone[i] || this.stoneOwner[i] !== this.player(pid).id) return false;
+    const before = this.routeLength();
+    g.stone[i] = 0;
+    this.stoneOwner[i] = -1;
+    this.stonesPlaced--;
+    this.stats.stones = Math.max(0, this.stats.stones - 1);
+    const refund = this.stoneCost();
+    this.player(pid).gold += refund;
+    this.flow.compute();
+    this.refreshBarriers();
+    this.emit('unstone', { c, r, refund, delta: this.routeLength() - before, pid, owner: pid, undo: true });
+    return true;
   }
 
   // Poses en attente de construction (pour l'affichage « en construction »).
@@ -753,10 +819,13 @@ export class Game {
       }
       case 'placeStone': {
         const [c, r] = args;
-        const check = this.canPlaceStone(c, r, pid);
+        // pierres en construction comprises (ensemble, elles bloqueraient le passage)
+        const check = this.grid.inBounds(c, r) ? this.withPendingStones(() => this.canPlaceStone(c, r, pid), this.grid.idx(c, r)) : this.canPlaceStone(c, r, pid);
         if (!check.ok && check.reason !== 'gold' && check.reason !== 'limit') return check;
         const stones = pend.filter((e) => e.op === 'placeStone');
         if (stones.some((e) => e.args[0] === c && e.args[1] === r)) return no('pending');
+        // un mur s'y dresse bientôt (« Déplacer le mur » en construction)
+        if (pend.some((e) => e.op === 'setRally' && e.args[1] === c && e.args[2] === r)) return no('barrier');
         if (this.stonesLeft() - stones.length <= 0) return no('limit');
         if (this.spendable(pid) < this.stoneCost()) return no('gold');
         return { ok: true };
@@ -764,7 +833,8 @@ export class Game {
       case 'setRally': {
         const t = this.towerById(args[0]);
         if (!t || (this.players.length > 1 && t.owner !== pid) || this.busy()) return no('unknown');
-        if (!this.grid.inBounds(args[1], args[2]) || !this.rallyTiles(t.id).includes(this.grid.idx(args[1], args[2]))) return no('rally');
+        // (une pierre en construction sur la case l'occupera)
+        if (!this.grid.inBounds(args[1], args[2]) || !this.withPendingStones(() => this.rallyTiles(t.id)).includes(this.grid.idx(args[1], args[2]))) return no('rally');
         return { ok: true };
       }
       case 'fuse':
@@ -776,6 +846,7 @@ export class Game {
       case 'removeStone':
         return this.canRemoveStone(args[0], args[1], pid);
       case 'startNextWave':
+        if (args[0] != null && args[0] !== this.waveIndex + 1) return no('wave');
         return this.canCallNextWave() && !pend.some((e) => e.op === 'startNextWave') ? { ok: true } : no('wave');
       case 'rewind':
         return this.canRewind() && !pend.some((e) => e.op === 'rewind') ? { ok: true } : no('rewind');

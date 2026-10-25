@@ -16,8 +16,14 @@
 //   En pause           étude seulement : toucher et appui long, ni pose ni fusion
 //                      (réglages permis : priorité, mur d’un Gardien).
 //   Dernière chance    aucun geste sur le plateau : seule la jauge compte.
+//   Construction       une pose (lanterne, pierre, mur) part comme commande (voir
+//                      commands.js) et reste « en construction » 2 s : son socle
+//                      refuse une autre pose ; un toucher dessus ouvre la petite barre
+//                      « En construction · Annuler » (ou « Pris par Aki »).
+// Aucune action n'appelle le moteur directement : tout passe par la façade `commands`.
 import { T } from '../core/grid.js';
 import { rallyTiles } from './overlay.js';
+import { commands } from './commands.js';
 
 export const LONG_PRESS_MS = 430;
 const HOLD_DELAY_MS = 110; // l'anneau d'appui long n'apparaît qu'après ce délai (pas sur un toucher)
@@ -41,7 +47,8 @@ export class Input {
     this.h = h;
     // État lu par le rendu : outil, aperçu de pose, sélection, lanterne portée,
     // retour animé d'un dépôt raté, message éphémère, yokai visé.
-    this.ui = { tool: null, press: null, selectedTower: null, drag: null, dragBack: null, flash: null, focusEnemy: null, rally: null };
+    // selectedBuild : case d'une construction touchée ({ c, r }, barre « En construction »).
+    this.ui = { tool: null, press: null, selectedTower: null, selectedBuild: null, drag: null, dragBack: null, flash: null, focusEnemy: null, rally: null };
     this.down = null;
     this.enabled = true;
     this.inspect = false; // pause : étude du plateau seulement
@@ -63,10 +70,21 @@ export class Input {
   }
 
   setTool(tool) {
-    this.ui.tool = this.ui.tool === tool ? null : tool;
+    // seulement les outils du joueur (coopération : les lanternes de SON élément ;
+    // les pierres, à la Terre) — aucun chemin n'en pose d'autres
+    this.ui.tool = this.ui.tool === tool || !this.allowed(tool) ? null : tool;
     this.ui.selectedTower = null;
+    this.ui.selectedBuild = null;
     this.ui.rally = null;
     return this.ui.tool;
+  }
+
+  // L'outil est-il celui du joueur local ? (palette : game.availableTowers)
+  allowed(tool) {
+    const game = this.game;
+    if (!game || !tool) return false;
+    if (tool === 'stone') return !!game.stoneConf?.() && (typeof game.canUseStones !== 'function' || game.canUseStones());
+    return game.availableTowers.includes(tool);
   }
 
   // Mode « Déplacer le mur » d'un Gardien de pierre (null : quitter).
@@ -75,6 +93,7 @@ export class Input {
     if (towerId != null) {
       this.ui.tool = null;
       this.ui.selectedTower = towerId;
+      this.ui.selectedBuild = null;
     }
   }
 
@@ -159,7 +178,7 @@ export class Input {
       if (element && se && se !== element) continue;
       const c = g.col(i);
       const r = g.row(i);
-      if (game.towerAt(c, r) || game.echoes?.some((t) => t.c === c && t.r === r)) continue;
+      if (game.towerAt(c, r) || game.echoes?.some((t) => t.c === c && t.r === r) || commands.buildAt(c, r)) continue;
       const s = this.renderer.toScreen(c + 0.5, r + 0.5);
       const d = Math.hypot(s.x - a.x, s.y - a.y);
       if (d < bd) {
@@ -203,6 +222,7 @@ export class Input {
       d.mode = tool === 'stone' ? 'stone' : 'place';
       d.tower = inB ? game.towerAt(tile.c, tile.r) : null;
       d.stoneHere = inB && !!g.stone[g.idx(tile.c, tile.r)];
+      d.build = inB && !!commands.buildAt(tile.c, tile.r); // construction en cours sous le doigt
       // Doigt immobile : après un court instant, le fantôme monte au-dessus du doigt
       // (animation suivie par tick) ; la case visée ne change qu'une fois la montée finie.
       d.liftTimer = setTimeout(() => {
@@ -239,6 +259,9 @@ export class Input {
       d.mode = 'echo';
       d.echo = game.echoes.find((t) => t.c === tile.c && t.r === tile.r);
       this.startHold(d, p, () => this.h.onInfo?.({ kind: 'echo', echo: d.echo }));
+    } else if (inB && commands.buildAt(tile.c, tile.r)) {
+      // Construction en cours (lanterne ou pierre) : un toucher ouvre sa petite barre.
+      d.mode = 'build';
     }
   }
 
@@ -281,7 +304,8 @@ export class Input {
         const mine = !(game.players?.length > 1) || d.tower?.owner === game.localPlayer;
         if (d.mode === 'tower' && !d.long && !this.inspect && !mine) {
           this.h.onFeedback?.('owner', { tower: d.tower, x: p.x, y: p.y });
-        } else if (d.mode === 'tower' && !d.long && !this.inspect && game.fuse) {
+        } else if (d.mode === 'tower' && !d.long && !this.inspect && game.fuse && !commands.towerBusy(d.tower.id)) {
+          // (lanterne déjà en route vers une fusion ou une vente : elle ne se reprend pas)
           const a = this.aim(p);
           this.ui.drag = { towerId: d.tower.id, x: p.x, y: p.y, gx: a.x, gy: a.y, hover: null, preview: null };
           this.ui.selectedTower = null;
@@ -328,7 +352,7 @@ export class Input {
     let best = null;
     let bestD = ts * 0.8;
     for (const t of game.towers) {
-      if (t.id === src.id || !game.canFuse(src.id, t.id).ok) continue;
+      if (t.id === src.id || !commands.check('fuse', src.id, t.id).ok) continue;
       const p = this.renderer.toScreen(t.x, t.y - 0.3);
       const d = Math.hypot(p.x - gx, p.y - gy);
       if (d < bestD) {
@@ -339,10 +363,16 @@ export class Input {
     if (!best && fx != null) {
       const ft = this.tileOf({ x: fx, y: fy });
       const t = game.grid.inBounds(ft.c, ft.r) ? game.towerAt(ft.c, ft.r) : null;
-      if (t && t.id !== src.id && game.canFuse(src.id, t.id).ok) best = t;
+      if (t && t.id !== src.id && commands.check('fuse', src.id, t.id).ok) best = t;
     }
     if (best) return { c: best.c, r: best.r, valid: true, id: best.id };
     const tile = this.tileOf({ x: gx, y: gy + ts * 0.3 });
+    // jumelle encore en construction (sous la lanterne portée ou sous le doigt) : elle
+    // ne se fusionne qu'une fois allumée ; le refus le dit (« En construction »)
+    for (const q of [tile, fx != null ? this.tileOf({ x: fx, y: fy }) : null]) {
+      const b = q && commands.buildAt(q.c, q.r, 'placeTower');
+      if (b && b.type === src.type) return { c: q.c, r: q.r, valid: false, reason: 'pending', owner: b.pid };
+    }
     return { c: tile.c, r: tile.r, valid: false };
   }
 
@@ -375,18 +405,36 @@ export class Input {
     else target = this.nearestFreeSlot(a, d.lifted ? 0.75 : 0.5, el);
     const press = { kind: 'tower', type, gx: a.x, gy: a.y, fx: p.x, fy: p.y, lifted: d.lifted, ...this.riseOf(d, p), c: null, r: null, valid: false, reason: null, combos: [] };
     if (target) {
-      const chk = game.canPlaceTower(type, target.c, target.r);
+      // même règle que la commande : socle en construction, or réservé, élément du joueur
+      const chk = commands.check('placeTower', type, target.c, target.r);
       press.c = target.c;
       press.r = target.r;
       press.valid = chk.ok;
       press.reason = chk.reason;
       press.element = chk.element ?? null; // socle gravé d'un autre élément
-      if (chk.reason === 'gold') press.missing = Math.max(1, Math.ceil(def.cost - game.gold));
-      const free = !game.towerAt(target.c, target.r) && !game.echoes?.some((e) => e.c === target.c && e.r === target.r);
-      // Combos qui naîtraient (échos compris), affichés même si la pose est refusée.
-      if (free) press.combos = game.previewCombos ? game.previewCombos(type, target.c, target.r) : [];
+      press.owner = chk.owner ?? null; // socle déjà en construction : par qui
+      if (chk.reason === 'gold') press.missing = commands.missing(type);
+      const free = !game.towerAt(target.c, target.r) && !game.echoes?.some((e) => e.c === target.c && e.r === target.r) && !commands.buildAt(target.c, target.r);
+      // Combos qui naîtraient (échos et lanternes en construction compris), affichés
+      // même si la pose est refusée.
+      if (free) press.combos = this.previewCombos(type, target.c, target.r);
     }
     this.ui.press = press;
+  }
+
+  // Combos qui naîtraient en posant `type` en (c, r) : lanternes posées et échos
+  // (moteur), plus les lanternes voisines encore en construction.
+  previewCombos(type, c, r) {
+    const game = this.game;
+    const out = game.previewCombos ? game.previewCombos(type, c, r) : [];
+    const el = game.defs.towers[type]?.element ?? type;
+    for (const b of commands.builds()) {
+      if (b.op !== 'placeTower' || Math.max(Math.abs(b.c - c), Math.abs(b.r - r)) !== 1) continue;
+      if ((game.defs.towers[b.type]?.element ?? b.type) === el) continue;
+      const def = game.comboFor?.(type, b.type);
+      if (def) out.push({ def, other: { type: b.type, c: b.c, r: b.r, x: b.c + 0.5, y: b.r + 0.5, level: 1, pending: true } });
+    }
+    return out;
   }
 
   updateStone(d, a, p) {
@@ -407,8 +455,10 @@ export class Input {
           this.blockedKey = blocked ? key : null;
         }
         const pv = this.stonePreview;
-        Object.assign(press, { c: t.c, r: t.r, valid: pv.ok, reason: pv.reason, delta: pv.delta, routes: pv.routes });
-        if (pv.reason === 'gold') press.missing = Math.max(1, Math.ceil(game.stoneCost() - game.gold));
+        // tracé et gain du moteur ; validité de la commande (pierre en construction, or réservé)
+        const chk = pv.ok || pv.reason === 'gold' || pv.reason === 'limit' ? commands.check('placeStone', t.c, t.r) : pv;
+        Object.assign(press, { c: t.c, r: t.r, valid: chk.ok, reason: chk.reason, owner: chk.owner ?? null, delta: pv.delta, routes: pv.routes });
+        if (chk.reason === 'gold') press.missing = commands.missing('stone');
       } else if (g.stone[i]) {
         press.c = t.c;
         press.r = t.r;
@@ -458,6 +508,9 @@ export class Input {
       case 'rally':
         if (!d.moved) this.tapRally(d);
         return;
+      case 'build':
+        if (!d.moved) this.tapBuild(d.tile);
+        return;
       default:
         if (!d.moved) this.tapEmpty();
     }
@@ -474,6 +527,12 @@ export class Input {
         this.tapTower(d.tower);
         return;
       }
+      // … sur une construction en cours : de même, sa barre (« En construction »).
+      if (d.build) {
+        this.clearTool();
+        this.tapBuild(d.tile);
+        return;
+      }
       // Toucher hors socle : on range l'outil, sans message.
       if (!press || press.c == null) {
         this.clearTool();
@@ -486,15 +545,17 @@ export class Input {
       return;
     }
     const { type, c, r } = press;
-    const res = game.canPlaceTower(type, c, r);
-    if (res.ok) {
-      const t = game.placeTower(type, c, r);
+    const res = commands.check('placeTower', type, c, r);
+    const ticket = res.ok ? commands.issue('placeTower', type, c, r) : null;
+    if (ticket) {
+      // La lanterne apparaît « en construction » et s'allume 2 s plus tard.
       // L'outil se désélectionne après chaque pose : plus d'achat involontaire.
       this.ui.tool = null;
-      this.h.onAction?.('placed', { type, tower: t });
+      this.h.onAction?.('placed', { type, c, r, ticket });
     } else {
-      game.emit('reject', { c, r, reason: res.reason });
-      this.h.onFeedback?.('reject', { reason: res.reason, element: res.element, c, r, x: press.gx, y: press.gy, missing: press.missing });
+      const reason = res.ok ? 'unknown' : res.reason;
+      game.emit('reject', { c, r, reason });
+      this.h.onFeedback?.('reject', { reason, element: res.element, owner: res.owner, c, r, x: press.gx, y: press.gy, missing: reason === 'gold' ? commands.missing(type) : press.missing });
     }
   }
 
@@ -512,9 +573,19 @@ export class Input {
     const x = d.x;
     const y = d.y;
     if (i >= 0 && rallyTiles(game, t).includes(i)) {
-      if (game.setRally(t.id, c, r)) {
+      // le mur se déplace après la construction (2 s), comme une pose. Un seul
+      // déplacement à la fois : celui encore en construction est remplacé (sinon deux
+      // murs fantômes pour un même Gardien) ; vers la même case, il continue.
+      const prev = commands.builds().filter((b) => b.op === 'setRally' && b.towerId === t.id && b.mine);
+      if (prev.some((b) => b.c === c && b.r === r)) {
         this.ui.selectedTower = t.id;
-        this.h.onAction?.('rally', { tower: t, c, r });
+        return;
+      }
+      if (prev.length && commands.check('setRally', t.id, c, r).ok) for (const b of prev) commands.cancel(b.ticket);
+      const ticket = commands.issue('setRally', t.id, c, r);
+      if (ticket) {
+        this.ui.selectedTower = t.id;
+        this.h.onAction?.('rally', { tower: t, c, r, ticket });
         return;
       }
     }
@@ -545,6 +616,11 @@ export class Input {
       this.h.onInfo?.({ kind: 'stone', c: d.tile.c, r: d.tile.r });
       return;
     }
+    if (!d.lifted && d.build) {
+      this.clearTool();
+      this.tapBuild(d.tile);
+      return;
+    }
     if (!press || press.c == null || press.reason === 'occupied') {
       if (!d.lifted) this.clearTool();
       else this.h.onFeedback?.('cancel', { x: press?.gx ?? d.x, y: press?.gy ?? d.y });
@@ -552,14 +628,16 @@ export class Input {
       return;
     }
     const { c, r } = press;
-    const res = game.canPlaceStone(c, r);
-    if (res.ok) {
-      game.placeStone(c, r);
-      this.h.onAction?.('stone', { c, r });
-      if (d.external || (game.stonesLeft && game.stonesLeft() <= 0)) this.clearTool();
+    const res = commands.check('placeStone', c, r);
+    const ticket = res.ok ? commands.issue('placeStone', c, r) : null;
+    if (ticket) {
+      this.h.onAction?.('stone', { c, r, ticket });
+      // plus de pierre à poser (celles en construction comprises) : l'outil se range
+      if (d.external || commands.stonesLeft() <= 0) this.clearTool();
     } else {
-      game.emit('reject', { c, r, reason: res.reason });
-      this.h.onFeedback?.('reject', { reason: res.reason, c, r, x: press.gx, y: press.gy, missing: press.missing, stone: true });
+      const reason = res.ok ? 'unknown' : res.reason;
+      game.emit('reject', { c, r, reason });
+      this.h.onFeedback?.('reject', { reason, owner: res.owner, c, r, x: press.gx, y: press.gy, missing: reason === 'gold' ? commands.missing('stone') : press.missing, stone: true });
     }
   }
 
@@ -572,8 +650,7 @@ export class Input {
     const hover = drag.hover;
     if (hover?.valid) {
       const dst = game.towerById(hover.id) || game.towerAt(hover.c, hover.r);
-      if (dst && game.canFuse(src.id, dst.id).ok) {
-        game.fuse(src.id, dst.id);
+      if (dst && commands.issue('fuse', src.id, dst.id)) {
         this.ui.selectedTower = null;
         this.h.onAction?.('fused', { tower: dst });
         return;
@@ -582,26 +659,38 @@ export class Input {
     let reason = null;
     if (hover && game.grid.inBounds(hover.c, hover.r)) {
       const other = game.towerAt(hover.c, hover.r);
-      if (other && other.id !== src.id) reason = game.canFuse(src.id, other.id).reason;
+      if (other && other.id !== src.id) reason = commands.check('fuse', src.id, other.id).reason;
+      else if (hover.reason) reason = hover.reason; // jumelle en construction
       if (reason) game.emit('reject', { c: hover.c, r: hover.r, reason });
     }
     // Dépôt raté : la lanterne revient à sa place (animation), avec un retour discret.
     this.ui.dragBack = { towerId: src.id, x: drag.gx, y: drag.gy, t0: performance.now() };
-    if (reason) this.h.onFeedback?.('reject', { reason, c: hover.c, r: hover.r, x: drag.gx, y: drag.gy });
+    if (reason) this.h.onFeedback?.('reject', { reason, owner: hover.owner, c: hover.c, r: hover.r, x: drag.gx, y: drag.gy });
     else this.h.onFeedback?.('dropCancel', { x: drag.gx, y: drag.gy });
   }
 
   tapTower(tower) {
     if (this.ui.tool) this.clearTool();
     this.ui.rally = null;
+    this.ui.selectedBuild = null;
     this.ui.selectedTower = this.ui.selectedTower === tower.id ? null : tower.id;
     this.h.onAction?.('selectTower', { tower });
   }
 
+  // Construction touchée : sa barre (« En construction · Annuler », « Pris par Aki »).
+  tapBuild(tile) {
+    const cur = this.ui.selectedBuild;
+    this.ui.selectedTower = null;
+    this.ui.rally = null;
+    this.ui.selectedBuild = cur && cur.c === tile.c && cur.r === tile.r ? null : { c: tile.c, r: tile.r };
+    this.h.onAction?.('selectBuild', { c: tile.c, r: tile.r });
+  }
+
   tapEmpty() {
     // Avec une lanterne sélectionnée, un toucher ailleurs ne fait que désélectionner.
-    if (this.ui.selectedTower != null) {
+    if (this.ui.selectedTower != null || this.ui.selectedBuild) {
       this.ui.selectedTower = null;
+      this.ui.selectedBuild = null;
       this.ui.rally = null;
       this.h.onAction?.('deselect');
     }
@@ -618,9 +707,10 @@ export class Input {
   startFromPalette(tool, e) {
     const game = this.game;
     if (!this.enabled || this.inspect || this.down || !game || game.rewindAnim || game.lastChanceT > 0) return false;
-    if (game.state === 'won' || game.state === 'lost') return false;
+    if (game.state === 'won' || game.state === 'lost' || !this.allowed(tool)) return false;
     this.ui.tool = tool;
     this.ui.selectedTower = null;
+    this.ui.selectedBuild = null;
     this.ui.rally = null;
     const p = this.pos(e);
     this.down = { id: e.pointerId, x0: p.x, y0: p.y, x: p.x, y: p.y, t0: performance.now(), tile: this.tileOf(p), moved: true, long: false, lifted: true, external: true, mode: tool === 'stone' ? 'stone' : 'place' };
@@ -645,7 +735,18 @@ export class Input {
       this.updateAim();
     }
     if (this.ui.drag && !this.game?.towerById(this.ui.drag.towerId)) this.ui.drag = null;
+    // lanterne portée immobile au-dessus d'une jumelle qui s'achève (construction) :
+    // la cible suit sans attendre un mouvement du doigt
+    else if (this.ui.drag && this.down) this.updateDrag({ x: this.ui.drag.x, y: this.ui.drag.y });
     if (this.ui.rally && !this.game?.towerById(this.ui.rally.towerId)) this.ui.rally = null;
+    // Construction sélectionnée achevée : la lanterne allumée prend la sélection
+    // (annulée ou refusée : la barre se ferme).
+    const sb = this.ui.selectedBuild;
+    if (sb && this.game && !commands.buildAt(sb.c, sb.r)) {
+      this.ui.selectedBuild = null;
+      const t = this.game.towerAt(sb.c, sb.r);
+      if (t && (t.owner === this.game.localPlayer || !(this.game.players?.length > 1))) this.ui.selectedTower = t.id;
+    }
   }
 
   cancel() {
@@ -662,6 +763,7 @@ export class Input {
     this.cancel();
     this.ui.tool = null;
     this.ui.selectedTower = null;
+    this.ui.selectedBuild = null;
     this.ui.dragBack = null;
     this.ui.flash = null;
     this.ui.focusEnemy = null;

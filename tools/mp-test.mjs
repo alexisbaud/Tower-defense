@@ -1,16 +1,21 @@
 // Tests du multijoueur coopératif dans de vrais navigateurs (Playwright), au doigt
-// simulé (événements tactiles, 390×844) : 2 joueurs, puis 4. Le jeu parle à un relais
-// MQTT local passé par ?broker= (voir tools/net-test.mjs pour le relais).
+// simulé (événements tactiles, 390×844) : 2 joueurs, puis 4, puis 3. Le jeu parle à
+// un relais MQTT local passé par ?broker= (voir tools/net-test.mjs pour le relais).
+// Chaque téléphone fait tourner la même partie (lockstep) : seules les commandes
+// datées et les battements de l'hôte circulent.
 //
 //   salon créé à l'ouverture (code) · rejoindre par code et par lien · élément unique
-//   lancement par l'hôte · pose d'un invité visible chez tous · or séparé · vies
-//   communes · lanterne d'un autre : ni vente ni fusion · appel de vague et
-//   rembobinage par un invité · pause de l'hôte · menu d'un invité (la partie
-//   continue) · hôte en arrière-plan (pause pour tous) · hôte sans nouvelles
-//   (« En attente de l'hôte… ») · vitesse réservée à l'hôte · invité qui recharge
-//   et revient · coupures du réseau (invité, hôte) · arrivée pendant une partie
-//   seul · salon plein · fin de partie (victoire et étoiles chez chacun) · hôte qui
-//   quitte · aucune erreur console.
+//   lancement par l'hôte · palette limitée à l'élément de chacun · pose d'un invité :
+//   construction visible chez tous, activée à la même image · « Annuler » · fusion et
+//   vente d'un invité en route (ni revendue ni refusionnée pendant le délai) · or séparé
+//   · vies communes · lanterne d'un autre : ni vente ni fusion · poses simultanées ·
+//   appel de vague et rembobinage par un invité · pause de l'hôte (même image chez
+//   tous) · menu d'un invité (la partie continue) · hôte en arrière-plan · hôte sans
+//   nouvelles (« En attente de l'hôte… ») · vitesse réservée à l'hôte · invité qui
+//   recharge (« Synchronisation… ») · coupures du réseau · hôte qui quitte · arrivée
+//   pendant une partie seul · salon plein · fin de partie (victoire calculée par
+//   chacun, défaite annoncée par l'hôte) · départs et relance · fin manquée · fin
+//   forgée · débit · aucune erreur console.
 //
 // Usage : (serveur local sur :8080, relais sur :8883)
 //   node tools/mp-test.mjs [ws://localhost:8883/mqtt] [dossier des captures]
@@ -32,392 +37,6 @@ const check = (name, ok, extra = '') => {
   if (!ok) failures++;
 };
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-
-// Le relais doit répondre (sinon chaque connexion du jeu échouerait en console).
-async function relayUp() {
-  return new Promise((resolve) => {
-    let ws;
-    const t = setTimeout(() => {
-      try {
-        ws?.close();
-      } catch {}
-      resolve(false);
-    }, 3000);
-    try {
-      ws = new WebSocket(BROKER, ['mqtt']);
-    } catch {
-      clearTimeout(t);
-      resolve(false);
-      return;
-    }
-    ws.onopen = () => {
-      clearTimeout(t);
-      ws.close();
-      resolve(true);
-    };
-    ws.onerror = () => {
-      clearTimeout(t);
-      resolve(false);
-    };
-  });
-}
-// ─────────── synchronisation hôte → invité, sans réseau, horloge simulée ───────────
-// Un HostSync et un ClientSync reliés par un « relais » en mémoire qui retarde chaque
-// message (20 à 120 ms, parfois deux états collés) : lecture régulière des yokai,
-// pas de glissade après un Rembobinage, impulsion du Givre, événements compacts,
-// lanternes étourdies, mur déplacé, appel anticipé, « Annuler » avant confirmation.
-async function syncChecks() {
-  console.log('Synchronisation (horloge simulée, sans relais)');
-  const { Game, STEP } = await import('../src/core/game.js');
-  const { defs, loadLevel } = await import('../src/data.js');
-  const { HostSync, ClientSync, applyCommand, makeMirror } = await import('../src/net/sync.js');
-  const level = await loadLevel('2-2');
-  const players = [
-    { name: 'Hôte', elements: ['fire', 'water'] },
-    { name: 'Aki', elements: ['wind', 'earth'] },
-  ];
-  const nowOrig = performance.now;
-  let clock = 0;
-  let extraLag = 0; // latence ajoutée (relais lent)
-  let speed = 1; // vitesse de l'hôte
-  performance.now = () => clock;
-  let seed = 7;
-  const rand = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
-  const game = new Game(level, defs, { seed: 3, players });
-  game.lives = game.maxLives = 999;
-  for (const p of game.players) p.gold = 5000;
-  const net = []; // messages en route : { at, fn }
-  const host = new HostSync(game, (snap) => {
-    const json = JSON.stringify(snap);
-    sizes.push(json.length);
-    // gigue : 20 à 120 ms, et un état sur six arrive collé au suivant
-    const lag = (rand() < 1 / 6 ? 150 : 20 + rand() * 100) + extraLag;
-    net.push({ at: clock + lag, fn: () => client.apply(JSON.parse(json)) });
-  });
-  const sizes = [];
-  const mirror = makeMirror(Game, level, defs, { seed: 3, players, you: 1 });
-  const client = new ClientSync(mirror, (op, args) => net.push({ at: clock + 60 + extraLag, fn: () => applyCommand(game, 1, op, args) }));
-  const events = [];
-  const frame = (ms = 1000 / 60) => {
-    clock += ms;
-    host.speed = speed;
-    for (let k = 0; k < speed; k++) game.update(STEP);
-    host.collect(game.events);
-    game.events.length = 0;
-    host.tick(ms / 1000);
-    for (const m of net.filter((m) => m.at <= clock)) m.fn();
-    for (let i = net.length - 1; i >= 0; i--) if (net[i].at <= clock) net.splice(i, 1);
-    client.tick(ms / 1000);
-    events.push(...mirror.events);
-    mirror.events.length = 0;
-  };
-  const run = (s, each) => {
-    for (let k = 0; k < (s * 1000) / (1000 / 60); k++) {
-      frame();
-      each?.();
-    }
-  };
-  const drawn = (e) => ({ x: e.px + (e.x - e.px) * client.alpha, y: e.py + (e.y - e.py) * client.alpha });
-  try {
-    game.startNextWave(0, false);
-    run(4);
-    // lecture : un yokai qui marche avance à chaque image, sans arrêt ni saut
-    let frames = 0;
-    let still = 0;
-    let maxStep = 0;
-    let steps = [];
-    const last = new Map();
-    run(6, () => {
-      for (const e of mirror.enemies) {
-        if (e.spawnT > 0) continue;
-        const h = game.enemies.find((x) => x.id === e.id);
-        const p = drawn(e);
-        const q = last.get(e.id);
-        last.set(e.id, p);
-        if (!q || !h || h.stunT > 0 || h.blocked != null || h.knock > 0 || h.slowT > 0) continue;
-        const d = Math.hypot(p.x - q.x, p.y - q.y);
-        frames++;
-        if (d < 1e-4) still++;
-        maxStep = Math.max(maxStep, d);
-        steps.push(d);
-      }
-    });
-    steps.sort((a, b) => a - b);
-    const med = steps[Math.floor(steps.length / 2)] || 0;
-    check('invité : yokai fluides malgré la gigue (≤ 3 % d’images figées)', frames > 200 && still / frames <= 0.03, `${still}/${frames}`);
-    check('invité : aucun saut (pas > 3× le pas médian)', maxStep <= med * 3 + 0.02, `max ${maxStep.toFixed(3)} médian ${med.toFixed(3)}`);
-    check('invité : retard de lecture borné (< 0,4 s)', client.delay < 400, `${Math.round(client.delay)} ms`);
-
-    // événements compacts
-    const shoot = [];
-    const spawn = [];
-    let short = 0;
-    const t1 = Object.keys(defs.towers).find((t) => defs.towers[t].element === 'fire' && !defs.towers[t].attack);
-    for (let i = 0; i < game.grid.size; i++) {
-      const c = game.grid.col(i);
-      const r = game.grid.row(i);
-      if (game.canPlaceTower(t1, c, r, 0).ok && game.towers.length < 4) game.placeTower(t1, c, r, 0);
-    }
-    const sp = host.publish;
-    host.publish = (snap) => {
-      for (const ev of snap.ev) if (ev.type === 'shoot') shoot.push(JSON.stringify(ev).length);
-      for (const ev of snap.ev) if (ev.type === 'spawn') spawn.push(JSON.stringify(ev).length);
-      if (snap.em?.length) short++;
-      sp(snap);
-    };
-    game.startNextWave(0, false);
-    run(5);
-    host.publish = sp;
-    check('tir : événement compact (< 300 o)', shoot.length > 0 && Math.max(...shoot) < 300, `${shoot.length} tirs, max ${Math.max(...shoot)} o`);
-    check('apparition : événement compact (< 220 o)', spawn.length > 0 && Math.max(...spawn) < 220, `max ${Math.max(...spawn)} o`);
-    check('lignes courtes pour les yokai connus, mêmes yokai chez l’invité', short > 10 && mirror.enemies.length > 3 && Math.abs(mirror.enemies.length - game.enemies.length) <= 3, `${mirror.enemies.length} / ${game.enemies.length}`);
-
-    // impulsion du Givre (Eau de l'hôte + Vent de l'invité) : la zone garde sa définition
-    let pair = null;
-    for (let i = 0; i < game.grid.size && !pair; i++) {
-      const c = game.grid.col(i);
-      const r = game.grid.row(i);
-      if (!game.canPlaceTower('water', c, r, 0).ok) continue;
-      for (const [dc, dr] of [[1, 0], [0, 1], [1, 1], [-1, 1], [-1, 0], [0, -1]]) if (!pair && game.canPlaceTower('wind', c + dc, r + dr, 1).ok) pair = [c, r, c + dc, r + dr];
-    }
-    game.placeTower('water', pair[0], pair[1], 0);
-    game.placeTower('wind', pair[2], pair[3], 1);
-    run(0.5);
-    const frost = game.zones.find((z) => z.def.id === 'frost');
-    game.emit('pulse', { zone: frost });
-    events.length = 0;
-    run(0.8);
-    const pulse = events.find((e) => e.type === 'pulse');
-    check('Givre : l’impulsion arrive chez l’invité avec sa définition (plus de plantage)', pulse?.zone?.def?.id === 'frost', JSON.stringify(pulse?.zone || null).slice(0, 120));
-
-    // lanterne étourdie (piétinement) : vue tout de suite, puis l'étourdissement s'écoule
-    const tw = game.towers.find((t) => t.owner === 1);
-    tw.stunT = 1.5;
-    run(0.6);
-    const st1 = mirror.towerById(tw.id)?.stunT ?? 0;
-    run(2);
-    const st2 = mirror.towerById(tw.id)?.stunT ?? 1;
-    check('lanterne étourdie : visible chez l’invité, puis rétablie', st1 > 0.2 && st2 === 0, `${st1} → ${st2}`);
-
-    // mur du Gardien déplacé : la case choisie (rally) suit chez l'invité
-    let gslot = null;
-    for (let i = 0; i < game.grid.size && !gslot; i++) if (game.canPlaceTower('earth_guard', game.grid.col(i), game.grid.row(i), 1).ok) gslot = [game.grid.col(i), game.grid.row(i)];
-    const guard = game.placeTower('earth_guard', gslot[0], gslot[1], 1);
-    run(0.6);
-    const bar = game.barriers.find((b) => b.towerId === guard.id);
-    let moved = false;
-    for (let i = 0; i < game.grid.size && !moved; i++) {
-      if (i === bar.tile) continue;
-      if (game.setRally(guard.id, game.grid.col(i), game.grid.row(i), 1)) moved = i;
-    }
-    run(0.7);
-    check('mur déplacé : case de ralliement à jour chez l’invité (< 1 s)', moved !== false && mirror.towerById(guard.id)?.rally === moved && mirror.barriers.find((b) => b.towerId === guard.id)?.tile === moved, `${moved} ${mirror.towerById(guard.id)?.rally}`);
-
-    // appel anticipé : l'aperçu « +N 巻 » de l'invité ne compte plus une vague déjà chargée
-    run(1);
-    if (game.nextWaveT > 1 && game.canCallNextWave()) game.startNextWave(0, true);
-    run(0.8);
-    check('appel anticipé : vagues déjà chargées connues de l’invité', [...game.chargedWaves].every((w) => mirror.chargedWaves.has(w)), `${[...game.chargedWaves]} / ${[...mirror.chargedWaves]}`);
-
-    // deux joueurs appellent la même vague au même instant : une seule vague part
-    const wv = game.waveIndex;
-    if (game.canCallNextWave()) {
-      applyCommand(game, 1, 'startNextWave', [wv + 1]);
-      applyCommand(game, 0, 'startNextWave', [wv + 1]);
-      check('même vague appelée deux fois (deux joueurs) : une seule lancée', game.waveIndex === wv + 1, `${wv} → ${game.waveIndex}`);
-    }
-    run(0.5);
-    // « Annuler » juste après la pose, avant la confirmation de l'hôte
-    let us = null;
-    for (let i = 0; i < mirror.grid.size && !us; i++) if (mirror.canPlaceTower('wind', mirror.grid.col(i), mirror.grid.row(i)).ok) us = [mirror.grid.col(i), mirror.grid.row(i)];
-    const gold0 = game.goldOf(1);
-    const pt = mirror.placeTower('wind', us[0], us[1]);
-    frame();
-    mirror.undoPlace(pt.id);
-    run(1.2);
-    check('« Annuler » avant confirmation : annulée chez l’hôte, or rendu', !game.towerAt(us[0], us[1]) && game.goldOf(1) >= gold0, `${!!game.towerAt(us[0], us[1])} ${game.goldOf(1)} / ${gold0}`);
-    check('… et disparue chez l’invité', !mirror.towerAt(us[0], us[1]));
-
-    // hôte en ×2 et relais lent (0,5 s de plus) : la pose provisoire de l'invité reste
-    // affichée jusqu'à sa confirmation (plus de lanterne qui clignote, ni d'or qui remonte)
-    speed = 2;
-    extraLag = 500;
-    run(1);
-    let ws = null;
-    for (let i = 0; i < mirror.grid.size && !ws; i++) if (mirror.canPlaceTower('wind', mirror.grid.col(i), mirror.grid.row(i)).ok) ws = [mirror.grid.col(i), mirror.grid.row(i)];
-    const goldW = mirror.goldOf(1);
-    mirror.placeTower('wind', ws[0], ws[1]);
-    let gaps = 0;
-    let up = 0;
-    run(3, () => {
-      if (!mirror.towerAt(ws[0], ws[1])) gaps++;
-      if (mirror.goldOf(1) > goldW - defs.towers.wind.cost + 40) up++;
-    });
-    check('×2 et relais lent : la pose de l’invité reste affichée jusqu’à confirmation', gaps === 0 && game.towerAt(ws[0], ws[1])?.owner === 1, `${gaps} images sans lanterne`);
-    check('×2 et relais lent : l’or de l’invité ne remonte pas en attendant', up === 0, `${up} images`);
-    speed = 1;
-    extraLag = 0;
-    run(1);
-
-    // Rembobinage : à la fin de l'animation, les yokai sont replacés d'un coup
-    run(3);
-    game.rewindCharge = game.rules.rewindCost ?? 100;
-    const okRw = game.rewind(0);
-    let slide = 0;
-    let after = false;
-    const prev = new Map();
-    run(3, () => {
-      if (mirror.rewindAnim) {
-        after = true;
-        prev.clear();
-        return;
-      }
-      if (!after) return;
-      for (const e of mirror.enemies) {
-        const p = drawn(e);
-        const q = prev.get(e.id);
-        prev.set(e.id, p);
-        if (q) slide = Math.max(slide, Math.hypot(p.x - q.x, p.y - q.y));
-      }
-    });
-    check('après un Rembobinage : pas de glissade des yokai à travers la carte', okRw && after && slide < 0.5, `${okRw} ${after} pas max ${slide.toFixed(2)}`);
-    const avg = sizes.reduce((a, b) => a + b, 0) / sizes.length;
-    console.log(`  · ${Math.round(avg)} o par état en moyenne (${sizes.length} états, max ${Math.max(...sizes)} o)`);
-  } catch (e) {
-    check('synchronisation : exception', false, e.stack);
-  } finally {
-    performance.now = nowOrig;
-  }
-}
-await syncChecks();
-
-// ─────────── ce que voit l'invité (horloge simulée, sans relais) ───────────
-// Miroir d'une partie sur un couloir bordé de socles : trajectoires des volants pendant
-// la vague, recharge des combos, activité des lanternes (Torrent, Feux follets, Source),
-// propriétaire des pierres, états mal formés ou forgés qui ne figent rien.
-async function mirrorChecks() {
-  console.log('Miroir de l’invité (horloge simulée)');
-  const { Game, STEP } = await import('../src/core/game.js');
-  const { defs } = await import('../src/data.js');
-  const { HostSync, ClientSync, applyCommand, makeMirror } = await import('../src/net/sync.js');
-  const { Renderer } = await import('../src/render/renderer.js');
-  const level = {
-    id: 'miroir',
-    world: 'moss',
-    map: [',,S,,,,', ',#.#oo,', ',#.#,o,', ',#.#,o,', ',#.#oo,', ',#.#,,,', ',,.,,,,', ',,G,,,,'],
-    startGold: 5000,
-    lives: 999,
-    towers: Object.keys(defs.towers),
-    stones: { cost: 10, max: 10 },
-    // dernière vague : ni la suivante ni l'appel anticipé n'affichent les volants
-    waves: [{ groups: [{ enemy: 'kodama', count: 30, interval: 0.7, hp: 40 }, { enemy: 'tengu', count: 30, interval: 1, delay: 1 }] }],
-  };
-  const players = [
-    { name: 'Hôte', elements: ['fire', 'water', 'earth'] },
-    { name: 'Aki', elements: ['wind', 'earth'] },
-  ];
-  const nowOrig = performance.now;
-  let clock = 0;
-  performance.now = () => clock;
-  const thrown = [];
-  try {
-    const game = new Game(level, defs, { seed: 5, players });
-    const net = [];
-    const host = new HostSync(game, (snap) => {
-      const json = JSON.stringify(snap);
-      net.push({ at: clock + 60, fn: () => client.apply(JSON.parse(json)) });
-    });
-    const mirror = makeMirror(Game, level, defs, { seed: 5, players, you: 1 });
-    const client = new ClientSync(mirror, (op, args) => net.push({ at: clock + 60, fn: () => applyCommand(game, 1, op, args) }));
-    const frame = (each) => {
-      clock += 1000 / 60;
-      game.update(STEP);
-      host.collect(game.events);
-      game.events.length = 0;
-      host.tick(1 / 60);
-      for (const m of net.filter((m) => m.at <= clock)) {
-        try {
-          m.fn();
-        } catch (e) {
-          thrown.push(e.message);
-        }
-      }
-      for (let i = net.length - 1; i >= 0; i--) if (net[i].at <= clock) net.splice(i, 1);
-      try {
-        client.tick(1 / 60);
-      } catch (e) {
-        thrown.push(e.message);
-      }
-      mirror.events.length = 0;
-      each?.();
-    };
-    const run = (sec, each) => {
-      for (let k = 0; k < sec * 60; k++) frame(each);
-    };
-    game.placeTower('water_torrent', 3, 2, 0);
-    game.placeTower('fire_wisp', 1, 2, 0);
-    game.placeTower('water', 1, 1, 0);
-    game.placeTower('wind', 3, 1, 1); // Givre (Eau + Vent) : combo à impulsions
-    game.placeTower('earth_guard', 3, 4, 1);
-    game.placeTower('water_spring', 1, 4, 0); // soigne le mur du Gardien
-    game.placeStone(4, 1, 0); // pierre de l'hôte, sur le gravier du bas-côté
-    game.startNextWave(0, false);
-    const shot = { water_torrent: [0, 0], fire_wisp: [0, 0], water_spring: [0, 0] };
-    let lines = 0;
-    let linesMissing = 0;
-    let zoneFrames = 0;
-    let zoneOff = 0;
-    run(25, () => {
-      for (const t of game.towers) if (shot[t.type] && t.shotT > 0) shot[t.type][0]++;
-      for (const t of mirror.towers) if (shot[t.type] && t.shotT > 0) shot[t.type][1]++;
-      const h = Renderer.prototype.flyerLines(game).length;
-      const m = Renderer.prototype.flyerLines(mirror).length;
-      if (h) lines++;
-      if (h && !m) linesMissing++;
-      const zh = game.zones.find((z) => z.def.id === 'frost');
-      const zm = mirror.zones.find((z) => z.def.id === 'frost');
-      if (zh && zm) {
-        zoneFrames++;
-        // (l'invité lit l'état ~0,2 s en retard : l'impulsion y repart à 0 un peu plus tard)
-        if (Math.abs(zh.timer - zm.timer) > 0.6) zoneOff++;
-      }
-    });
-    check('trajectoires des volants pendant la vague : vues aussi par l’invité', lines > 300 && linesMissing < 30, `${linesMissing}/${lines} images sans trajectoire`);
-    check('recharge du Givre : même arc chez l’invité (écart ≤ 0,6 s, 90 % du temps)', zoneFrames > 600 && zoneOff / zoneFrames < 0.1, `${zoneOff}/${zoneFrames} images décalées`);
-    for (const [type, [h, m]] of Object.entries(shot)) check(`${type} : en action chez l’invité aussi`, h > 0 && m > 0, `hôte ${h}, invité ${m} images`);
-    const si = mirror.grid.idx(4, 1);
-    check('pierre de l’hôte : l’invité Terre ne peut pas la retirer', mirror.grid.stone[si] === 1 && mirror.stoneOwner?.[si] === 0 && mirror.canRemoveStone?.(4, 1, 1).reason === 'owner', `${mirror.stoneOwner?.[si]}`);
-
-    // états mal formés ou forgés (n'importe quel client du relais peut publier)
-    const rec0 = client.received;
-    let ret = null;
-    try {
-      ret = client.apply({ type: 'snap', seq: 1e15 });
-      client.apply({ type: 'snap', seq: 1e15 + 1, rt: 1 });
-    } catch (e) {
-      thrown.push(e.message);
-    }
-    run(1);
-    check('état absurde ignoré, la lecture continue', ret === false && client.received > rec0 + 4 && client.lastSeq < 1e15 && thrown.length === 0, `${ret} ${client.received - rec0} ${client.lastSeq} ${thrown.join(' | ')}`);
-    // état bien formé mais à la séquence faussée : les vrais états reprennent la main
-    const real = host.snapshot();
-    client.apply({ ...JSON.parse(JSON.stringify(real)), seq: 1e15 });
-    const rec1 = client.received;
-    const before = mirror.enemies.map((e) => `${e.id}:${e.x}`).join();
-    run(3);
-    check('séquence faussée : le miroir repart en moins de 3 s', client.received > rec1 + 8 && mirror.enemies.map((e) => `${e.id}:${e.x}`).join() !== before && thrown.length === 0, `${client.received - rec1} ${thrown.join(' | ')}`);
-  } catch (e) {
-    check('miroir : exception', false, e.stack);
-  } finally {
-    performance.now = nowOrig;
-  }
-}
-await mirrorChecks();
-
-if (!(await relayUp())) {
-  console.log(`Relais MQTT injoignable (${BROKER}) : lancez-le d'abord (voir tools/net-test.mjs).`);
-  process.exit(1);
-}
 
 const browser = await chromium.launch();
 const errors = [];
@@ -510,16 +129,38 @@ const gameOf = (p) =>
       screen: st.screen,
       role: st.coopRole,
       local: g.localPlayer,
+      frame: g.frame,
       lives: g.lives,
       gold: g.players.map((x) => Math.floor(x.gold)),
       wave: g.waveIndex,
       state: g.state,
       rewinds: g.rewindsUsed,
-      towers: g.towers.map((t) => ({ id: t.id, type: t.type, c: t.c, r: t.r, owner: t.owner, pending: !!t.pending })),
+      towers: g.towers.map((t) => ({ id: t.id, type: t.type, c: t.c, r: t.r, owner: t.owner })),
+      builds: window.__commands.builds().map((b) => ({ c: b.c, r: b.r, pid: b.pid, op: b.op, mine: b.mine, k: b.k })),
       avail: g.availableTowers,
       time: g.time,
       paused: st.paused,
+      wait: window.__coop.waitKind(),
+      stats: window.__coop.net?.stats ? { ...window.__coop.net.stats } : null,
     };
+  });
+// Empreinte de synchronisation et image de la partie de chacun.
+const hashOf = (p) =>
+  p.ev(async () => {
+    const { syncHash } = await import('/src/net/lockstep.js');
+    const g = window.__state.game;
+    return `${g.frame}:${syncHash(g)}`;
+  });
+// Journal des commandes exécutées (identifiant → image d'exécution) : on le pose sur
+// la partie en cours (un état complet importé garde le même objet Game).
+const hookExec = (p) =>
+  p.ev(() => {
+    const g = window.__state.game;
+    if (g.__hooked) return;
+    g.__hooked = true;
+    window.__ex = new Map();
+    const ex = g.execute.bind(g);
+    g.execute = (e) => (window.__ex.set(e.id, g.frame), ex(e));
   });
 // Socle libre et compatible avec la lanterne `type` (gravé de son élément, ou universel).
 const freeSlot = (p, type, minRow = 0) =>
@@ -531,7 +172,7 @@ const freeSlot = (p, type, minRow = 0) =>
         const c = grid.col(i);
         const r = grid.row(i);
         if (r < minRow) continue;
-        if (g.canPlaceTower(type, c, r).ok) return [c, r];
+        if (window.__commands.check('placeTower', type, c, r).ok) return [c, r];
       }
       return null;
     },
@@ -562,12 +203,37 @@ async function dragRewind(p) {
   await p.page.waitForTimeout(200);
 }
 
+// Même modification chez tous, à la même image : l'hôte arrête la partie commune (pause
+// annoncée), chacun applique `fn` à sa partie, puis la partie reprend. Les parties
+// restent identiques (le test règle ainsi vies, or, fin de partie… sans écart).
+async function together(peers, fn, arg) {
+  const [H] = peers;
+  await H.ev(() => window.__coop.setPaused(true));
+  const pz = await H.ev(() => window.__coop.net.pauseAt);
+  for (const p of peers) await p.until((pz) => window.__state.game?.frame === pz, pz, 8000);
+  const out = [];
+  for (const p of peers) out.push(await p.ev(fn, arg));
+  await H.ev(() => window.__coop.setPaused(false));
+  return out;
+}
+
+// Toutes les parties à la même image (pause de l'hôte), pour les comparer.
+async function settle(peers) {
+  const [H] = peers;
+  await H.ev(() => window.__coop.setPaused(true));
+  const pz = await H.ev(() => window.__coop.net.pauseAt);
+  for (const p of peers) await p.until((pz) => window.__state.game?.frame === pz, pz, 8000);
+  const hashes = [];
+  for (const p of peers) hashes.push(await hashOf(p));
+  await H.ev(() => window.__coop.setPaused(false));
+  return hashes;
+}
+
 try {
   // ─────────── image « en retard » au lancement d'une partie (page chargée) ───────────
   // Chrome date une image de son début : juste après un lancement coûteux (4 joueurs
   // sur un téléphone chargé), l'horodatage précède parfois d'1 s la demande. Le temps
-  // du rendu devenait négatif, l'onde du sanctuaire avait un rayon négatif : exception,
-  // boucle arrêtée, écran figé (vu chez deux invités à 4). Émulé ici : 1,2 s d'avance.
+  // du rendu devenait négatif : exception, boucle arrêtée, écran figé. Émulé ici.
   console.log('Image en retard au lancement');
   {
     const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
@@ -611,7 +277,6 @@ try {
   check('lien d’invitation ?salon=CODE (relais conservé)', link.includes(`salon=${code}`) && link.includes('broker='), link);
   await A.tapSel('.lobby-invite');
   check('« Inviter » : lien partagé ou copié (message)', await A.until(() => document.querySelector('#app-toast')?.classList.contains('show')));
-  // l'hôte choisit le Feu (le choix est replié tant qu'on est seul)
   check('seul : choix de l’élément replié', await A.ev(() => document.querySelector('#title-lobby').classList.contains('folded')));
   await A.tapSel('.lobby-fold');
   await A.tapSel('.lobby-el[data-el="fire"]');
@@ -628,15 +293,13 @@ try {
   check('A voit deux joueurs', await A.until(() => window.__session.lobby.players.length === 2));
   check('B : « L’hôte choisit le niveau… », pas de bouton Jouer', (await B.visible('#title-wait')) && !(await B.visible('#btn-play')), await B.ev(() => document.querySelector('#title-wait').textContent));
   check('à deux : choix de l’élément déplié', !(await A.ev(() => document.querySelector('#title-lobby').classList.contains('folded'))));
-  // élément unique : le Feu de A est pris
   check('élément pris par un autre : désactivé', await B.ev(() => document.querySelector('.lobby-el[data-el="fire"]').disabled));
   await B.page.evaluate(() => window.__session.pickElement('fire')); // même en forçant
   await wait(400);
   check('élément déjà pris refusé par l’hôte', (await lobby(A)).players[1].element !== 'fire', JSON.stringify((await lobby(A)).players));
   await B.tapSel('.lobby-el[data-el="wind"]');
   check('B choisit le Vent, A le voit', await A.until(() => window.__session.lobby.players[1]?.element === 'wind'));
-  // conflit : A et B choisissent la Terre au même instant (avant que le salon de B ne
-  // montre le choix de A) ; l'hôte tranche — son propre choix passe d'abord — et B est prévenu
+  // conflit : A et B choisissent la Terre au même instant ; l'hôte tranche (le sien d'abord)
   await Promise.all([A.ev(() => window.__lobby.pick('earth')), B.ev(() => window.__lobby.pick('earth'))]);
   await wait(900);
   const conflict = (await lobby(A)).players;
@@ -644,7 +307,6 @@ try {
   const lose = await B.ev(() => ({ toast: document.querySelector('#app-toast').textContent, show: document.querySelector('#app-toast').classList.contains('show'), prof: JSON.parse(localStorage.getItem('jardin-esprits.profil')).element }));
   check('conflit : B est prévenu (« déjà choisi par … »)', lose.show && /déjà choisi par/.test(lose.toast), JSON.stringify(lose));
   check('conflit : le profil de B garde l’élément obtenu (Vent)', lose.prof === 'wind', JSON.stringify(lose));
-  // A reprend le Feu, B garde le Vent
   if ((await lobby(A)).players[0].element !== 'fire') await A.tapSel('.lobby-el[data-el="fire"]');
   if ((await lobby(A)).players[1].element !== 'wind') await B.tapSel('.lobby-el[data-el="wind"]');
   check('après le conflit : Feu (A) et Vent (B)', await A.until(() => window.__session.lobby.players.map((p) => p.element).join() === 'fire,wind', null, 4000), JSON.stringify((await lobby(A)).players));
@@ -660,50 +322,65 @@ try {
   await A.until(() => window.__state.screen === 'map');
   await A.page.waitForTimeout(500);
   await A.tapSel(`.map-node >> nth=${LEVEL_INDEX}`);
-  check('fiche du niveau : « Partie à 2 »', await A.until(() => /Partie à 2/.test(document.querySelector('.modal-card')?.textContent || '')));
+  check('fiche du niveau : « Partie à 2 », un élément chacun', await A.until(() => /Partie à 2/.test(document.querySelector('.modal-card')?.textContent || '') && /Chacun ne pose que les lanternes de son élément/.test(document.querySelector('.modal-card')?.textContent || '')));
   await A.tapSel('.modal-card .actions .btn.primary');
-  check('A en partie (hôte)', await A.until(() => window.__state.screen === 'game' && window.__state.coopRole === 'host'));
-  check('B entre dans la partie (invité)', await B.until(() => window.__state.screen === 'game' && window.__state.coopRole === 'guest' && window.__coop.isGuest));
+  check('A en partie (hôte)', await A.until(() => window.__state.screen === 'game' && window.__state.coopRole === 'host' && window.__coop.isHost));
+  check('B entre dans la partie (invité, sa propre simulation)', await B.until(() => window.__state.screen === 'game' && window.__state.coopRole === 'guest' && window.__coop.isGuest && window.__state.game.frame > 30));
   let a = await gameOf(A);
   let b = await gameOf(B);
+  const els = (p) => p.ev(() => [...new Set(window.__state.game.availableTowers.map((t) => window.__state.game.defs.towers[t].element))]);
+  const paletteEls = (p) => p.ev(() => [...new Set([...document.querySelectorAll('#palette .tool')].map((x) => x.dataset.tool).filter((t) => t !== 'stone').map((t) => window.__state.game.defs.towers[t].element))]);
   check('même niveau, B est le joueur 2', b.local === 1 && (await B.ev(() => window.__state.levelId)) === LEVEL);
-  check('palette de B : Vent et éléments libres, sans Feu', b.avail.length > 0 && !b.avail.some((t) => t === 'fire' || t.startsWith('fire_')), JSON.stringify(b.avail));
-  check('palette de A : sans Vent', !a.avail.some((t) => t === 'wind' || t.startsWith('wind_')), JSON.stringify(a.avail));
+  check('palette de B : seulement le Vent', JSON.stringify(await els(B)) === '["wind"]' && JSON.stringify(await paletteEls(B)) === '["wind"]', JSON.stringify([await els(B), await paletteEls(B)]));
+  check('palette de A : seulement le Feu', JSON.stringify(await els(A)) === '["fire"]' && JSON.stringify(await paletteEls(A)) === '["fire"]', JSON.stringify([await els(A), await paletteEls(A)]));
   check('rangée des coéquipiers (nom, or)', (await B.visible('#coop-roster .coop-mate')) && (await A.visible('#coop-roster .coop-mate')));
   check('tutoriel désactivé en coopération', await B.ev(() => window.__tutorial.steps.length === 0));
-  // le test prend son temps entre deux gestes : le sanctuaire reçoit de quoi tenir
-  await A.ev(() => {
+  const lagB = await B.ev(() => window.__coop.net.lag);
+  check('B suit la partie de A, un peu en retard (< 0,5 s)', lagB >= 0 && lagB < 30, `${lagB}`);
+  await hookExec(A);
+  await hookExec(B);
+  // le test prend son temps entre deux gestes : le sanctuaire reçoit de quoi tenir (chez tous)
+  await together([A, B], () => {
     const g = window.__state.game;
     g.maxLives = g.lives = 400;
   });
 
-  console.log('Pose d’un invité');
-  const goldA0 = a.gold[0];
-  const goldB0 = b.gold[1];
-  const wind = b.avail.find((t) => t === 'wind') || b.avail.find((t) => t.startsWith('wind'));
+  console.log('Pose d’un invité : construction chez tous, activée à la même image');
+  const goldA0 = (await gameOf(A)).gold[0];
+  const goldB0 = (await gameOf(B)).gold[1];
+  const wind = b.avail.find((t) => t === 'wind') || b.avail[0];
   const cost = await B.ev((t) => window.__state.game.defs.towers[t].cost, wind);
   const slotB = await placeBy(B, wind);
-  check('B pose une lanterne (provisoire chez lui)', !!slotB && (await gameOf(B)).towers.some((t) => t.c === slotB[0] && t.r === slotB[1]));
-  check('la lanterne de B apparaît chez A, à B', await A.until(([c, r]) => window.__state.game.towerAt(c, r)?.owner === 1, slotB));
-  await B.page.waitForTimeout(400);
+  check('B pose une lanterne : en construction chez lui aussitôt', !!slotB && (await gameOf(B)).builds.some((x) => x.c === slotB[0] && x.r === slotB[1] && x.mine));
+  check('… en construction chez A aussi (construction de B)', await A.until(([c, r]) => window.__commands.builds().some((x) => x.c === c && x.r === r && x.pid === 1 && !x.mine), slotB, 2000));
+  await B.shot('construction-invite');
+  await A.shot('construction-hote');
+  check('… pas encore active (2 s)', !(await A.ev(([c, r]) => !!window.__state.game.towerAt(c, r), slotB)));
+  check('la lanterne de B s’active chez A et chez B', (await A.until(([c, r]) => window.__state.game.towerAt(c, r)?.owner === 1, slotB, 4000)) && (await B.until(([c, r]) => window.__state.game.towerAt(c, r)?.owner === 1, slotB, 4000)));
+  const act = async (p) =>
+    p.ev(([c, r]) => {
+      const g = window.__state.game;
+      const rec = g.recent.find((e) => e.op === 'placeTower' && e.args[1] === c && e.args[2] === r);
+      return rec ? { id: rec.id, f: window.__ex.get(rec.id), frame: rec.frame } : null;
+    }, slotB);
+  const [xa, xb] = [await act(A), await act(B)];
+  check('… à la même image chez les deux', xa && xb && xa.id === xb.id && xa.f === xb.f && xa.f === xa.frame, JSON.stringify([xa, xb]));
+  await B.page.waitForTimeout(300);
   a = await gameOf(A);
   b = await gameOf(B);
-  check('or séparé : B paie, A garde le sien', a.gold[1] === goldB0 - cost && a.gold[0] === goldA0 && b.gold[1] === goldB0 - cost, `${JSON.stringify(a.gold)} ${JSON.stringify(b.gold)} coût ${cost}`);
-  check('B : la pose confirmée garde son « Annuler »', await B.visible('#btn-undo'));
-  // A pose aussi (pour la fusion refusée plus bas)
+  check('or séparé : B paie, A garde le sien (chez les deux)', a.gold[1] === goldB0 - cost && a.gold[0] === goldA0 && b.gold[1] === goldB0 - cost && b.gold[0] === goldA0, `${JSON.stringify(a.gold)} ${JSON.stringify(b.gold)} coût ${cost}`);
+  check('B : « Annuler » encore possible après l’activation', await B.visible('#btn-undo'));
   const fireType = a.avail.find((t) => t === 'fire') || a.avail[0];
   const slotA = await placeBy(A, fireType);
-  check('la lanterne de A apparaît chez B', await B.until(([c, r]) => window.__state.game.towerAt(c, r)?.owner === 0, slotA));
+  check('la lanterne de A apparaît chez B (après sa construction)', await B.until(([c, r]) => window.__state.game.towerAt(c, r)?.owner === 0, slotA, 5000));
 
   console.log('Lanterne d’un autre joueur');
   await A.tap(await A.at(slotB[0], slotB[1]));
   check('A touche la lanterne de B : « Lanterne de … », sans Vendre', (await A.until(() => !!document.querySelector('#tower-bar .tb-owner'))) && !(await A.visible('#tower-bar .tb-sell')), await A.ev(() => document.querySelector('#tower-bar').innerHTML.slice(0, 200)));
   await A.tapSel('#tower-bar .tb-info');
-  check('fiche : nom du joueur, ni vente ni fusion', await A.until(() => /ni vente ni fusion/.test(document.querySelector('#info')?.textContent || '')) && !(await A.visible('#info .btn.sell')));
+  check('fiche : nom du joueur, ni vente ni fusion', (await A.until(() => /ni vente ni fusion/.test(document.querySelector('#info')?.textContent || ''))) && !(await A.visible('#info .btn.sell')));
   await A.tapSel('#info .sheet-close');
-  const sold = await A.ev((id) => window.__state.game.sellTower(id), (await gameOf(A)).towers.find((t) => t.owner === 1).id);
-  check('le moteur refuse aussi la vente par A', sold === 0 && (await gameOf(A)).towers.some((t) => t.owner === 1));
-  // glisser la lanterne de A sur celle de B : pas de fusion
+  check('la commande de vente de A est refusée d’emblée', !(await A.ev((id) => !!window.__commands.issue('sellTower', id), (await gameOf(A)).towers.find((t) => t.owner === 1).id)));
   const fromA = await A.at(slotA[0], slotA[1]);
   await B.touch('touchStart', { x: fromA.x, y: fromA.y - 12 });
   for (let i = 1; i <= 8; i++) {
@@ -717,11 +394,8 @@ try {
   check('B touche sa propre lanterne : « Vendre » proposé', await B.until(() => !!document.querySelector('#tower-bar .tb-sell')));
   await B.tap(await B.at(0, 0));
 
-  console.log('Poses simultanées, « Annuler » aussitôt, Givre');
-  await A.ev(() => window.__state.game.players.forEach((p) => (p.gold += 600)));
-  await wait(400);
-  // A et B touchent le même socle universel au même instant : une seule lanterne,
-  // seul le gagnant paie ; le perdant lit la raison près du socle
+  console.log('Poses simultanées, « Annuler » aussitôt');
+  await together([A, B], () => window.__state.game.players.forEach((p) => (p.gold += 600)));
   await B.ev(() => {
     window.__flashes = [];
     const i = window.__input;
@@ -731,7 +405,7 @@ try {
   const uni = await A.ev(() => {
     const g = window.__state.game;
     const gr = g.grid;
-    for (let i = 0; i < gr.size; i++) if (gr.type(i) === 3 && !gr.slotElement[i] && !g.towerAt(gr.col(i), gr.row(i)) && gr.row(i) >= 2) return [gr.col(i), gr.row(i)];
+    for (let i = 0; i < gr.size; i++) if (gr.type(i) === 3 && !gr.slotElement[i] && !g.towerAt(gr.col(i), gr.row(i)) && !window.__commands.buildAt(gr.col(i), gr.row(i)) && gr.row(i) >= 2) return [gr.col(i), gr.row(i)];
     return null;
   });
   const g0 = (await gameOf(A)).gold;
@@ -743,15 +417,14 @@ try {
   };
   const [qa, qb] = await Promise.all([pick(A, fireType), pick(B, wind)]);
   await Promise.all([B.tap(qb), A.tap(qa)]);
-  await wait(1500);
+  await wait(3200);
   const here = (await gameOf(A)).towers.filter((t) => t.c === uni[0] && t.r === uni[1]);
   const g1 = (await gameOf(A)).gold;
   check('poses simultanées : une seule lanterne, seul le gagnant paie', here.length === 1 && g1[1 - here[0].owner] === g0[1 - here[0].owner], JSON.stringify([here, g0, g1]));
-  check('poses simultanées : B voit la même chose', (await gameOf(B)).towers.filter((t) => t.c === uni[0] && t.r === uni[1] && !t.pending).length === 1);
+  check('poses simultanées : B voit la même chose', JSON.stringify((await gameOf(B)).towers.filter((t) => t.c === uni[0] && t.r === uni[1])) === JSON.stringify(here));
   if (here[0]?.owner === 0) check('perdant (B) : « Pris par … » près du socle', (await B.ev(() => window.__flashes)).some((t) => /^Pris par /.test(t)), JSON.stringify(await B.ev(() => window.__flashes)));
-  // « Annuler » touché aussitôt après la pose (avant la confirmation de l'hôte)
+  // « Annuler » touché aussitôt après la pose (avant même que l'hôte l'ait datée)
   await B.ev(() => {
-    // 250 ms de latence à la réception : la confirmation arrive après le toucher
     const c = window.__session.client;
     const om = c.onmessage;
     window.__slow = () => (c.onmessage = om);
@@ -759,54 +432,65 @@ try {
   });
   const gu = (await gameOf(A)).gold[1];
   const su = await placeBy(B, wind);
+  check('B : pose provisoire (pas encore datée) en construction', (await B.ev(() => window.__state.provisional.length)) === 1);
   await B.tapSel('#btn-undo');
-  await wait(1800);
-  check('« Annuler » aussitôt : annulée chez l’hôte, or rendu', !(await A.ev(([c, r]) => !!window.__state.game.towerAt(c, r), su)) && (await gameOf(A)).gold[1] >= gu, JSON.stringify([su, gu, (await gameOf(A)).gold]));
-  check('« Annuler » aussitôt : rien chez B', !(await B.ev(([c, r]) => !!window.__state.game.towerAt(c, r), su)));
+  check('« Annuler » : la construction disparaît aussitôt chez B', (await B.ev(([c, r]) => !window.__commands.buildAt(c, r), su)) && (await B.ev(() => window.__state.provisional.length)) === 0);
+  await wait(3000);
   await B.ev(() => window.__slow());
-  // Impulsion de combo (Givre : Eau + Vent) relayée à B : la zone voyageait sans sa
-  // définition et l'effet plantait la boucle de B (écran figé). Sur cette carte, pas
-  // de socles Eau / Vent voisins : deux lanternes voisines d'éléments différents
-  // forment un autre combo, dont l'hôte émet l'impulsion (même chemin réseau).
-  const combo = await A.ev(() => {
+  check('« Annuler » aussitôt : rien n’est construit, ni chez A ni chez B, rien n’est payé', !(await A.ev(([c, r]) => !!window.__state.game.towerAt(c, r), su)) && !(await B.ev(([c, r]) => !!window.__state.game.towerAt(c, r), su)) && (await gameOf(A)).gold[1] === gu, JSON.stringify([su, gu, (await gameOf(A)).gold]));
+  // « Annuler » pendant la construction (pose datée) : retirée chez tous, rien n'est payé
+  const sv = await placeBy(B, wind);
+  await B.page.waitForTimeout(700);
+  check('construction datée (chez A aussi)', await A.until(([c, r]) => window.__commands.buildAt(c, r)?.pid === 1, sv, 1500));
+  await B.tapSel('#btn-undo');
+  check('« Annuler » pendant la construction : elle disparaît aussitôt chez B', await B.ev(([c, r]) => !window.__commands.buildAt(c, r), sv));
+  await wait(2500);
+  check('… retirée chez A, jamais activée, or rendu', !(await A.ev(([c, r]) => !!window.__state.game.towerAt(c, r) || !!window.__commands.buildAt(c, r), sv)) && (await gameOf(A)).gold[1] === gu);
+
+  console.log('Fusion et vente d’un invité : en route pendant le délai des commandes');
+  // (qa-coop) Une fusion ou une vente s'exécute ~1 s après le geste : la lanterne glissée
+  // revenait à sa place comme si la fusion avait échoué, et pouvait être revendue ou
+  // refusionnée entre-temps (la seconde commande échouait en silence).
+  const tw1 = await placeBy(B, wind);
+  const tw2 = await placeBy(B, wind);
+  check('deux lanternes jumelles de B', await B.until(([a, b]) => window.__state.game.towerAt(...a)?.level === 1 && window.__state.game.towerAt(...b)?.level === 1, [tw1, tw2], 5000));
+  await B.page.waitForTimeout(3200); // (« Annuler » de la dernière pose : passé)
+  const [fa, fb] = [await B.at(...tw1), await B.at(...tw2)];
+  await B.touch('touchStart', { x: fa.x, y: fa.y - 10 });
+  await B.page.waitForTimeout(80);
+  for (let i = 1; i <= 12; i++) {
+    await B.touch('touchMove', { x: fa.x + ((fb.x - fa.x) * i) / 12, y: fa.y - 10 + ((fb.y - fa.y) * i) / 12 });
+    await B.page.waitForTimeout(16);
+  }
+  await B.touch('touchEnd');
+  const fu = await B.ev(([a, b]) => {
     const g = window.__state.game;
-    const gr = g.grid;
-    const near = [[1, 0], [0, 1], [1, 1], [-1, 1], [-1, 0], [0, -1], [1, -1], [-1, -1]];
-    for (const [ta, tb] of [['water', 'wind'], ['fire', 'wind'], ['fire', 'water'], ['earth', 'wind'], ['fire', 'earth'], ['water', 'earth']]) {
-      for (let i = 0; i < gr.size; i++) {
-        const c = gr.col(i);
-        const r = gr.row(i);
-        if (!g.canPlaceTower(ta, c, r, 0).ok) continue;
-        for (const [dc, dr] of near) {
-          if (!g.canPlaceTower(tb, c + dc, r + dr, 1).ok) continue;
-          g.placeTower(ta, c, r, 0);
-          g.placeTower(tb, c + dc, r + dr, 1);
-          const z = g.zones.find((z) => (z.a === g.towerAt(c, r).id || z.b === g.towerAt(c, r).id) && z.def.elements.includes(g.defs.towers[tb].element));
-          if (z) return z.key;
-        }
-      }
-    }
-    return null;
-  });
-  check('combo formé (lanternes de A et de B) chez B', !!combo && (await B.until((k) => window.__state.game.zones.some((z) => z.key === k), combo, 4000)), String(combo));
-  await A.ev((k) => {
-    const g = window.__state.game;
-    g.emit('pulse', { zone: g.zones.find((z) => z.key === k) });
-  }, combo);
-  await wait(1200);
-  const tf = (await gameOf(B)).time;
-  await wait(700);
-  check('impulsion de combo relayée : la partie de B continue (boucle intacte)', (await gameOf(B)).time > tf + 0.3 && !errors.some((e) => /pageerror/.test(e)), errors.slice(-2).join(' | '));
+    const s = g.towerAt(...a);
+    const d = g.towerAt(...b);
+    return { src: !!s, ops: [...window.__commands.towerOps().values()].map((x) => x.op), again: window.__commands.check('fuse', s?.id, d?.id).ok, sell: window.__commands.check('sellTower', s?.id).ok };
+  }, [tw1, tw2]);
+  check('fusion glissée : en route (la lanterne file vers sa jumelle), ni seconde fusion ni vente', fu.src && fu.ops.includes('fuse') && fu.ops.includes('fuseInto') && !fu.again && !fu.sell, JSON.stringify(fu));
+  await B.shot('fusion-en-route');
+  check('… fusion faite chez A et chez B', (await A.until(([a, b]) => !window.__state.game.towerAt(...a) && window.__state.game.towerAt(...b)?.level === 2, [tw1, tw2], 4000)) && (await B.until(([a, b]) => !window.__state.game.towerAt(...a) && window.__state.game.towerAt(...b)?.level === 2, [tw1, tw2], 4000)));
+  await B.tap(await B.at(...tw2));
+  await B.until(() => !!document.querySelector('#tower-bar .tb-sell'), null, 2000);
+  await B.tapSel('#tower-bar .tb-sell');
+  await B.tapSel('#tower-bar .tb-sell');
+  const sv2 = await B.ev(([c, r]) => {
+    const t = window.__state.game.towerAt(c, r);
+    return { still: !!t, busy: t ? window.__commands.towerBusy(t.id) : null, canSell: t ? window.__commands.check('sellTower', t.id).ok : null, bar: !document.querySelector('#tower-bar').classList.contains('hidden') };
+  }, tw2);
+  check('vente confirmée : en route (la lanterne s’efface), pas de seconde vente, barre fermée', !sv2.still || (sv2.busy && !sv2.canSell && !sv2.bar), JSON.stringify(sv2));
+  check('… vendue chez A et chez B', (await A.until(([c, r]) => !window.__state.game.towerAt(c, r), tw2, 4000)) && (await B.until(([c, r]) => !window.__state.game.towerAt(c, r), tw2, 4000)));
 
   console.log('Vagues, vitesse, vies communes');
   await B.tapSel('#btn-wave');
-  check('B lance la première vague chez l’hôte', await A.until(() => window.__state.game.waveIndex === 0));
+  check('B lance la première vague (chez A aussi)', (await A.until(() => window.__state.game.waveIndex === 0, null, 3000)) && (await B.until(() => window.__state.game.waveIndex === 0, null, 3000)));
   await B.page.waitForTimeout(400);
   const w = (await gameOf(A)).wave;
   await B.tapSel('#btn-wave');
-  check('B appelle la vague suivante en avance', await A.until((w) => window.__state.game.waveIndex === w + 1, w));
+  check('B appelle la vague suivante en avance', await A.until((w) => window.__state.game.waveIndex === w + 1, w, 3000));
   check('A est prévenu de l’appel de B', await A.until(() => /appelle la vague/.test(document.querySelector('#toast')?.textContent || '')));
-  // double toucher de B sur « Vague » avant la réponse de l'hôte : une seule vague appelée
   await A.page.waitForTimeout(1600);
   const w2 = (await gameOf(A)).wave;
   const wq = await B.center('#btn-wave');
@@ -816,46 +500,48 @@ try {
     await B.touch('touchEnd');
     await B.page.waitForTimeout(70);
   }
-  await A.page.waitForTimeout(1500);
+  await A.page.waitForTimeout(2000);
   check('double toucher de B sur « Vague » : une seule vague de plus', (await gameOf(A)).wave === w2 + 1, `${w2} → ${(await gameOf(A)).wave}`);
-  check('yokai visibles chez B', await B.until(() => window.__state.game.enemies.length > 0));
+  check('yokai visibles chez B (sa propre simulation)', await B.until(() => window.__state.game.enemies.length > 0));
   await B.tapSel('#btn-speed');
   check('vitesse : réservée à l’hôte (B ne change rien)', (await A.ev(() => window.__state.speed)) === 1);
   await A.tapSel('#btn-speed');
-  check(
-    'A passe en ×2, B le voit',
-    await B.until(() => window.__state.speed === 2 && /×2/.test(document.querySelector('#btn-speed').textContent)),
-    JSON.stringify([await A.ev(() => [window.__state.speed, window.__coop.active, window.__state.game.state]), await B.ev(() => [window.__state.speed, window.__coop.isGuest, window.__coop.speed, window.__coop.client?.received, window.__state.game.state])]),
-  );
+  check('A passe en ×2, B le voit', await B.until(() => window.__state.speed === 2 && /×2/.test(document.querySelector('#btn-speed').textContent)));
   await A.tapSel('#btn-speed');
-  // vies communes : on avance la simulation de l'hôte jusqu'aux premières fuites
+  check('retour à ×1 chez B', await B.until(() => window.__state.speed === 1));
+  // vies communes : les lanternes se taisent jusqu'à la première fuite (chez tous, même image)
   const lives0 = (await gameOf(A)).lives;
-  await A.ev(() => {
+  await together([A, B], () => {
     const g = window.__state.game;
-    for (const t of g.towers) t.stunT = 999; // les lanternes se taisent : les yokai passent
+    const keep = g.towers.map((t) => t.stunT);
+    for (const t of g.towers) t.stunT = 999;
     const l = g.lives;
     for (let k = 0; k < 60 * 120 && g.lives === l && g.state === 'wave'; k++) g.update(1 / 60);
-    for (const t of g.towers) t.stunT = 0;
+    g.towers.forEach((t, i) => (t.stunT = keep[i] ?? 0));
   });
   a = await gameOf(A);
-  check('une fuite coûte des vies chez l’hôte', a.lives < lives0, `${a.lives} / ${lives0}`);
-  check('vies communes : B voit les mêmes vies', await B.until((l) => window.__state.game.lives === l && document.querySelector('#hud-lives').textContent === String(l), a.lives));
+  check('une fuite coûte des vies', a.lives < lives0, `${a.lives} / ${lives0}`);
+  check('vies communes : B voit les mêmes vies (HUD)', await B.until((l) => window.__state.game.lives === l && document.querySelector('#hud-lives').textContent === String(l), a.lives));
+  const h1 = await settle([A, B]);
+  check('même partie chez A et B (empreinte à la même image)', h1[0] === h1[1], h1.join(' '));
+  check('aucune resynchronisation jusqu’ici', ((await gameOf(B)).stats?.resyncs ?? 1) === 0, JSON.stringify((await gameOf(B)).stats));
 
   console.log('Rembobinage par un invité');
-  await A.ev(() => {
-    const g = window.__state.game;
-    g.rewindCharge = g.rules.rewindCost ?? 100;
-  });
   check('jauge pleine et utilisable chez B', await B.until(() => window.__state.game.canRewind() && document.querySelector('#rewind')?.classList.contains('ready'), null, 6000), await B.ev(() => document.querySelector('#rewind').className));
   await dragRewind(B);
-  check('B rembobine : le temps recule chez l’hôte', await A.until(() => window.__state.game.rewindsUsed === 1));
+  // (qa-coop) pendant le délai de la commande, la jauge disait « Le passé s'accumule… »
+  // et se laissait glisser de nouveau : elle annonce le Rembobinage en route
+  const coming = await B.ev(() => ({ text: document.querySelector('#rewind .rewind-label')?.textContent || '', again: window.__commands.check('rewind').ok, rw: window.__state.game.rewindsUsed }));
+  check('B : jauge « Le temps va reculer… » pendant le délai, pas de second Rembobinage', coming.rw === 1 || (/va reculer/.test(coming.text) && !coming.again), JSON.stringify(coming));
+  check('B rembobine : le temps recule chez A et chez B', (await A.until(() => window.__state.game.rewindsUsed === 1, null, 3000)) && (await B.until(() => window.__state.game.rewindsUsed === 1, null, 3000)));
   check('A est prévenu du rembobinage de B', await A.until(() => /remonte le temps/.test(document.querySelector('#toast')?.textContent || '')));
   await A.page.waitForTimeout(1600);
+  const h2 = await settle([A, B]);
+  check('après le Rembobinage : même partie', h2[0] === h2[1], h2.join(' '));
 
   console.log('Pause');
   await A.tapSel('#btn-pause');
   check('pause de l’hôte : « Pause par l’hôte » chez B', await B.until(() => !document.querySelector('#coop-wait').classList.contains('hidden') && /Pause par l’hôte/.test(document.querySelector('#coop-wait').textContent)));
-  // le bandeau ne clignote pas (les états plus anciens encore en file ne lèvent pas la pause)
   const flicker = await B.ev(
     () =>
       new Promise((res) => {
@@ -871,18 +557,21 @@ try {
       }),
   );
   check('pause de l’hôte : bandeau stable (pas de clignotement)', flicker === 0, `${flicker} relevés sans bandeau`);
-  const tB = (await gameOf(B)).time;
+  const pa = await gameOf(A);
+  const pb = await gameOf(B);
+  check('pause : A et B arrêtés à la même image', pa.frame === pb.frame && pa.frame === (await A.ev(() => window.__coop.net.pauseAt)), `${pa.frame} ${pb.frame}`);
   await B.page.waitForTimeout(500);
-  check('la partie est figée chez B', Math.abs((await gameOf(B)).time - tB) < 0.05);
+  check('la partie est figée chez B', (await gameOf(B)).frame === pb.frame);
   await A.shot('partie-a-2-hote-pause');
   await B.shot('partie-a-2-invite-pause');
   await A.tapSel('.modal-card .actions .btn.primary'); // Reprendre
   check('reprise : le bandeau disparaît chez B', await B.until(() => document.querySelector('#coop-wait').classList.contains('hidden')));
   await B.tapSel('#btn-pause');
   check('menu de B : « La partie continue »', await B.until(() => /La partie continue/.test(document.querySelector('.modal-card')?.textContent || '')));
-  const tA = (await gameOf(A)).time;
+  const fA = (await gameOf(A)).frame;
+  const fB = (await gameOf(B)).frame;
   await A.page.waitForTimeout(600);
-  check('le menu d’un invité n’arrête pas la partie', (await gameOf(A)).time > tA + 0.3);
+  check('le menu d’un invité n’arrête pas la partie (ni chez A, ni chez B)', (await gameOf(A)).frame > fA + 20 && (await gameOf(B)).frame > fB + 20);
   await B.tapSel('.modal-card .actions .btn.primary');
   check('B reprend', !(await B.ev(() => window.__state.paused)));
   // l'hôte passe en arrière-plan : pause pour tous
@@ -897,35 +586,55 @@ try {
   });
   await A.tapSel('.modal-card .actions .btn.primary'); // Reprendre
   check('retour de l’hôte : la partie reprend', await B.until(() => document.querySelector('#coop-wait').classList.contains('hidden')));
-  // l'hôte ne donne plus de nouvelles (réseau coupé) : l'invité l'attend
+  // l'hôte ne donne plus de nouvelles (réseau coupé) : l'invité l'attend, sans le dépasser
   await A.ev(() => {
-    window.__mute = window.__session.broadcastSnapshot;
-    window.__session.broadcastSnapshot = () => {};
+    window.__mute = window.__session.broadcast;
+    window.__session.broadcast = () => {};
   });
   check('hôte sans nouvelles : « En attente de l’hôte… »', await B.until(() => /En attente de l’hôte/.test(document.querySelector('#coop-wait').textContent) && !document.querySelector('#coop-wait').classList.contains('hidden'), null, 6000));
   check('invité bloqué pendant l’attente (aucune commande)', await B.ev(() => window.__input.inspect === true));
-  await A.ev(() => (window.__session.broadcastSnapshot = window.__mute));
-  check('les nouvelles reviennent : le bandeau disparaît', await B.until(() => document.querySelector('#coop-wait').classList.contains('hidden')));
+  const stuck = (await gameOf(B)).frame;
+  await B.page.waitForTimeout(400);
+  check('… sa partie s’arrête (jamais plus de 8 images après le dernier battement)', (await gameOf(B)).frame === stuck);
+  await A.ev(() => (window.__session.broadcast = window.__mute));
+  check('les nouvelles reviennent : le bandeau disparaît, B rattrape', await B.until(() => document.querySelector('#coop-wait').classList.contains('hidden') && window.__coop.net.lag < 40, null, 8000));
   await A.page.waitForTimeout(700);
   await A.shot('partie-a-2-hote');
   await B.shot('partie-a-2-invite');
 
+  console.log('Débit pendant une vague');
+  {
+    const t0 = Date.now();
+    const in0 = await B.ev(() => window.__session.traffic.in);
+    const f0 = (await gameOf(A)).frame;
+    await B.tapSel('#btn-wave');
+    await wait(8000);
+    const secs = (Date.now() - t0) / 1000;
+    const bytes = (await B.ev(() => window.__session.traffic.in)) - in0;
+    const fr = (await gameOf(A)).frame - f0;
+    const en = (await gameOf(A)).towers.length;
+    console.log(`  · reçu par l’invité : ${(bytes / secs / 1024).toFixed(2)} Ko/s (${Math.round(bytes / secs)} o/s, ${fr} images, ${en} lanternes, ${await A.ev(() => window.__state.game.enemies.length)} yokai)`);
+    check('débit très faible chez l’invité (< 1 Ko/s)', bytes / secs < 1024, `${Math.round(bytes / secs)} o/s`);
+  }
+
   console.log('Invité qui recharge la page');
-  const before = (await gameOf(A)).towers.length;
+  const before = await gameOf(A);
   await B.page.reload({ waitUntil: 'networkidle' });
   check('B revient dans la partie après rechargement', await B.until(() => window.__state.screen === 'game' && window.__state.coopRole === 'guest', null, 12000), JSON.stringify(await lobby(B)));
-  check('B retrouve les lanternes et son or', await B.until(([n, g]) => window.__state.game.towers.length === n && Math.floor(window.__state.game.players[1].gold) === g, [before, (await gameOf(A)).gold[1]]));
+  check('B : état complet reçu (« Synchronisation… » puis la partie)', await B.until(() => window.__coop.net?.stats.imports === 1 && window.__coop.waitKind() === null && window.__state.game.frame > 600, null, 8000), JSON.stringify((await gameOf(B)).stats));
+  check('B retrouve les lanternes et son or', await B.until(([n, g]) => window.__state.game.towers.length === n && Math.abs(Math.floor(window.__state.game.players[1].gold) - g) < 60, [before.towers.length, before.gold[1]]));
   check('A voit B présent (pas « absent »)', await A.until(() => !document.querySelector('#coop-roster .coop-mate.off')));
+  const h3 = await settle([A, B]);
+  check('après le rechargement : même partie', h3[0] === h3[1], h3.join(' '));
 
   console.log('Coupures du réseau');
-  const recv = () => B.ev(() => window.__coop.client?.received ?? 0);
   await B.ev(() => window.__session.client.ws.close());
-  let r0 = await recv();
-  check('connexion de l’invité coupée : il revient seul, même partie', (await B.until(() => window.__session.online && window.__state.coopRole === 'guest', null, 10000)) && (await B.until((r) => (window.__coop.client?.received ?? 0) > r + 4, r0)));
+  check('connexion de l’invité coupée : il revient seul, même partie', (await B.until(() => window.__session.online && window.__state.coopRole === 'guest', null, 10000)) && (await B.until(() => window.__coop.waitKind() === null && window.__coop.net.lag < 40, null, 10000)));
   await A.ev(() => window.__session.client.ws.close());
   check('connexion de l’hôte coupée : il se reconnecte, salon intact', await A.until(() => window.__session.online && window.__session.lobby.players.length === 2, null, 10000));
-  r0 = await recv();
-  check('l’invité retrouve l’hôte et la partie continue', (await B.until((r) => (window.__coop.client?.received ?? 0) > r + 4 && window.__state.screen === 'game', r0, 15000)) && !(await B.visible('#modal:not(.hidden)')));
+  check('l’invité retrouve l’hôte et la partie continue', (await B.until(() => window.__coop.waitKind() === null && window.__coop.net.lag < 40 && window.__state.screen === 'game', null, 15000)) && !(await B.visible('#modal:not(.hidden)')));
+  const h4 = await settle([A, B]);
+  check('après les coupures : même partie', h4[0] === h4[1], h4.join(' '));
 
   console.log('L’hôte quitte');
   await A.close();
@@ -965,7 +674,6 @@ try {
   ]) {
     const p = k === 'P2' ? early : await new Player(k).open(url(`&salon=${code4}`));
     check(`${k} rejoint par le lien`, await p.until(() => window.__session.role === 'guest' && window.__session.online, null, 10000));
-    // (un élément libre est proposé à l'arrivée ; toucher l'élément déjà choisi le retirerait)
     if ((await p.ev((el) => document.querySelector(`.lobby-el[data-el="${el}"]`).getAttribute('aria-checked'), el)) !== 'true') await p.tapSel(`.lobby-el[data-el="${el}"]`);
     await p.until((el) => window.__session.lobby.players.find((x) => x.id === window.__session.id)?.element === el, el, 4000);
     G.push(p);
@@ -974,7 +682,7 @@ try {
   const P5 = await new Player('P5').open();
   await P5.until(() => window.__session?.online);
   await P5.ev((c) => window.__lobby.join(c), code4);
-  check('5e joueur : salon complet', await P5.until(() => /complet/.test(document.querySelector('.lobby-error')?.textContent || ''), null, 10000) && (await lobby(P5)).role === 'host');
+  check('5e joueur : salon complet', (await P5.until(() => /complet/.test(document.querySelector('.lobby-error')?.textContent || ''), null, 10000)) && (await lobby(P5)).role === 'host');
   await P5.close();
   await H.page.waitForTimeout(300);
   await H.shot('salon-a-4');
@@ -988,29 +696,41 @@ try {
   let all = true;
   for (const p of G) all = (await p.until(() => window.__state.screen === 'game' && window.__state.coopRole === 'guest')) && all;
   check('les trois invités entrent dans la partie', all);
-  for (const p of G) {
-    const g = await gameOf(p);
-    const els = new Set(await p.ev(() => window.__state.game.availableTowers.map((t) => window.__state.game.defs.towers[t].element)));
-    check(`${p.tag} : une seule famille d’éléments, ${g.local + 1}e joueur`, els.size === 1, JSON.stringify([...els]));
+  const P = [H, ...G];
+  const want = ['earth', 'fire', 'water', 'wind'];
+  for (let i = 0; i < P.length; i++) {
+    const e = await els(P[i]);
+    check(`${P[i].tag} : palette de son seul élément (${want[i]})`, JSON.stringify(e) === JSON.stringify([want[i]]) && JSON.stringify(await paletteEls(P[i])) === JSON.stringify([want[i]]), JSON.stringify(e));
   }
   check('rangée des coéquipiers : 3 chez chacun', (await H.ev(() => document.querySelectorAll('#coop-roster .coop-mate').length)) === 3);
+  for (const p of P) await hookExec(p);
   const placed = [];
+  let building = true;
   for (const p of G) {
     const g = await gameOf(p);
-    const type = g.avail[0];
-    const s = await placeBy(p, type, 1);
+    const s = await placeBy(p, g.avail[0], 1);
     placed.push(s);
+    // sa construction, aussitôt chez lui, puis chez les trois autres (pose datée par l'hôte)
+    for (const q of P) building = (await q.until((s) => !!s && (!!window.__commands.buildAt(s[0], s[1]) || !!window.__state.game.towerAt(s[0], s[1])), s, 1500)) && building;
+    if (p === G[1]) await G[2].shot('partie-a-4-construction');
   }
+  check('chaque construction d’un invité est visible chez les quatre', building);
   let seen = true;
-  for (const p of [H, ...G]) seen = (await p.until((list) => list.every((s) => s && window.__state.game.towerAt(s[0], s[1])), placed)) && seen;
-  check('les poses des trois invités sont visibles chez les quatre', seen);
+  for (const p of P) seen = (await p.until((list) => list.every((s) => s && window.__state.game.towerAt(s[0], s[1])), placed, 5000)) && seen;
+  check('… puis actives chez les quatre', seen);
+  const frames = [];
+  for (const p of P) frames.push(await p.ev((list) => list.map((s) => window.__ex.get(window.__state.game.recent.find((e) => e.op === 'placeTower' && e.args[1] === s[0] && e.args[2] === s[1])?.id)).join(), placed));
+  check('… chacune activée à la même image chez les quatre', new Set(frames).size === 1 && !frames[0].includes('undefined'), frames.join(' | '));
+  const h5 = await settle(P);
+  check('à quatre : même partie partout', new Set(h5).size === 1, h5.join(' '));
   await H.page.waitForTimeout(300);
   await H.shot('partie-a-4-hote');
   await G[1].shot('partie-a-4-invite');
 
   console.log('Fin de partie');
-  // l'hôte saute à la fin (dernière vague lancée, plus aucun yokai) : victoire
-  await H.ev(() => {
+  // tous sautent à la fin (dernière vague lancée, plus aucun yokai), à la même image :
+  // chacun calcule lui-même sa victoire
+  await together(P, () => {
     const g = window.__state.game;
     while (g.startNextWave(0, false));
     for (const s of g.spawners) s.spawned = s.count;
@@ -1020,31 +740,29 @@ try {
   check('hôte : « Salon », « Rejouer », « Suivant »', /Salon.*Rejouer.*Suivant/.test(await H.ev(() => document.querySelector('.modal-card .actions').textContent)));
   let wins = true;
   for (const p of G) wins = (await p.until(() => /Victoire/.test(document.querySelector('.modal-card')?.textContent || '') && !!document.querySelector('.modal-card .actions .btn.primary'), null, 8000)) && wins;
-  check('chaque invité voit la victoire', wins);
+  check('chaque invité voit la victoire (calculée par sa propre partie)', wins);
   let starsOk = true;
   for (const p of G) starsOk = (await p.ev((id) => window.__save.level(id).stars > 0, LEVEL)) && starsOk;
   check('étoiles enregistrées chez chacun', starsOk);
   check('invité : « Retour au salon »', /Retour au salon/.test(await G[0].ev(() => document.querySelector('.modal-card .actions').textContent)));
-  await G[0].page.waitForTimeout(1600); // étoiles qui s'allument une à une
+  await G[0].page.waitForTimeout(1600);
   await G[0].shot('victoire-invite');
   await G[0].tapSel('.modal-card .actions .btn.primary');
   check('retour au salon de l’hôte', await G[0].until(() => window.__state.screen === 'title' && window.__session.role === 'guest'));
-  // l'hôte relance : tous repartent, même celui revenu au salon
   await H.tapSel('.modal-card .actions .btn:not(.primary):not(.dark)'); // Rejouer
   all = true;
   for (const p of G) all = (await p.until(() => window.__state.screen === 'game' && window.__state.coopRole === 'guest' && !window.__state.resultShown, null, 8000)) && all;
   check('« Rejouer » de l’hôte : nouvelle partie pour tous', all);
-  // défaite : chacun la voit ; « Réessayer » de l'hôte relance pour tous
+  // défaite chez l'hôte seul : les invités la reçoivent par l'annonce de l'hôte (filet)
   await H.ev(() => window.__state.game.lose());
   let lost = true;
   for (const p of G) lost = (await p.until(() => /Le sanctuaire est tombé/.test(document.querySelector('.modal-card')?.textContent || ''), null, 8000)) && lost;
-  check('défaite : chaque invité la voit', lost);
+  check('défaite annoncée par l’hôte : chaque invité la voit', lost);
   await H.until(() => /Le sanctuaire est tombé/.test(document.querySelector('.modal-card')?.textContent || ''));
   await H.tapSel('.modal-card .actions .btn.primary'); // Réessayer
   all = true;
   for (const p of G) all = (await p.until(() => window.__state.screen === 'game' && !window.__state.resultShown && document.querySelector('#modal').classList.contains('hidden'), null, 8000)) && all;
   check('« Réessayer » de l’hôte : tous repartent', all);
-  // l'hôte retourne à la carte : la partie s'arrête pour tous
   await H.tapSel('#btn-pause');
   await H.page.locator('.modal-card .actions .btn', { hasText: 'Carte' }).click();
   let ended = true;
@@ -1088,12 +806,10 @@ try {
   await X.tapSel('#btn-pause');
   await X.page.locator('.modal-card .actions .btn', { hasText: 'Recommencer' }).click();
   check('« Recommencer pour tous » : partie à 2, sans l’absent', await X.until((g0) => window.__state.game && window.__state.gid !== g0 && window.__state.game.players.length === 2 && window.__session.lobby.players.length === 2, gidX, 6000), JSON.stringify(await X.ev(() => [window.__state.game?.players.length, window.__session.lobby.players.map((p) => [p.element, p.online])])));
-  check('… l’hôte retrouve l’Eau de l’absent (palette)', await X.ev(() => window.__state.game.ownsElement(0, 'water') && window.__state.game.availableTowers.some((t) => window.__state.game.defs.towers[t].element === 'water')));
+  check('… un élément chacun : Feu pour X (l’Eau de l’absent n’est à personne)', await X.ev(() => JSON.stringify(window.__state.game.players[0].elements) === '["fire"]' && window.__state.game.availableTowers.every((t) => window.__state.game.defs.towers[t].element === 'fire')));
   check('… Z entre dans la nouvelle partie (sans « Partie terminée »)', (await Z.until((g0) => window.__state.screen === 'game' && window.__coop.isGuest && window.__state.gid !== g0 && window.__state.game.players.length === 2, gidX, 8000)) && !(await Z.ev(() => window.__sawEnd)));
 
   console.log('Fin de partie manquée pendant une coupure');
-  // le message de fin n'arrive pas chez Z (socle gelée, relais qui coupe) : en revenant,
-  // il voit au salon que l'hôte n'est plus en partie et conclut
   await Z.ev(() => {
     const s = window.__session;
     const on = s.onGuestMessage;
@@ -1107,7 +823,6 @@ try {
   await Z.until(() => window.__state.screen === 'title');
   await Z.ev(() => window.__unmute());
 
-  // le dernier invité part : la relance redevient une partie seul
   await X.tapSel('#btn-map-back');
   await X.until(() => window.__state.screen === 'title');
   await X.ev(() => window.__startLevel('1-1'));
@@ -1119,7 +834,7 @@ try {
   const fake = (gid) => JSON.stringify({ type: 'end', ...(gid != null ? { gid } : {}), result: { won: true, stars: 3, challenge: true, level: '1-1', kills: '<img src=x onerror="window.__pwned=1">', towers: '<b id="inj">7</b>', lives: '<i id="inj2">' } });
   spy.publish(`jde/v1/${codeX}/h`, fake(null));
   await wait(800);
-  check('fin forgée sans sa partie : ignorée (l’invité joue toujours)', (await Z.ev(() => window.__state.screen === 'game' && !window.__state.resultPending && !window.__state.resultShown && document.querySelector('#modal').classList.contains('hidden'))));
+  check('fin forgée sans sa partie : ignorée (l’invité joue toujours)', await Z.ev(() => window.__state.screen === 'game' && !window.__state.resultPending && !window.__state.resultShown && document.querySelector('#modal').classList.contains('hidden')));
   spy.publish(`jde/v1/${codeX}/h`, fake(await Z.ev(() => window.__state.gid)));
   await Z.until(() => window.__state.resultShown, null, 4000);
   const inj = await Z.ev(() => ({ shown: window.__state.resultShown, pwned: window.__pwned ?? null, tags: !!document.querySelector('#inj, #inj2, .result-stats img'), text: document.querySelector('.result-stats')?.textContent || '' }));
@@ -1132,12 +847,10 @@ try {
   await X.until(() => window.__session.lobby.players[1]?.online === false, null, 6000);
   await X.tapSel('#btn-pause');
   await X.page.locator('.modal-card .actions .btn', { hasText: 'Recommencer' }).click();
-  check('seul après les départs : « Recommencer » relance une partie seul', await X.until(() => window.__state.game && !window.__state.coopRole && window.__state.game.players.length === 1 && !window.__session.inGame && window.__session.lobby.players.length === 1, null, 6000));
+  check('seul après les départs : « Recommencer » relance une partie seul (4 éléments)', await X.until(() => window.__state.game && !window.__state.coopRole && window.__state.game.players.length === 1 && window.__state.game.players[0].elements.length === 4 && !window.__session.inGame && window.__session.lobby.players.length === 1, null, 6000));
   for (const p of [X, Y, Z]) await p.close();
 
   console.log('Recherche de salon annulée');
-  // deux relais (le jeu en a trois) : la recherche d'un code faux passe au suivant ;
-  // l'annuler ne doit ni fermer son propre salon ni dire « Vous avez rejoint »
   const W = await new Player('W').open(`${BASE}?broker=${encodeURIComponent(`${BROKER},${BROKER}`)}`);
   await W.until(() => window.__session?.online);
   await W.ev(() => {

@@ -6,6 +6,7 @@ import { elementOf, elementInfo, elementBadge, elementTag, elementList } from '.
 import { enemyPortrait, towerPortrait } from './portraits.js';
 import { priorityInfo, aims } from './towerbar.js';
 import { earlyCharge } from './wavepreview.js';
+import { commands } from './commands.js';
 
 const nf = new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 2 });
 const fmt = (n) => nf.format(Math.round(n * 100) / 100);
@@ -417,14 +418,15 @@ export class Sheets {
     const next = t.level < max ? def.levels[t.level] : null;
     const zones = g.zones.filter((z) => z.a === t.id || z.b === t.id);
     const sell = g.sellValue(t);
-    const p = priorityInfo(t.priority);
+    // priorité demandée (commande en attente comprise)
+    const p = priorityInfo(commands.priorityOf(t) ?? t.priority);
     const rateMult = t.rateMult || 1;
     const cleanse = t.cleanse || 0;
     const bar = atk === 'barrier' ? (g.barriers || []).find((b) => b.towerId === t.id) : null;
     // Fusion : une lanterne identique (même type, même niveau) glissée dessus.
     const twinCost = def.cost * Math.pow(2, t.level - 1);
     const twin = next ? g.towers.find((o) => o.id !== t.id && g.canFuse(o.id, t.id).ok) : null;
-    const sig = `${t.id}|${t.level}|${t.priority}|${sell}|${zones.map((z) => z.key ?? z.def.id).join(',')}|${!!twin}|${this.confirm}|${rateMult.toFixed(2)}|${cleanse.toFixed(2)}|${bar ? `${bar.id}:${bar.alive}` : ''}`;
+    const sig = `${t.id}|${t.level}|${p.label}|${sell}|${zones.map((z) => z.key ?? z.def.id).join(',')}|${!!twin}|${this.confirm}|${rateMult.toFixed(2)}|${cleanse.toFixed(2)}|${bar ? `${bar.id}:${bar.alive}` : ''}`;
     const dps = dpsOf(st, def, rateMult);
     const fx = effectsOf(st);
     const rows = [];
@@ -533,8 +535,11 @@ export class Sheets {
     const st = def.levels[0];
     const atk = attackOf(def);
     const max = g.maxLevelOf ? g.maxLevelOf(type) : def.levels.length;
-    const poor = g.gold < def.cost;
-    const sig = `${type}|${poor}`;
+    // or disponible : celui des constructions en cours est déjà promis
+    const poor = commands.spendable() < def.cost;
+    // coopération : une lanterne d'un autre élément se consulte, ne se choisit pas
+    const mine = g.availableTowers.includes(type);
+    const sig = `${type}|${poor}|${mine}`;
     const rows = [];
     rows.push(`<p class="sheet-desc">${esc(def.desc)}</p>`);
     rows.push(statsRow(def, st));
@@ -575,7 +580,9 @@ export class Sheets {
       body: rows.join(''),
       actions: forbid
         ? '<button class="btn disabled" aria-disabled="true">Interdit par le défi</button>'
-        : `<button class="btn${poor ? ' disabled' : ' primary'}" data-act="choose"${poor ? ' aria-disabled="true"' : ''}>${poor ? `Il manque ${Math.ceil(def.cost - g.gold)} or` : `Choisir · ${def.cost} or`}</button>`,
+        : !mine
+          ? `<button class="btn disabled" aria-disabled="true">Élément d’un autre joueur</button>`
+          : `<button class="btn${poor ? ' disabled' : ' primary'}" data-act="choose"${poor ? ' aria-disabled="true"' : ''}>${poor ? `Il manque ${commands.missing(type)} or` : `Choisir · ${def.cost} or`}</button>`,
     };
   }
 
@@ -596,7 +603,7 @@ export class Sheets {
     if (info.desc) rows.push(`<p class="sheet-desc">${esc(info.desc)}</p>`);
     rows.push(`<div class="wave-list">${lines}</div>`);
     rows.push(slotsRow(g, el));
-    if (el === 'earth' && g.stoneConf?.()) rows.push(row('Pierres', 'La Terre façonne le chemin : en coopération, seuls ses joueurs posent des pierres.'));
+    if (el === 'earth' && g.stoneConf?.()) rows.push(row('Pierres', 'La Terre façonne le chemin : en coopération, seul le joueur de la Terre pose des pierres.'));
     return {
       sig: `${el}|${list.join(',')}`,
       pic: `<span class="sheet-pic el">${elementBadge(el, defs, { size: 34 })}</span>`,
@@ -714,9 +721,9 @@ export class Sheets {
       title: 'Pierre',
       tags: `<span>${left}${conf ? `/${conf.max}` : ''} restante${left > 1 ? 's' : ''}</span>`,
       body: `<p class="sheet-desc">Elle détourne les yokai terrestres et allonge leur chemin. Les volants l’ignorent.</p>${
-        canRemove ? row('Retirer', `rend ${refund} or et une pierre`) : !canStone ? row('Retirer', 'réservé aux joueurs de la Terre') : row('Retirer', `réservé à ${esc(ownerName || 'celui qui l’a posée')}`)
+        canRemove ? row('Retirer', `rend ${refund} or et une pierre`) : !canStone ? row('Retirer', 'réservé au joueur de la Terre') : row('Retirer', `réservé à ${esc(ownerName || 'celui qui l’a posée')}`)
       }`,
-      // en coopération, seuls les joueurs de la Terre façonnent le chemin
+      // en coopération, seul le joueur de la Terre façonne le chemin
       actions: canRemove ? `<button class="btn" data-act="unstone">Retirer +${refund}</button>` : '',
     };
   }
@@ -726,11 +733,12 @@ export class Sheets {
   stoneToolSheet(g) {
     if (!g.level.stones) return null;
     const conf = g.stoneConf?.();
-    const left = g.stonesLeft();
+    const left = commands.stonesLeft(); // celles en construction déduites
     const refund = Math.floor(g.stoneCost() * (g.rules.stoneRefund ?? 0.5));
-    const poor = g.gold < g.stoneCost();
+    const poor = commands.spendable() < g.stoneCost();
+    const canStone = typeof g.canUseStones === 'function' ? g.canUseStones() : true;
     return {
-      sig: `${left}|${poor}`,
+      sig: `${left}|${poor}|${canStone}`,
       pic: '<span class="sheet-pic stone">石</span>',
       title: 'Pierre',
       tags: `<span>${left}${conf ? `/${conf.max}` : ''} restante${left > 1 ? 's' : ''}</span><span class="dot">·</span><span>${g.stoneCost()} or</span>`,
@@ -738,7 +746,9 @@ export class Sheets {
         `<p class="sheet-desc">Posée sur le gravier ouvert, elle détourne les yokai terrestres et allonge leur chemin. Glissez-la : le nouveau tracé s’affiche avant de relâcher.</p>` +
         row('Règle', 'Le chemin ne peut jamais être coupé. Les volants l’ignorent.') +
         row('Retirer', `toucher une pierre posée : +${refund} or, la pierre revient`),
-      actions: `<button class="btn${poor || left <= 0 ? ' disabled' : ' primary'}" data-act="choose"${poor || left <= 0 ? ' aria-disabled="true"' : ''}>${left <= 0 ? 'Plus de pierres' : poor ? `Il manque ${Math.ceil(g.stoneCost() - g.gold)} or` : `Choisir · ${g.stoneCost()} or`}</button>`,
+      actions: !canStone
+        ? '<button class="btn disabled" aria-disabled="true">Réservé à la Terre</button>'
+        : `<button class="btn${poor || left <= 0 ? ' disabled' : ' primary'}" data-act="choose"${poor || left <= 0 ? ' aria-disabled="true"' : ''}>${left <= 0 ? 'Plus de pierres' : poor ? `Il manque ${commands.missing('stone')} or` : `Choisir · ${g.stoneCost()} or`}</button>`,
     };
   }
 
@@ -748,7 +758,7 @@ export class Sheets {
     const pv = g.nextWavePreview ? g.nextWavePreview() : null;
     if (!pv) return null;
     const defs = g.defs;
-    const canCall = typeof g.canCallNextWave === 'function' ? g.canCallNextWave() : g.state === 'build';
+    const canCall = commands.check('startNextWave').ok;
     const list = pv.groups
       .map((gr) => {
         const def = defs.enemies[gr.enemy];

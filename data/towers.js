@@ -113,9 +113,9 @@ export default {
     targets: { ground: true, air: true },
     projectile: 'droplet',
     levels: [
-      { range: 2.2, rate: 1.0, damage: 4, slow: { factor: 0.6, duration: 1.4 }, projectileSpeed: 8 },
-      { range: 2.5, rate: 1.15, damage: 7, slow: { factor: 0.5, duration: 1.8 }, splash: 0.6, projectileSpeed: 9 },
-      { range: 2.9, rate: 1.35, damage: 11, slow: { factor: 0.42, duration: 2.2 }, splash: 0.9, projectileSpeed: 10 },
+      { range: 2.2, rate: 1.0, damage: 5, slow: { factor: 0.6, duration: 1.4 }, projectileSpeed: 8 },
+      { range: 2.5, rate: 1.15, damage: 10, slow: { factor: 0.5, duration: 1.8 }, splash: 0.6, projectileSpeed: 9 },
+      { range: 2.9, rate: 1.35, damage: 16, slow: { factor: 0.42, duration: 2.2 }, splash: 0.9, projectileSpeed: 10 },
     ],
   },
   water_spring: {
@@ -155,9 +155,9 @@ export default {
     targets: { ground: true, air: true },
     attack: 'beam',
     levels: [
-      { range: 3.0, rate: 0.7, damage: 15, width: 0.45, slow: { factor: 0.8, duration: 1 } },
-      { range: 3.3, rate: 0.75, damage: 27, width: 0.5, slow: { factor: 0.75, duration: 1.2 } },
-      { range: 3.6, rate: 0.8, damage: 48, width: 0.55, slow: { factor: 0.7, duration: 1.4 } },
+      { range: 3.0, rate: 0.7, damage: 17, width: 0.45, slow: { factor: 0.8, duration: 1 } },
+      { range: 3.3, rate: 0.75, damage: 30, width: 0.5, slow: { factor: 0.75, duration: 1.2 } },
+      { range: 3.6, rate: 0.8, damage: 52, width: 0.55, slow: { factor: 0.7, duration: 1.4 } },
     ],
   },
 
@@ -177,9 +177,9 @@ export default {
     targets: { ground: true, air: true },
     projectile: 'gust',
     levels: [
-      { range: 2.3, rate: 0.9, damage: 7, knockback: 0.5, airMultiplier: 2, projectileSpeed: 12 },
-      { range: 2.6, rate: 1.0, damage: 13, knockback: 0.8, airMultiplier: 2, splash: 0.5, projectileSpeed: 13 },
-      { range: 3.0, rate: 1.15, damage: 24, knockback: 1.1, airMultiplier: 2.2, splash: 0.8, projectileSpeed: 14 },
+      { range: 2.3, rate: 0.9, damage: 9, knockback: 0.5, airMultiplier: 2, projectileSpeed: 12 },
+      { range: 2.6, rate: 1.0, damage: 16, knockback: 0.8, airMultiplier: 2, splash: 0.5, projectileSpeed: 13 },
+      { range: 3.0, rate: 1.15, damage: 30, knockback: 1.1, airMultiplier: 2.2, splash: 0.8, projectileSpeed: 14 },
     ],
   },
   wind_chime: {

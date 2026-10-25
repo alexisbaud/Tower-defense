@@ -287,6 +287,22 @@ export function drawBarrier(ctx, bar, game, ts, time, opts = {}) {
   }
 }
 
+// Mur en construction (« Déplacer le mur », cf. render/construction.js) : le mur
+// neuf monte de terre sur sa nouvelle case, translucide, avec l'avancement k (0 → 1).
+// (x, y) : centre de la case (repère du plateau, px CSS) ; `seed` : index de la case.
+export function drawWallGhost(ctx, x, y, seed, ts, k) {
+  const m = ctx.getTransform();
+  const sc = Math.max(1, Math.min(4, Math.round(Math.hypot(m.a, m.b) * 2) / 2));
+  const s = wallSprite(seed, 0, false, ts, sc);
+  const rise = 0.25 + 0.75 * Math.max(0, Math.min(1, k));
+  ctx.save();
+  ctx.globalAlpha *= 0.3 + 0.45 * k;
+  ctx.translate(x, y + ts * 0.3);
+  ctx.scale(1, rise);
+  ctx.drawImage(s.c, -s.ax, -s.ay - ts * 0.3, s.w, s.h);
+  ctx.restore();
+}
+
 // Fil discret entre la barrière et son gardien (sous les entités).
 export function drawBarrierThread(ctx, bar, tower, game, ts, time) {
   const g = game.grid;

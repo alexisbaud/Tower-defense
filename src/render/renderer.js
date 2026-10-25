@@ -10,6 +10,7 @@ import { Fx, ELEMENT_COLORS, drawPortal, drawEnso, drawInkCross, drawRouteMarks 
 import { INK, PALETTE, withAlpha, wash, brushStroke, mix, makeCanvas } from './brush.js';
 import { T } from '../core/grid.js';
 import { drawZones, drawComboLinks, drawTornado, drawStone, drawComboPreview, drawLinkPreview, drawSeal } from './combos.js';
+import { drawTowerBuild, drawStoneBuild, drawRallyBuild } from './construction.js';
 
 const TAU = Math.PI * 2;
 const UI_FONT = '"Zen Kaku Gothic New", -apple-system, "Helvetica Neue", sans-serif';
@@ -34,6 +35,13 @@ export class Renderer {
     this.maxDpr = 3; // abaissé automatiquement si l'appareil peine (voir main.js)
     // Libellé d'un aperçu de pose (fourni par main.js) : { text, tone: 'ok'|'bad'|'muted' } | null
     this.pressLabel = null;
+    // Constructions en cours (fournies par main.js : commands.builds()) et sceau du
+    // joueur qui construit (coopération : { color, … } de son élément).
+    this.constructions = null;
+    this.towerOps = null; // fusions et ventes en route : () → Map(id → { op, k, dst })
+    this.buildOwner = null;
+    this.builds = [];
+    this.buildTiles = new Set();
   }
 
   resize(w, h) {
@@ -152,6 +160,12 @@ export class Renderer {
     ctx.save();
     ctx.translate(this.ox + sx, this.oy + sy);
 
+    // Constructions en cours : leurs cases ne s'allument plus comme libres.
+    this.builds = this.constructions?.() || [];
+    this.ops = this.towerOps?.() || null;
+    this.buildTiles.clear();
+    for (const b of this.builds) if (b.op !== 'setRally' && b.c != null) this.buildTiles.add(b.c * 64 + b.r);
+
     this.drawSpawns(ctx, ts, time);
     this.drawRoutes(ctx, ts, time);
     this.drawGoalGlow(ctx, ts, time);
@@ -201,6 +215,7 @@ export class Renderer {
       if (bt) respawnMax = game.towerStats(bt).respawn ?? 6;
       items.push({ y: g.cy(b.tile) + 0.12, k: 2, draw: (c, s, tm) => drawBarrier(c, b, game, s, tm, { respawnMax, reduced: !!ui.reducedMotion }) });
     }
+    this.pushBuilds(items, game, snow);
     if (this.extraDrawables) this.extraDrawables(items);
     items.sort((a, b) => a.y - b.y);
     for (const it of items) {
@@ -208,6 +223,18 @@ export class Renderer {
         const t = it.o;
         if ((ui.drag && ui.drag.towerId === t.id) || (ui.dragBack && ui.dragBack.towerId === t.id)) {
           drawTower(ctx, t.x * ts, t.y * ts, ts, game.defs.towers[t.type], t.level, time, { alpha: 0.35 });
+          continue;
+        }
+        const op = this.ops?.get(t.id);
+        if (op && (op.op === 'fuse' || op.op === 'sellTower')) {
+          // Fusion ou vente en route (coopération : délai des commandes) : la lanterne
+          // glisse vers sa jumelle, ou s'efface — elle ne semble pas revenue à sa place.
+          const dst = op.op === 'fuse' ? game.towerById(op.dst) : null;
+          const e = 1 - (1 - Math.min(1, Math.max(0, op.k ?? 0))) ** 2;
+          const f = dst ? 0.3 + 0.55 * e : 0;
+          const x = dst ? t.x + (dst.x - t.x) * f : t.x;
+          const y = dst ? t.y + (dst.y - t.y) * f - 0.12 : t.y;
+          drawTower(ctx, x * ts, y * ts, ts, game.defs.towers[t.type], t.level, time, { alpha: dst ? 0.8 : 0.45 - 0.25 * e });
           continue;
         }
         if (anim && anim.ghosts.includes(t.id)) {
@@ -272,6 +299,28 @@ export class Renderer {
       this.drawPressCombos(ctx, ui.press, time);
     }
     if (ui.flash) this.drawFlash(ctx, ui);
+  }
+
+  // Constructions en cours (lanternes, pierres, murs), triées en profondeur avec les
+  // entités ; liseré à la couleur de l'élément du joueur qui construit (coéquipier).
+  pushBuilds(items, game, snow) {
+    if (!this.builds.length) return;
+    const g = game.grid;
+    for (const b of this.builds) {
+      if (b.c == null || !g.inBounds(b.c, b.r)) continue;
+      const color = b.mine ? null : this.buildOwner?.(b.pid)?.color ?? '#6d6a78';
+      if (b.op === 'placeTower') {
+        const def = game.defs.towers[b.type];
+        if (!def) continue;
+        items.push({ y: b.r + 0.5, k: 4, draw: (c, s, tm) => drawTowerBuild(c, b, def, s, tm, { grey: this.greyGhost(def, s), color }) });
+      } else if (b.op === 'placeStone') {
+        const i = g.idx(b.c, b.r);
+        items.push({ y: b.r + 0.4, k: 4, draw: (c, s, tm) => drawStoneBuild(c, b, s, tm, { seed: i * 17 + 3, snow, color }) });
+      } else if (b.op === 'setRally') {
+        const t = game.towerById(b.towerId);
+        items.push({ y: b.r + 0.62, k: 4, draw: (c, s, tm) => drawRallyBuild(c, b, s, tm, { from: t ? { x: t.x, y: t.y } : null, seed: g.idx(b.c, b.r), color }) });
+      }
+    }
   }
 
   // Carillon : fil d'or discret et ondes sonores qui voyagent vers chaque lanterne
@@ -878,7 +927,7 @@ export class Renderer {
       const q = ts * 0.2;
       ctx.beginPath();
       for (let i = 0; i < g.size; i++) {
-        if (g.type(i) !== T.OPEN || g.stone[i]) continue;
+        if (g.type(i) !== T.OPEN || g.stone[i] || this.buildTiles.has(g.col(i) * 64 + g.row(i))) continue;
         const x0 = g.col(i) * ts + ts * 0.16;
         const y0 = g.row(i) * ts + ts * 0.16;
         const x1 = x0 + ts * 0.68;
@@ -907,7 +956,7 @@ export class Renderer {
       const el = game.defs.towers[ui.tool]?.element ?? ui.tool;
       for (let i = 0; i < g.size; i++) {
         if (g.type(i) !== T.SLOT) continue;
-        if (game.towerAt(g.col(i), g.row(i))) continue;
+        if (game.towerAt(g.col(i), g.row(i)) || this.buildTiles.has(g.col(i) * 64 + g.row(i))) continue;
         const x = g.cx(i) * ts;
         const y = g.cy(i) * ts - ts * 0.01;
         const se = g.slotElement?.[i];
@@ -1170,7 +1219,7 @@ export class Renderer {
         if (valid) {
           wash(ctx, x, y, ts * 0.75, PALETTE.goldLight, 0.45);
           drawEnso(ctx, x, y, ts * 0.6, PALETTE.vermillion, 0.9, -time * 3);
-        } else if (other && other.id !== ui.drag.towerId) {
+        } else if ((other && other.id !== ui.drag.towerId) || ui.drag.hover.reason === 'pending') {
           drawInkCross(ctx, x, y - ts * 0.1, ts * 0.2, withAlpha(PALETTE.vermillion, 0.85), c * 31 + r);
         }
       }
@@ -1315,7 +1364,7 @@ export class Renderer {
     if (press.kind === 'tower') {
       const def = game.defs.towers[press.type];
       if (!def) return;
-      const occupied = snapped && game.towerAt(press.c, press.r);
+      const occupied = snapped && (game.towerAt(press.c, press.r) || this.buildTiles.has(press.c * 64 + press.r));
       if (!occupied) {
         wash(ctx, gx, gy + ts * 0.32, ts * 0.42, INK, snapped ? 0.3 : 0.15);
         if (bad) {

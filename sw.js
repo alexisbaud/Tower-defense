@@ -2,7 +2,7 @@
 // Stratégie « réseau d'abord » pour nos fichiers (les mises à jour arrivent
 // dès qu'on est en ligne), repli sur le cache hors ligne. Les polices Google
 // sont mises en cache à la volée.
-const VERSION = 'jde-v1';
+const VERSION = 'jde-v3';
 const CORE = [
   './',
   'index.html',
@@ -22,6 +22,7 @@ const CORE = [
   'src/core/flowfield.js',
   'src/core/combos.js',
   'src/core/rng.js',
+  'src/core/dmath.js',
   'src/render/renderer.js',
   'src/render/brush.js',
   'src/render/paper.js',
@@ -45,10 +46,12 @@ const CORE = [
   'src/ui/lobby.js',
   'src/net/mqtt.js',
   'src/net/lobby.js',
-  'src/net/sync.js',
+  'src/net/lockstep.js',
   'src/net/coop.js',
   'src/render/glyphs.js',
   'src/render/barriers.js',
+  'src/render/construction.js',
+  'src/ui/commands.js',
   'data/rules.js',
   'data/elements.js',
   'data/towers.js',

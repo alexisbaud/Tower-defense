@@ -274,6 +274,15 @@
 .lobby-tag.off {
   background: #55505f;
 }
+.lobby-tag.auto {
+  background: #3b4a6b;
+}
+/* élément attribué d'office (le joueur n'a rien choisi) : sceau en pointillés */
+.lobby-seal.auto {
+  box-shadow: inset 0 0 0 2px rgba(242, 232, 208, 0.6), 0 0 0 1.5px var(--cream);
+  outline: 1.5px dashed rgba(242, 232, 208, 0.75);
+  outline-offset: 2px;
+}
 
 /* « Votre élément » : titre de section, et bouton qui replie le choix */
 .lobby-fold {
@@ -362,6 +371,9 @@
 }
 .lobby-el:disabled {
   opacity: 0.5;
+}
+.lobby-el.auto {
+  box-shadow: inset 0 0 0 2px var(--el), inset 0 0 0 3px rgba(242, 232, 208, 0.4);
 }
 .lobby-el-glyph {
   position: absolute;

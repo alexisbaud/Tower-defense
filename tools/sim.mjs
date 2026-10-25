@@ -2,12 +2,17 @@
 //
 // Usage :
 //   node tools/sim.mjs [idNiveau ...] [--bots=balanced,random,mono] [--seeds=1,2,3]
-//                      [--players=1..4] [--hard] [--check] [--verbose]
+//                      [--players=1..4] [--elements=fire+water,…] [--hard] [--check] [--verbose]
 //
 //   --bots=mono   une partie par lanterne d'attaque disponible (mono:fire, mono:water…)
-//   --players=N   coopération : N bots, un élément chacun (les éléments libres sont partagés)
+//   --players=N   coopération : N bots, chacun limité à UN élément (Feu, Eau, Vent, Terre
+//                 dans l'ordre) ; les éléments que personne n'a pris ne sont à personne
+//   --elements=   équipes à simuler, une par combinaison : fire+water, wind+earth…
+//                 (« all2 », « all3 », « all4 » : toutes les paires, triplets, les quatre)
 //   --check       vérifications de l'étape 6 ; code de sortie 1 en cas d'échec :
-//                   · chaque niveau est gagné par le bot équilibré (seul et en coop 2 et 4)
+//                   · chaque niveau est gagné par le bot équilibré seul, et en coopération
+//                     par CHAQUE équipe d'éléments : les 6 paires, les 4 triplets et les
+//                     quatre éléments (un bot par joueur, limité à son élément)
 //                   · aucun niveau (sauf le premier) n'est gagné en n'utilisant qu'une lanterne
 //                   · aucune vague ne double brutalement la difficulté ; 10 à 15 vagues ;
 //                     une vague climax annoncée, pic le plus dur en fin de niveau ;
@@ -30,15 +35,34 @@ export function towerCode(t) {
   return (INITIAL[d.element] ?? '?') + (VARIANT[d.variant] ?? '') + t.level;
 }
 
-// Éléments par joueur pour N joueurs (choix tournants) : 2 → feu / eau, etc.
-export function coopPlayers(n) {
-  const choices = ELEMENTS.slice(0, n);
-  return assignElements(choices).map((elements, i) => ({ name: `Bot ${i + 1}`, elements }));
+// Joueurs d'une partie coopérative : un élément choisi par joueur (assignElements :
+// chacun n'a que le sien). `choices` : nombre de joueurs (Feu, Eau, Vent, Terre dans
+// l'ordre) ou liste d'éléments.
+export function coopPlayers(choices) {
+  const list = typeof choices === 'number' ? ELEMENTS.slice(0, choices) : choices;
+  return assignElements(list).map((elements, i) => ({ name: `Bot ${i + 1}`, elements }));
 }
 
-export async function simulate(id, strategy, seed = 1, { players = 1, hard = false, challenge = false } = {}) {
+// Toutes les équipes réalistes de k joueurs : un élément différent chacun.
+export function elementTeams(k) {
+  const out = [];
+  const rec = (start, cur) => {
+    if (cur.length === k) return out.push(cur.slice());
+    for (let i = start; i < ELEMENTS.length; i++) rec(i + 1, [...cur, ELEMENTS[i]]);
+  };
+  rec(0, []);
+  return out;
+}
+
+// Équipes vérifiées par --check : 6 paires, 4 triplets, les quatre éléments.
+export const COOP_TEAMS = [2, 3, 4].flatMap(elementTeams);
+
+export const teamCode = (els) => els.map((el) => INITIAL[el]).join('');
+
+export async function simulate(id, strategy, seed = 1, { players = 1, elements = null, hard = false, challenge = false } = {}) {
   const level = await loadLevel(id);
-  const game = new Game(level, defs, { seed, recordEvents: false, hard, players: players > 1 ? coopPlayers(players) : undefined });
+  const team = elements?.length > 1 ? coopPlayers(elements) : players > 1 ? coopPlayers(players) : undefined;
+  const game = new Game(level, defs, { seed, recordEvents: false, hard, players: team });
   game.challenge = challenge && !!level.challenge;
   const bots = game.players.map((p) => bot(strategy, game, { pid: p.id, seed: seed * 7 + p.id }));
   let t = 0;
@@ -59,7 +83,8 @@ export async function simulate(id, strategy, seed = 1, { players = 1, hard = fal
   return {
     id,
     strategy,
-    players,
+    players: game.players.length,
+    team: game.players.length > 1 ? teamCode(game.players.map((p) => p.elements[0])) : '',
     state: game.state,
     challengeMet: game.challengeMet(),
     lives: game.lives,
@@ -131,6 +156,10 @@ if (isMain) {
   const hard = args.includes('--hard');
   const seeds = opt('seeds', '1').split(',').map(Number);
   const players = Number(opt('players', '1'));
+  const teamsOpt = opt('elements', '');
+  const teams = teamsOpt
+    ? teamsOpt.split(',').flatMap((t) => (/^all[234]$/.test(t) ? elementTeams(Number(t[3])) : [t.split('+')]))
+    : [null];
   const ids = args.filter((a) => !a.startsWith('--'));
   const order = levelOrder().map((l) => l.id);
   const list = ids.length ? ids : order;
@@ -141,7 +170,7 @@ if (isMain) {
   };
 
   const line = (r, seed) =>
-    `${r.id.padEnd(5)} ${(r.strategy + (r.players > 1 ? ` ×${r.players}` : '')).padEnd(18)}${seeds.length > 1 ? ` s${seed}` : ''} ${r.state.padEnd(4)} ` +
+    `${r.id.padEnd(5)} ${(r.strategy + (r.players > 1 ? ` ×${r.players} ${r.team}` : '')).padEnd(18)}${seeds.length > 1 ? ` s${seed}` : ''} ${r.state.padEnd(4)} ` +
     `vies ${String(r.lives).padStart(2)}/${r.maxLives} ★${r.stars} vague ${r.wave}/${r.waves} or ${r.gold} t=${r.time}s` +
     `${r.rewinds ? ` ↺${r.rewinds}` : ''}  [${r.towers}]`;
 
@@ -151,12 +180,14 @@ if (isMain) {
       const level = await loadLevel(id);
       const strats = strategies.flatMap((s) => (s === 'mono' ? attackTowers(level).map((t) => `mono:${t}`) : [s]));
       for (const s of strats) {
-        for (const seed of seeds) {
-          const r = await simulate(id, s, seed, { players, hard });
-          console.log(line(r, seed));
-          if (verbose) {
-            console.log(`        fuites par vague : ${r.leaks.map((x, i) => (x ? `v${i + 1}:${x}` : '')).filter(Boolean).join(' ') || 'aucune'}`);
-            for (const l of r.log) console.log('        ' + l);
+        for (const team of teams) {
+          for (const seed of seeds) {
+            const r = await simulate(id, s, seed, { players, elements: team, hard });
+            console.log(line(r, seed));
+            if (verbose) {
+              console.log(`        fuites par vague : ${r.leaks.map((x, i) => (x ? `v${i + 1}:${x}` : '')).filter(Boolean).join(' ') || 'aucune'}`);
+              for (const l of r.log) console.log('        ' + l);
+            }
           }
         }
       }
@@ -176,10 +207,12 @@ if (isMain) {
         else if (r.time < 300 || r.time > 480) fail(`durée ${r.time} s (attendu 300 à 480 s)`);
         if (verbose) console.log(`        fuites par vague : ${r.leaks.map((x, i) => (x ? `v${i + 1}:${x}` : '')).filter(Boolean).join(' ') || 'aucune'}`);
       }
-      for (const n of [2, 4]) {
-        const r = await simulate(id, 'balanced', seeds[0], { players: n });
+      // Coopération : chaque équipe d'éléments (un bot par joueur, limité à son élément).
+      for (const els of COOP_TEAMS) {
+        const r = await simulate(id, 'balanced', seeds[0], { elements: els });
         console.log('  ' + line(r, seeds[0]));
-        if (r.state !== 'won') fail(`coop ×${n} : le bot équilibré perd`);
+        if (r.state !== 'won') fail(`coop ×${els.length} ${els.join(' + ')} : le bot équilibré perd`);
+        if (verbose) console.log(`        fuites par vague : ${r.leaks.map((x, i) => (x ? `v${i + 1}:${x}` : '')).filter(Boolean).join(' ') || 'aucune'}`);
       }
       const r = await simulate(id, 'random', seeds[0]);
       console.log('  ' + line(r, seeds[0]) + '  (indicatif)');

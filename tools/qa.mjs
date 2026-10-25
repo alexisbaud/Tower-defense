@@ -1,6 +1,7 @@
 // QA navigateur : ouvre le jeu en 390×844 (iPhone), capture les erreurs console
-// et prend des captures d'écran (titre, carte, pose sur un socle compatible,
-// vague, appel anticipé pendant la vague, palette regroupée par élément).
+// et prend des captures d'écran (titre, carte, pose sur un socle compatible —
+// en construction 2 s, or réservé, puis allumée —, vague, appel anticipé pendant
+// la vague, palette regroupée par élément).
 // Usage : node tools/qa.mjs [url] [outDir]
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
@@ -70,9 +71,14 @@ const pos = await page.evaluate(() => {
 });
 if (pos) await page.mouse.click(box.x + pos.x, box.y + pos.y);
 await page.waitForTimeout(300);
+// la pose est d'abord « en construction » (2 s) : son or est réservé
+await page.screenshot({ path: `${out}/02-building.png` });
+const building = await page.evaluate(() => ({ q: window.__state.game.pendingPlacements().length, hud: document.getElementById('hud-gold').textContent, res: document.getElementById('hud-reserved').textContent }));
+if (building.q !== 1 || !/^−\d+$/.test(building.res)) errors.push(`[qa] construction attendue après le tap : ${JSON.stringify(building)}`);
+await page.waitForTimeout(2200);
 await page.screenshot({ path: `${out}/02-placed.png` });
 const placed = await page.evaluate(() => window.__state.game.towers.length);
-if (!placed) errors.push('[qa] aucune lanterne posée par le tap');
+if (!placed) errors.push('[qa] aucune lanterne allumée 2 s après le tap');
 await page.locator('#btn-wave').click();
 await page.waitForTimeout(6000);
 await page.screenshot({ path: `${out}/03-wave.png` });

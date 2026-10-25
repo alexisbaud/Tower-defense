@@ -864,6 +864,20 @@ h4 {
   color: #ff8a6e;
 }
 
+/* Or promis aux constructions en cours : « −50 », discret, à côté de l'or disponible */
+.stat-reserved {
+  margin-left: 1px;
+  padding: 2px 5px;
+  border-radius: 6px;
+  background: rgba(242, 232, 208, 0.12);
+  color: #ffc9b5;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+}
+
 .stat-lives.low .seal {
   animation: sealBeat 0.9s ease-in-out infinite;
 }
@@ -2667,6 +2681,11 @@ h4 {
   transform-origin: 0 50%;
 }
 
+/* pendant la construction : barre hachurée (rien n'est encore payé) */
+.undo-pill.building .undo-bar {
+  background: repeating-linear-gradient(-45deg, var(--gold-2) 0 6px, rgba(240, 207, 106, 0.45) 6px 10px);
+}
+
 @keyframes undoIn {
   from {
     transform: translateY(12px);
@@ -2684,7 +2703,8 @@ h4 {
   z-index: 32;
 }
 
-.sheet-open .undo-pill {
+.sheet-open .undo-pill,
+.pause-on .undo-pill {
   display: none;
 }
 
@@ -2829,6 +2849,19 @@ h4 {
   font-size: 14px;
   font-weight: 800;
   line-height: 1;
+}
+
+/* Construction en cours touchée : « En construction · 2 s » et « Annuler » */
+.tb-build .tb-owner-seal {
+  font-family: var(--font-title);
+  font-weight: 800;
+  background: var(--el, var(--indigo));
+}
+
+.tb-cancel .tb-ico {
+  background: var(--gold);
+  color: var(--ink);
+  font-family: var(--font-ui);
 }
 
 /* Vendre : bouton secondaire (contour), confirmé par un second toucher */

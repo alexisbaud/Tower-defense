@@ -5,8 +5,13 @@
 // Seul, le choix de l'élément se replie (une ligne « Votre élément : Feu ▾ ») —
 // seul, on joue de toute façon les quatre éléments — et laisse voir la scène ;
 // il se déplie dès qu'un ami arrive.
+//
+// À plusieurs, chacun ne pose QUE les lanternes (et objets) de son élément : un
+// élément par joueur. Un élément pris par un autre est grisé ; qui n'a rien choisi
+// reçoit d'office le premier élément libre (assignElements), affiché « attribué ».
 
 import { normalizeCode, MAX_PLAYERS } from '../net/lobby.js';
+import { assignElements } from '../core/game.js';
 
 const GLYPH = { triangle: '▲', drop: '●', diamond: '◆', square: '■' };
 const ERRORS = {
@@ -231,6 +236,9 @@ export class LobbyUI {
     this.list.innerHTML = '';
     const players = this.players;
     const hostId = s.lobby?.host ?? players[0]?.id;
+    // à plusieurs : l'élément de chacun (choisi, ou attribué d'office)
+    const multi = players.length > 1;
+    const given = multi ? assignElements(players.map((p) => p.element ?? null)).map((l) => l[0]) : []; // (même règle que la partie)
     for (let k = 0; k < MAX_PLAYERS; k++) {
       const p = players[k];
       const li = el('li', `lobby-player${p ? '' : ' empty'}`);
@@ -240,20 +248,22 @@ export class LobbyUI {
         this.list.append(li);
         continue;
       }
-      const info = p.element ? this.elements[p.element] : null;
-      const seal = el('span', 'lobby-seal', elementGlyph(info));
+      const auto = multi && !p.element ? given[k] : null;
+      const info = p.element ? this.elements[p.element] : auto ? this.elements[auto] : null;
+      const seal = el('span', `lobby-seal${auto ? ' auto' : ''}`, elementGlyph(info));
       if (info) seal.style.setProperty('--el', info.color);
       seal.setAttribute('aria-hidden', 'true');
       const name = el('span', 'lobby-pname', p.name);
       const tags = [];
       if (p.id === hostId) tags.push(['host', 'hôte']);
       if (p.id === this.profile.id) tags.push(['you', 'vous']);
+      if (auto) tags.push(['auto', 'attribué']);
       if (p.online === false) tags.push(['off', 'absent']);
       const tagBox = el('span', 'lobby-tags');
       for (const [cls, txt] of tags) tagBox.append(el('i', `lobby-tag ${cls}`, txt));
       li.append(seal, name, tagBox);
       li.classList.toggle('off', p.online === false);
-      li.setAttribute('aria-label', `${p.name}${info ? `, ${info.name}` : ', sans élément'}${tags.length ? `, ${tags.map((t) => t[1]).join(', ')}` : ''}`);
+      li.setAttribute('aria-label', `${p.name}${info ? `, ${info.name}${auto ? ' (attribué d’office)' : ''}` : ', sans élément'}${tags.filter((t) => t[0] !== 'auto').length ? `, ${tags.filter((t) => t[0] !== 'auto').map((t) => t[1]).join(', ')}` : ''}`);
       if (p.id === this.profile.id) {
         // sa propre place : toucher pour changer de nom (toute la case : ≥ 44 pt)
         li.classList.add('me');
@@ -287,26 +297,30 @@ export class LobbyUI {
     const folded = this.isFolded();
     this.root.classList.toggle('folded', folded);
     this.foldBtn.setAttribute('aria-expanded', String(!folded));
-    const cur = mine?.element ? this.elements[mine.element] : null;
+    const myIdx = players.indexOf(mine);
+    const myAuto = multi && mine && !mine.element ? given[myIdx] : null;
+    const cur = mine?.element ? this.elements[mine.element] : myAuto ? this.elements[myAuto] : null;
     this.foldBtn.innerHTML = folded
-      ? `<span>Votre élément :</span>${cur ? `<span class="lobby-fold-el" style="--el:${cur.color}"><i aria-hidden="true">${elementGlyph(cur)}</i>${cur.name}</span>` : '<span class="lobby-fold-el none">au choix</span>'}<span class="lobby-chev" aria-hidden="true">▾</span>`
+      ? `<span>Votre élément :</span>${cur ? `<span class="lobby-fold-el" style="--el:${cur.color}"><i aria-hidden="true">${elementGlyph(cur)}</i>${cur.name}${myAuto ? ' <small>(attribué)</small>' : ''}</span>` : '<span class="lobby-fold-el none">au choix</span>'}<span class="lobby-chev" aria-hidden="true">▾</span>`
       : `<span>Votre élément</span><span class="lobby-chev" aria-hidden="true">▴</span>`;
     for (const [id, b] of Object.entries(this.pickButtons)) {
       const taker = players.find((p) => p.element === id && p.id !== this.profile.id);
       const sel = mine?.element === id;
+      // élément attribué d'office (rien choisi) : marqué, sans être « choisi »
+      const auto = !sel && myAuto === id;
       b.classList.toggle('selected', sel);
+      b.classList.toggle('auto', auto);
       b.setAttribute('aria-checked', sel ? 'true' : 'false');
       b.disabled = !!taker || s.inGame;
       b.title = taker ? `Choisi par ${taker.name}` : '';
-      b.setAttribute('aria-label', `${this.elements[id].name}${taker ? `, choisi par ${taker.name}` : `, ${this.elements[id].style}`}`);
-      b.querySelector('.lobby-el-style').textContent = taker ? taker.name : this.elements[id].style;
+      b.setAttribute('aria-label', `${this.elements[id].name}${taker ? `, pris par ${taker.name}` : auto ? ', attribué d’office : touchez pour le garder' : `, ${this.elements[id].style}`}`);
+      b.querySelector('.lobby-el-style').textContent = taker ? taker.name : auto ? 'attribué' : this.elements[id].style;
     }
     const n = players.length;
     let note;
-    if (n <= 1) note = 'Seul, vous jouez les quatre éléments. Invitez jusqu’à 3 amis : chacun bâtit son élément.';
+    if (n <= 1) note = 'Seul, vous jouez les quatre éléments. À plusieurs (jusqu’à 4), chacun prend un élément.';
     else {
-      const free = Object.keys(this.elements).filter((id) => !players.some((p) => p.element === id));
-      note = `Chacun bâtit les lanternes de son élément${free.length ? ` ; ${free.map((id) => this.elements[id].name).join(', ')} : à tous` : ''}. Or personnel, vies communes.`;
+      note = 'Un élément par joueur : chacun ne pose que les lanternes de son élément. Sans choix, un élément libre est attribué d’office. Or personnel, vies communes.';
       if (!guest) note += ' « Jouer » lance la partie pour tous.';
     }
     this.note.textContent = note;
@@ -328,6 +342,11 @@ export class LobbyUI {
 
   pick(id) {
     const mine = this.players.find((p) => p.id === this.profile.id);
+    // seul, toucher son élément le retire (préférence) ; à plusieurs, chacun en garde un
+    if (mine?.element === id && this.players.length > 1) {
+      this.sound('select');
+      return;
+    }
     const next = mine?.element === id ? null : id;
     this.profile.element = next;
     saveProfile(this.profile);

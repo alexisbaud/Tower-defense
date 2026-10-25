@@ -800,6 +800,34 @@ console.log('Coopération : pierres');
   check('retirer la pierre d’un coéquipier : refusé', !g.removeStone(4, 2, 1) && g.grid.stone[g.grid.idx(4, 2)] === 1 && g.canRemoveStone(4, 2, 1).reason === 'owner');
   check('… celui qui l’a posée la retire et est remboursé', g.removeStone(4, 2, 0) && g.goldOf(0) === a0 - g.stoneCost() + Math.floor(g.stoneCost() * g.rules.stoneRefund) && g.goldOf(1) === b0, `${g.goldOf(0)} ${g.goldOf(1)}`);
 }
+{
+  // qa-coop : « Annuler » une pierre touché en fin de construction, exécuté après son
+  // activation (délai des commandes en coopération) : prix rendu en entier, pierre
+  // rendue à la réserve (avant : moitié du prix et une pierre de la réserve perdues).
+  const g = new Game(base(), defs, { players: [{ name: 'A', elements: ['earth'] }, { name: 'B', elements: ['fire'] }] });
+  g.commandDelay = 45;
+  const gold = g.goldOf(0);
+  const left = g.stonesLeft();
+  const e = g.issue('placeStone', [4, 2], 0);
+  while (g.frame < e.frame - 5) g.update(STEP);
+  // annulation touchée 5 images avant la fin, datée (réseau) 10 images après la pose
+  g.enqueue({ ...g.makeEntry('cancel', [e.id], 0, e.frame + 10), at: g.frame });
+  while (g.frame < e.frame + 2) g.update(STEP);
+  check('pierre activée avant que l’annulation ne s’exécute', g.grid.stone[g.grid.idx(4, 2)] === 1);
+  run(g, 0.3);
+  check('annulation tardive d’une pierre : reprise, prix rendu en entier, réserve intacte', !g.grid.stone[g.grid.idx(4, 2)] && g.goldOf(0) === gold && g.stonesLeft() === left && g.stats.stones === 0, `${g.goldOf(0)}/${gold} ${g.stonesLeft()}/${left}`);
+  // bien plus tard (pierre posée depuis longtemps) : un retrait ordinaire, à moitié prix
+  const e2 = g.issue('placeStone', [4, 2], 0);
+  run(g, 6);
+  g.enqueue({ ...g.makeEntry('cancel', [e2.id], 0, g.frame + 1), at: g.frame });
+  run(g, 0.1);
+  check('… longtemps après : retrait ordinaire (moitié du prix)', !g.grid.stone[g.grid.idx(4, 2)] && g.goldOf(0) === gold - g.stoneCost() + Math.floor(g.stoneCost() * g.rules.stoneRefund), `${g.goldOf(0)}`);
+  check('… seul celui qui l’a posée peut l’annuler', (() => {
+    const e3 = g.issue('placeStone', [4, 2], 0);
+    while (g.frame < e3.frame + 1) g.update(STEP);
+    return !g.cancelEntry(e3.id, 1) && g.grid.stone[g.grid.idx(4, 2)] === 1;
+  })());
+}
 
 console.log('Lockstep : file de commandes, construction, déterminisme');
 {
@@ -839,6 +867,39 @@ console.log('Lockstep : file de commandes, construction, déterminisme');
   check('pierre en construction : chemin inchangé', st && !g.grid.stone[g.grid.idx(4, 2)]);
   run(g, 2.1);
   check('pierre posée après 2 s', !!g.grid.stone[g.grid.idx(4, 2)]);
+}
+{
+  // Pierres posées coup sur coup : celles en construction comptent déjà. Chacune seule
+  // laisse passer ; (2..4,2) ensemble ne laissent que (5,2) : la pierre suivante en
+  // (5,2) est refusée dès le toucher (plus de « +X cases » suivi, 2 s plus tard, d'un
+  // « Bloqué ! »).
+  const g = new Game(base(), defs);
+  const sent = [g.issue('placeStone', [2, 2]), g.issue('placeStone', [3, 2]), g.issue('placeStone', [4, 2])];
+  check('trois pierres en construction acceptées', sent.every(Boolean));
+  check('pierres en attente : celle qui fermerait le passage est refusée', g.canIssue('placeStone', [5, 2]).reason === 'blocked', JSON.stringify(g.canIssue('placeStone', [5, 2])));
+  const pv = g.previewStone(5, 2);
+  check('… l’aperçu le dit aussi', !pv.ok && pv.reason === 'blocked', JSON.stringify({ ok: pv.ok, reason: pv.reason }));
+  check('… une autre case reste permise', g.canIssue('placeStone', [3, 3]).ok);
+  check('… et la grille reste intacte (vérification sans effet)', !g.grid.stone[g.grid.idx(2, 2)] && !g.grid.stone[g.grid.idx(3, 2)] && !g.grid.stone[g.grid.idx(4, 2)]);
+  check('… la case d’une pierre en attente : « en construction »', g.canIssue('placeStone', [3, 2]).reason === 'pending' && g.previewStone(3, 2).ok);
+  // gain affiché : par rapport au chemin tel qu'il sera (pierres en attente posées)
+  const pv2 = g.previewStone(6, 3);
+  const h = new Game(base(), defs);
+  for (const [c, r] of [[2, 2], [3, 2], [4, 2]]) h.placeStone(c, r);
+  const ref = h.previewStone(6, 3);
+  check('… gain de chemin calculé avec les pierres en attente', pv2.ok && pv2.delta === ref.delta && JSON.stringify(pv2.routes) === JSON.stringify(ref.routes), `${pv2.delta} ≠ ${ref.delta}`);
+  run(g, 2.1);
+  check('les trois pierres posées, le passage reste ouvert', [2, 3, 4].every((c) => g.grid.stone[g.grid.idx(c, 2)]) && g.routeLength() > 0);
+  // Mur d'un Gardien et pierre en construction sur la même case : l'un exclut l'autre.
+  const lvl = base({ towers: ['fire', 'water', 'wind', 'earth', 'earth_guard'] });
+  const w = new Game(lvl, defs);
+  const guard = w.placeTower('earth_guard', 1, 2); // mur en (2,2), peut aller en (2,3)
+  w.issue('placeStone', [2, 3]);
+  check('mur vers une case où une pierre se construit : refusé', w.canIssue('setRally', [guard.id, 2, 3]).reason === 'rally');
+  const v = new Game(lvl, defs);
+  const guard2 = v.placeTower('earth_guard', 1, 2);
+  check('mur déplacé (en construction)', !!v.issue('setRally', [guard2.id, 2, 3]));
+  check('pierre sur la case où le mur se dresse bientôt : refusée', v.canIssue('placeStone', [2, 3]).reason === 'barrier');
 }
 {
   // Éléments exclusifs à plusieurs, socles des éléments absents rendus universels.

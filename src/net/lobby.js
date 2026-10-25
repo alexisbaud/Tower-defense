@@ -2,17 +2,23 @@
 //
 // À l'ouverture du jeu, chacun héberge automatiquement son propre salon (le code
 // s'affiche à l'accueil) : on peut jouer seul tout de suite ou partager le code.
-// Rejoindre un autre salon ferme le sien. L'hôte (joueur 1) fait tourner la partie.
+// Rejoindre un autre salon ferme le sien. L'hôte (joueur 1) lance la partie, date les
+// commandes et bat la mesure ; chaque téléphone fait tourner la même partie (lockstep,
+// voir src/net/lockstep.js).
 //
-// Sujets : jde/v1/<CODE>/h  hôte → invités (salon, départ, états de partie)
-//          jde/v1/<CODE>/c  invités → hôte (arrivée, choix d'élément, commandes)
+// Sujets : jde/v1/<CODE>/h  hôte → invités (salon, départ, commandes datées, battements,
+//                           états complets, fin)
+//          jde/v1/<CODE>/c  invités → hôte (arrivée, choix d'élément, commandes
+//                           proposées, demandes d'état complet)
 
 import { BROKERS, connectAny } from './mqtt.js';
 
 export const MAX_PLAYERS = 4;
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ'; // sans I ni O : pas de confusion avec 1 et 0
 const NS = 'jde/v1';
-const PROTOCOL = 5; // 5 : messages des invités signés, connexion identifiée (« bye »), fin de partie liée à sa partie (gid)
+// 5 : messages des invités signés, connexion identifiée (« bye »), fin de partie liée à
+//     sa partie (gid) ; 6 : lockstep (commandes datées, battements, états complets)
+const PROTOCOL = 6;
 const ELEMENTS = ['fire', 'water', 'wind', 'earth'];
 
 export function randomCode(rand = Math.random) {
@@ -74,11 +80,12 @@ export function normalizeCode(text) {
  * Événements (session.on(type, fn)) :
  *   status  { state: 'offline'|'connecting'|'online', role, code, error }
  *   lobby   état du salon (joueurs, niveau, options)
- *   start   départ d'une partie { level, seed, players, you, hard, challenge }
- *   snap    état de partie (invités)
- *   command { pid, op, args } (hôte)
- *   paused  { on } (invités)
- *   end     retour au salon
+ *   start   départ d'une partie { level, seed, players, you, hard, challenge, cd }
+ *   game    message de partie de l'hôte (invités) : 'cmd' commande datée, 'hb'
+ *           battement, 'state' état complet (pour nous), 'nack' commande refusée
+ *   command { pid, id, op, args, f, tmp } commande proposée par un invité (hôte)
+ *   resync  { pid, id, why } un invité demande l'état complet (hôte)
+ *   end     fin de la partie { result, gid, f } (invités)
  *   closed  { reason } salon fermé : 'hostGone' (l'hôte est parti), 'hostLost' (connexion
  *           de l'hôte coupée sans au revoir : il peut revenir), 'lost' (notre connexion)
  */
@@ -108,6 +115,7 @@ export class NetSession {
     this.outbox = Promise.resolve(); // signatures dans l'ordre d'envoi
     this.inbox = Promise.resolve(); // hôte : vérifications dans l'ordre d'arrivée
     this.peers = new Map(); // hôte : id → { pk, key, conn, n } (jamais diffusé dans le salon)
+    this.traffic = { in: 0, out: 0 }; // octets reçus et envoyés (mesures de débit)
   }
 
   // Paire de clés de l'invité (créée une fois, gardée par keyStore), ou null sans WebCrypto.
@@ -147,7 +155,11 @@ export class NetSession {
     this.outbox = this.outbox
       .then(async () => {
         const env = await this.seal(msg);
-        if (this.client === client && client?.connected) client.publish(topic, JSON.stringify(env));
+        if (this.client === client && client?.connected) {
+          const text = JSON.stringify(env);
+          this.traffic.out += text.length;
+          client.publish(topic, text);
+        }
       })
       .catch((e) => console.error(e));
     return this.outbox;
@@ -192,7 +204,9 @@ export class NetSession {
 
   send(kind, msg) {
     if (!this.client?.connected) return false;
-    this.client.publish(this.topic(kind), JSON.stringify(msg));
+    const text = JSON.stringify(msg);
+    this.traffic.out += text.length;
+    this.client.publish(this.topic(kind), text);
     return true;
   }
 
@@ -318,13 +332,14 @@ export class NetSession {
     this.broadcastLobby();
   }
 
-  // Lance la partie pour tout le salon. `players` : [{ name, elements }] dans l'ordre du salon.
-  startGame({ level, seed, players, hard = false, challenge = false }) {
+  // Lance la partie pour tout le salon. `players` : [{ name, elements }] dans l'ordre du
+  // salon ; `cd` : délai des commandes autres que les poses (images).
+  startGame({ level, seed, players, hard = false, challenge = false, cd = 0 }) {
     if (!this.isHost) return null;
     this.inGame = true;
     this.lobby.level = level;
     this.lobby.gid = seed; // partie en cours : un invité resté sur une autre partie s'en aperçoit
-    const msg = { type: 'start', level, seed, players, ids: this.lobby.players.map((p) => p.id), hard, challenge };
+    const msg = { type: 'start', level, seed, players, ids: this.lobby.players.map((p) => p.id), hard, challenge, cd };
     this.lastStart = msg;
     this.lobby.solo = null;
     this.broadcastLobby();
@@ -332,21 +347,19 @@ export class NetSession {
     return msg;
   }
 
-  broadcastSnapshot(snap) {
-    if (this.isHost && this.lobby.players.length > 1) this.send('h', snap);
+  // Message de partie (commande datée, battement, état complet) pour tous les invités.
+  broadcast(msg) {
+    if (this.isHost && this.lobby.players.length > 1) this.send('h', msg);
   }
 
-  setPaused(on) {
-    this.send('h', { type: 'paused', on: !!on });
-  }
-
-  endGame(result = null) {
+  // Fin de la partie : `f` est l'image où elle s'est conclue chez l'hôte (null : arrêtée).
+  endGame(result = null, f = null) {
     if (!this.isHost) return;
     const gid = this.lastStart?.seed ?? null; // la partie qui se termine
     this.inGame = false;
     this.lastStart = null;
     this.lobby.gid = null;
-    this.send('h', { type: 'end', result, gid });
+    this.send('h', { type: 'end', result, gid, f });
     this.broadcastLobby();
   }
 
@@ -450,9 +463,11 @@ export class NetSession {
       if (peer) peer.conn = null; // connexion terminée : plus rien n'arrive d'elle
       this.broadcastLobby();
       this.emit('leave', msg.id);
-    } else if (msg.type === 'cmd') {
+    } else if (msg.type === 'cmd' || msg.type === 'resync') {
       const pid = this.lobby.players.findIndex((x) => x.id === msg.id);
-      if (pid > 0 && this.inGame) this.emit('command', { pid, op: msg.op, args: msg.args });
+      if (pid <= 0 || !this.inGame) return;
+      if (msg.type === 'cmd') this.emit('command', { pid, id: msg.id, op: msg.op, args: msg.args, f: msg.f, tmp: msg.tmp });
+      else this.emit('resync', { pid, id: msg.id, why: typeof msg.why === 'string' ? msg.why.slice(0, 12) : '' });
     }
   }
 
@@ -552,8 +567,15 @@ export class NetSession {
     });
   }
 
-  sendCommand(op, args) {
-    this.sendSealed({ type: 'cmd', conn: this.conn, op, args });
+  // Commande proposée à l'hôte : `f` image d'exécution souhaitée, `tmp` numéro provisoire
+  // (la commande datée le citera).
+  sendCommand(op, args, { f = null, tmp = null } = {}) {
+    this.sendSealed({ type: 'cmd', conn: this.conn, op, args, f, tmp });
+  }
+
+  // Demande l'état complet de la partie (retour, écart avec l'hôte).
+  requestState(why = '') {
+    this.sendSealed({ type: 'resync', conn: this.conn, why: String(why).slice(0, 12) });
   }
 
   onGuestMessage(msg) {
@@ -577,9 +599,9 @@ export class NetSession {
       this.inGame = true;
       this.gameId = msg.seed;
       this.emit('start', { ...msg, you });
-    } else if (msg.type === 'snap') this.emit('snap', msg);
-    else if (msg.type === 'paused') this.emit('paused', msg);
-    else if (msg.type === 'end') {
+    } else if (msg.type === 'cmd' || msg.type === 'hb' || msg.type === 'nack' || (msg.type === 'state' && msg.to === this.id)) {
+      this.emit('game', msg); // (la partie vérifie qu'il cite la sienne : gid)
+    } else if (msg.type === 'end') {
       // seule la fin de la partie annoncée compte (pas un message égaré ou forgé)
       if (msg.gid == null || msg.gid !== this.gameId) return;
       this.inGame = false;
@@ -602,6 +624,7 @@ export class NetSession {
         return;
       }
       if (!msg || typeof msg !== 'object') return;
+      this.traffic.in += text.length;
       this.emit('_msg', msg);
       if (this.role === 'host' && topic === this.topic('c')) this.onHostMessage(msg);
       else if (this.role === 'guest' && topic === this.topic('h')) this.onGuestMessage(msg);

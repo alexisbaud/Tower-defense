@@ -2,10 +2,17 @@
 // liaison moteur / rendu / interface / audio / sauvegarde, salon multijoueur.
 //
 // Coopération (1 à 4 joueurs) : à l'ouverture, chacun héberge son propre salon
-// (accueil). L'hôte fait tourner la partie (Game normal + coop.afterUpdate) ;
-// un invité tient un miroir (coop.attachGuest) qui ne simule rien : ses commandes
-// partent vers l'hôte, l'état et les événements reviennent ~8 fois par seconde.
-import { Game, STEP } from './core/game.js';
+// (accueil). Chaque téléphone fait tourner la MÊME partie (lockstep, src/net/lockstep.js) :
+// seules les commandes datées circulent (plus un battement de l'hôte ~4 fois par
+// seconde) ; coop.step(dt) avance la partie, chez l'hôte comme chez les invités.
+//
+// Commandes : l'interface n'appelle jamais les actions du moteur. Chaque geste
+// (pose, fusion, vente, priorité, mur, vague, rembobinage, annulation) passe par la
+// façade `commands` (src/ui/commands.js) : en solo, game.issue (file du moteur, pose
+// active après 2 s) ; en coopération, l'émetteur du réseau (coop.sender, voir
+// branchSender) : l'hôte date la commande pour tous, une pose s'active 2 s après le
+// toucher, au même instant chez chacun.
+import { Game, STEP, PLACEMENTS } from './core/game.js';
 import { T } from './core/grid.js';
 import { defs, loadLevel, worldById, worlds, levelOrder } from './data.js';
 import { Renderer } from './render/renderer.js';
@@ -25,6 +32,8 @@ import { LobbyUI, loadProfile } from './ui/lobby.js';
 import { BROKERS, connectAny } from './net/mqtt.js';
 import { NetSession, normalizeCode } from './net/lobby.js';
 import { Coop } from './net/coop.js';
+import { COMMAND_DELAY } from './net/lockstep.js';
+import { commands, tileOfCommand } from './ui/commands.js';
 import { sound } from './audio/sound.js';
 import { save } from './save.js';
 
@@ -59,7 +68,16 @@ const state = {
   gid: null, // graine de la partie coopérative en cours (départ renvoyé : déjà en jeu)
   startToken: 0,
   resultPending: false, // fin de partie annoncée, résultat pas encore affiché
+  // Poses provisoires (coopération) : commandes envoyées à l'hôte, pas encore datées.
+  // Le réseau (src/net/lockstep.js) y ajoute { op, args, pid, born: game.frame au
+  // toucher, tmp } puis renseigne `entry` et retire l'objet quand la commande datée
+  // arrive. L'interface les dessine en construction, réserve leur or et refuse une
+  // autre pose sur leur case.
+  provisional: [],
 };
+
+// Façade des commandes : partie en cours, poses provisoires, annulations en route.
+commands.bind({ game: () => state.game, provisional: () => state.provisional, hidden: () => coop.hiddenEntries(), sent: () => coop.sentCommands() });
 
 // ───────────────────────── Salon multijoueur ─────────────────────────
 
@@ -290,12 +308,17 @@ function coopReady() {
 }
 
 // Fiche de niveau de l'hôte : qui partira avec lui (sceau d'élément + nom).
+// À plusieurs, chacun n'a que son élément (attribué d'office à qui n'a rien choisi).
 function teamLine() {
   const list = coop.playersFromLobby();
   const chips = list
-    .map((p) => `<span class="lv-mate">${p.element ? elementBadge(p.element, defs, { size: 18 }) : '<span class="lv-mate-any" aria-label="éléments libres">？</span>'}${esc(p.name)}</span>`)
+    .map((p) => {
+      const el = p.element || p.elements?.[0];
+      const auto = !p.element && el ? ' <small>(attribué)</small>' : '';
+      return `<span class="lv-mate">${el ? elementBadge(el, defs, { size: 18 }) : ''}${esc(p.name)}${auto}</span>`;
+    })
     .join('');
-  return `<p class="lv-line lv-team"><b>Partie à ${list.length} :</b> ${chips}</p>`;
+  return `<p class="lv-line lv-team"><b>Partie à ${list.length} :</b> ${chips}</p><p class="lv-line">Chacun ne pose que les lanternes de son élément.</p>`;
 }
 
 function esc(s) {
@@ -382,23 +405,29 @@ const input = new Input(canvas, renderer, {
   onAction: (kind, data) => {
     if (kind === 'selectTower' || kind === 'dragStart') sound.play('select');
     if (kind === 'placed') {
-      hud.showUndo(data.tower);
+      // en construction 2 s : « Annuler » pendant la construction, puis 3 s
+      hud.showUndo(data.ticket, 'tower');
       placeUndo();
       hud.popTool(data.type);
-      // Défi « N lanternes au plus » : le compte des poses, sous les yeux
+      // Défi « N lanternes au plus » : le compte des poses (constructions comprises), sous les yeux
       const rule = state.game?.challengeRule;
-      if (rule?.maxTowers != null && data.tower) {
-        const p = renderer.toScreen(data.tower.x, data.tower.y - 0.2);
-        input.flash(`挑 ${state.game.stats.towersBuilt}/${rule.maxTowers} lanternes`, p.x, p.y);
+      if (rule?.maxTowers != null) {
+        const p = renderer.toScreen(data.c + 0.5, data.r + 0.3);
+        input.flash(`挑 ${state.game.stats.towersBuilt + hud.buildingTowers()}/${rule.maxTowers} lanternes`, p.x, p.y);
       }
     }
-    if (kind === 'stone') hud.popTool('stone');
+    if (kind === 'stone') {
+      hud.popTool('stone');
+      hud.showUndo(data.ticket, 'stone');
+      placeUndo();
+    }
     if (kind === 'rally') {
-      // le mur se dresse sur la case touchée
+      // le mur se dessine sur la case touchée et s'y dresse après la construction
       sound.play('select');
-      renderer.fx.ring(data.c + 0.5, data.r + 0.6, 0.1, 0.6, PALETTE.gold, 0.45, 0.06, 0.45);
+      hud.showUndo(data.ticket, 'rally');
+      placeUndo();
       const p = renderer.toScreen(data.c + 0.5, data.r - 0.1);
-      input.flash('Mur déplacé', p.x, p.y);
+      input.flash('Le mur se déplace…', p.x, p.y);
     }
     if (kind === 'placed' || kind === 'toolCleared' || kind === 'selectTower' || kind === 'stone') hud.refreshTools();
   },
@@ -453,8 +482,16 @@ renderer.pressLabel = (press) => {
   const gain = press.delta > 0 ? `+${press.delta} case${press.delta > 1 ? 's' : ''}` : 'Sans effet';
   if (press.valid) return { text: gain, tone: press.delta > 0 ? 'ok' : 'muted' };
   if (press.reason === 'gold') return { text: `${gain} · il manque ${press.missing} or`, tone: 'bad' };
-  return { text: hud.shortReason(press.reason) || 'Impossible', tone: 'bad' };
+  return { text: hud.shortReason(press.reason, press) || 'Impossible', tone: 'bad' };
 };
+
+// Constructions en cours (lanternes, pierres, murs : file du moteur et poses
+// provisoires du réseau), dessinées par le rendu ; liseré à la couleur de l'élément
+// du joueur qui construit (coéquipiers).
+renderer.constructions = () => (state.game ? commands.builds() : []);
+// fusions et ventes en route (coopération : elles s'exécutent après le délai des commandes)
+renderer.towerOps = () => (state.game ? commands.towerOps() : null);
+renderer.buildOwner = (pid) => playerInfo(pid);
 
 // Anneau (ensō) qui se remplit sous le doigt pendant un appui long.
 const holdEl = $('hold');
@@ -524,13 +561,13 @@ function callWave() {
   // En pause, on étudie le plateau sans rien changer (une fiche passée en haut de
   // l'écran découvre la barre du bas) ; le menu d'un invité, lui, ne fige rien.
   if (!g || g.rewindAnim || coopFrozen() || pausedHere()) return;
-  const can = typeof g.canCallNextWave === 'function' ? g.canCallNextWave() : g.state === 'build';
-  if (!can) return;
+  if (!commands.check('startNextWave').ok) return;
   // Double toucher accidentel : le bouton montre aussitôt la vague suivante, un
   // second toucher rapproché l'appelait aussi (deux vagues d'un coup).
   const now = performance.now();
   if (now - (state.waveCallAt ?? -1e9) < 350) return;
-  if (g.startNextWave() !== false) {
+  const e = commands.issue('startNextWave');
+  if (e && !(e.done && !e.ok)) {
     state.waveCallAt = now;
     hud.popWave();
   }
@@ -573,18 +610,29 @@ function placeUndo() {
   if (cost() >= left) el.classList.remove('right');
 }
 
-function undoPlace(id) {
+// « Annuler » : commande 'cancel' de la pose (en construction : rien n'est payé ;
+// juste après son activation : la lanterne est reprise, son prix rendu).
+function undoPlace(ticket) {
   const g = state.game;
-  if (!g) return;
-  const t = g.towerById(id);
-  if (t && g.undoPlace && g.undoPlace(id)) {
-    hud.hideUndo();
+  if (!g || !ticket) return;
+  const entry = commands.entryOf(ticket);
+  const towerId = entry?.done ? entry.result : null;
+  const res = commands.cancel(ticket);
+  hud.hideUndo();
+  // (exécutée aussitôt en solo ; en coopération, après le délai des commandes)
+  if (res && !(res.done && !res.ok)) {
     hud.refreshTools();
-    if (input.ui.selectedTower === id) input.ui.selectedTower = null;
-  } else {
-    hud.hideUndo();
-    hud.toast('Trop tard pour annuler');
-  }
+    if (towerId != null && input.ui.selectedTower === towerId) input.ui.selectedTower = null;
+  } else hud.toast('Trop tard pour annuler');
+}
+
+// Construction touchée, puis « Annuler » (barre « En construction »).
+function cancelBuild(build) {
+  if (!build?.mine) return;
+  const res = commands.cancel(build.ticket);
+  if (hud.undo?.ticket && (hud.undo.ticket === build.ticket || commands.entryOf(hud.undo.ticket) === build.entry)) hud.hideUndo();
+  if (res && !(res.done && !res.ok)) hud.refreshTools();
+  else hud.toast('Trop tard pour annuler');
 }
 
 // Barre d'actions de la lanterne sélectionnée.
@@ -600,6 +648,7 @@ const towerBar = new TowerBar($('tower-bar'), {
     sheets.open('tower', t.id);
   },
   onSell: (t) => sellTower(t),
+  onCancelBuild: (b) => cancelBuild(b),
   owner: (pid) => playerInfo(pid),
 });
 
@@ -617,6 +666,7 @@ function toggleRally(t) {
 function changePriority(t) {
   const g = state.game;
   const p = cyclePriority(g, t);
+  if (!p) return;
   sound.play('select');
   renderer.fx.ring(t.x, t.y + 0.3, 0.1, 0.62, PALETTE.gold, 0.45, 0.06, 0.45);
   const s = renderer.toScreen(t.x, t.y - 0.6);
@@ -626,7 +676,7 @@ function changePriority(t) {
 function sellTower(t) {
   const g = state.game;
   if (!g.towerById(t.id)) hud.toast('Cette lanterne n’existe plus', true);
-  else g.sellTower(t.id);
+  else commands.issue('sellTower', t.id);
   if (input.ui.selectedTower === t.id) input.ui.selectedTower = null;
 }
 
@@ -658,12 +708,13 @@ const sheets = new Sheets($('info'), {
   onPriority: (t) => changePriority(t),
   onRally: (t) => toggleRally(t),
   onSelectTool: (type) => {
+    // (setTool refuse une lanterne qui n'est pas de l'élément du joueur)
     if (input.ui.tool !== type) input.setTool(type);
     hud.refreshTools();
     hud.popTool(type);
     sound.play('select');
   },
-  onRemoveStone: (c, r) => state.game?.removeStone(c, r),
+  onRemoveStone: (c, r) => commands.issue('removeStone', c, r),
   onCallWave: () => callWave(),
   onEnemy: (type, absorb) => sheets.open('enemy', { type, absorb }),
   owner: (pid) => playerInfo(pid),
@@ -678,7 +729,7 @@ function setSpeed(s) {
 
 const gauge = new RewindGauge($('rewind'), {
   game: () => state.game,
-  onRewind: () => !coopFrozen() && !pausedHere() && state.game?.rewind(),
+  onRewind: () => !coopFrozen() && !pausedHere() && !!commands.issue('rewind'),
   // Simple indication (pas d'erreur rouge ni de son de refus) : la jauge réduite
   // dit comment elle se remplit ; un appui long ouvre la règle.
   onRefuse: (why, pct) => {
@@ -686,6 +737,8 @@ const gauge = new RewindGauge($('rewind'), {
       charge: `巻 Jauge ${pct} % : apaisez des yokai, appelez les vagues en avance (appui long : la règle)`,
       wave: '巻 Jauge pleine : glissez ◀◀ pendant une vague',
       short: '巻 Le passé s’accumule encore…',
+      // (coopération) déjà demandé, il part après le délai des commandes
+      coming: '巻 Le temps va reculer…',
       // jauge prête, simplement touchée : le geste attendu
       drag: `巻 Glissez la poignée vers la gauche ◀◀ : le temps recule de ${state.game?.rules.rewindSeconds ?? 6} s`,
     }[why];
@@ -721,6 +774,9 @@ function pausedHere() {
 function setPaused(p) {
   state.paused = p;
   $('btn-pause').classList.toggle('on', p);
+  // « Annuler » ne dépasse plus à moitié de la feuille de pause (une construction en
+  // cours s'annule encore en la touchant : barre « En construction »)
+  screenGame.classList.toggle('pause-on', p);
   // En pause, le plateau reste consultable (toucher, appui long), sans pose ni fusion.
   input.inspect = p;
   input.enabled = true;
@@ -728,11 +784,9 @@ function setPaused(p) {
   // Invité : son menu ne fige rien (la partie continue chez l'hôte), la musique non plus.
   if (state.coopRole === 'guest') return;
   holdMusic(p);
-  // Hôte : sa pause est celle de tous (état diffusé aussitôt, et message direct).
-  if (state.coopRole === 'host' && coop.isHost && !state.resultShown) {
-    coop.setPaused(p);
-    session.setPaused(p);
-  }
+  // Hôte : sa pause est celle de tous, à la même image chez chacun (annoncée tout de
+  // suite par un battement, effective 10 images plus tard).
+  if (state.coopRole === 'host' && coop.isHost && !state.resultShown) coop.setPaused(p);
 }
 
 function resumeFromPause() {
@@ -800,7 +854,9 @@ function openPauseMenu() {
     ];
   } else {
     buttons = [
-      ...(debug.enabled ? [{ label: 'Débogage', keep: true, run: () => debug.open() }] : []),
+      // débogage : seul (en coopération, chaque téléphone calcule la même partie : un
+      // tour de passe-passe local la ferait diverger)
+      ...(debug.enabled && !role ? [{ label: 'Débogage', keep: true, run: () => debug.open() }] : []),
       { label: 'Reprendre', cls: 'primary', run: () => resumeFromPause() },
       { label: 'Combos', keep: true, aria: 'Table des combos', run: () => openComboTable() },
       { label: 'Carte', cls: 'dark', aria: role === 'host' ? 'Carte du jardin (fin de la partie pour tous)' : 'Carte du jardin', run: () => showScreen('map') },
@@ -1010,7 +1066,7 @@ async function startLevel(id, opts = {}) {
   if (coopReady()) {
     const players = coop.playersFromLobby();
     const seed = 1 + Math.floor(Math.random() * 1e9);
-    const start = session.startGame({ level: id, seed, players, hard: mode.hard, challenge: mode.challenge });
+    const start = session.startGame({ level: id, seed, players, hard: mode.hard, challenge: mode.challenge, cd: COMMAND_DELAY });
     game = new Game(level, defs, { seed, players, localPlayer: 0, hard: mode.hard });
     // le défi filtre la palette (lanternes interdites) : avant hud.setup
     game.challenge = mode.challenge;
@@ -1043,7 +1099,9 @@ async function startGuestGame(msg) {
     element: known(p?.element) ? p.element : null,
   }));
   if (players.some((p) => !p.elements.length)) return;
-  msg = { ...msg, players };
+  // délai des commandes (images) : le même chez tous, sans quoi les parties divergent
+  const cd = Number.isSafeInteger(msg.cd) && msg.cd >= 0 && msg.cd <= 300 ? msg.cd : COMMAND_DELAY;
+  msg = { ...msg, players, cd };
   const token = ++state.startToken;
   const level = await fetchLevel(msg.level);
   if (!level || token !== state.startToken || session.role !== 'guest') return;
@@ -1069,8 +1127,10 @@ function beginGame(id, level, game, mode) {
   state.resultPending = false;
   state.coopResult = null;
   state.guestBlocked = false;
-  // sceau de chaque joueur (élément choisi au salon) : marques des lanternes, coéquipiers
-  state.coopInfo = state.coopRole ? game.players.map((p, i) => playerSeal(p, state.coopPlayers?.[i]?.element)) : null;
+  // sceau de chaque joueur (son élément, choisi au salon ou attribué d'office) :
+  // marques des lanternes et des constructions, coéquipiers
+  state.coopInfo = state.coopRole ? game.players.map((p, i) => playerSeal(p, p.elements?.length === 1 ? p.elements[0] : state.coopPlayers?.[i]?.element)) : null;
+  branchSender(state.coopRole, game);
   setPaused(false);
   input.reset();
   renderer.game = null; // resize() ne refait pas le fond de l'ancien niveau : setGame s'en charge
@@ -1104,7 +1164,7 @@ function beginGame(id, level, game, mode) {
   gauge.update();
   if (state.coopRole === 'guest') setSpeed(1); // la vitesse est celle de l'hôte (affichée chaque image)
   else if (debug.fast) setSpeed(4);
-  if (state.coopRole !== 'guest') debug.onStart(state.game);
+  if (!state.coopRole) debug.onStart(state.game);
   updateCoopWait(null);
   musicHold = null;
   sound.intensity = 0;
@@ -1230,6 +1290,7 @@ function handleEvents(game) {
   const me = game.localPlayer;
   const evs = state.coopRole ? all.filter((ev) => !(ev.type === 'reject' && ev.pid != null && ev.pid !== me)) : all;
   renderer.onEvents(evs);
+  const refused = new Map(); // refus de MES poses à leur exécution, par case (raison)
   for (const ev of evs) {
     // geste d'un coéquipier : on dit qui (appel de vague, rembobinage)
     const mate = state.coopRole && ev.pid != null && ev.pid !== me ? game.players[ev.pid]?.name : null;
@@ -1295,7 +1356,28 @@ function handleEvents(game) {
           hud.toast(`${ev.def.kanji || ''} ${ev.def.name} : ${ev.def.desc}`, false, 3200);
         }
         break;
+      case 'executed': {
+        // Ma pose refusée à son exécution (case prise au même instant par un coéquipier,
+        // chemin qui serait coupé, yokai sur la case du mur…) : on le dit sur la case.
+        const en = ev.entry;
+        if (!en || en.ok || en.pid !== me || !PLACEMENTS.has(en.op)) break;
+        // mur d'un Gardien vendu, fusionné ou effacé par le Rembobinage entre-temps :
+        // rien à signaler (le joueur l'a voulu ; la construction ne se dessinait plus)
+        if (en.op === 'setRally' && !game.towerById(en.args[0])) break;
+        const at = tileOfCommand(en.op, en.args);
+        if (!at || !game.grid.inBounds(at.c, at.r)) break;
+        const other = en.op === 'placeTower' ? game.towerAt(at.c, at.r) : null;
+        const who = other && other.owner !== me && game.players.length > 1 ? game.players[other.owner]?.name : null;
+        const why = refused.get(`${at.c},${at.r}`);
+        const wall = game.groundEnemyOn?.(game.grid.idx(at.c, at.r)) ? 'Un yokai est là : mur non déplacé' : 'Mur non déplacé';
+        const text = who ? `Pris par ${who}` : en.op === 'setRally' ? wall : hud.shortReason(why, {}) || 'Pose impossible';
+        const p = renderer.toScreen(at.c + 0.5, at.r);
+        input.flash(text, p.x, p.y, true);
+        if (en.op === 'setRally') sound.play('reject');
+        break;
+      }
       case 'reject':
+        if (ev.pid === me && ev.c != null) refused.set(`${ev.c},${ev.r}`, ev.reason);
         // Invité : l'hôte refuse sa commande (socle pris entre-temps par un coéquipier…) :
         // la raison s'écrit près du socle, comme un refus local.
         if (ev.fromHost && state.coopRole === 'guest' && ev.c != null && game.grid.inBounds(ev.c, ev.r)) {
@@ -1304,6 +1386,10 @@ function handleEvents(game) {
           const p = renderer.toScreen(ev.c + 0.5, ev.r);
           input.flash(who ? `Pris par ${who}` : hud.shortReason(ev.reason, ev) || 'Refusé par l’hôte', p.x, p.y, true);
         }
+        break;
+      case 'rally':
+        // le mur déplacé se dresse à la fin de sa construction (l'effet : fx 'rally')
+        if (ev.tile != null) sound.play('stone', { c: game.grid.col(ev.tile) });
         break;
       case 'stomp':
         renderer.fx.addShake(0.35);
@@ -1397,15 +1483,25 @@ function frame(now) {
   state.last = now;
   const g = state.game;
   if (g && state.screen === 'game') {
-    const guest = state.coopRole === 'guest';
-    if (!guest) debug.tick(g);
+    // Coopération : chaque téléphone fait tourner la même partie, au rythme commun.
+    const net = coop.active && coop.game === g;
+    if (!state.coopRole) debug.tick(g); // débogage : seul
     // Pause douce : entre deux vagues (plus aucun yokai en jeu), le compte à
-    // rebours attend qu'on ait lu la fiche (B12). Pas en coopération : les autres jouent.
+    // rebours attend qu'on ait lu la fiche (B12). Seul : à plusieurs, chaque téléphone
+    // avance image par image avec les autres.
     const calm = g.enemies.length === 0 && (typeof g.spawnersDone === 'function' ? g.spawnersDone() : true);
     const reading = !state.coopRole && sheets.isOpen && g.countdown != null && calm && g.state !== 'won' && g.state !== 'lost';
     state.reading = reading;
-    // L'invité ne simule rien : son miroir reçoit l'état de l'hôte (coop.afterUpdate).
-    if (!guest && !state.paused && !reading) {
+    if (net) {
+      // hôte : sa vitesse et sa pause s'appliquent chez tous à une image annoncée ;
+      // invité : sa partie suit celle de l'hôte (un message inattendu n'arrête rien)
+      if (state.coopRole === 'host') coop.speed = state.speed;
+      try {
+        coop.step(dt);
+      } catch (e) {
+        console.error(e);
+      }
+    } else if (!state.paused && !reading) {
       state.acc += dt * state.speed;
       let steps = 0;
       while (state.acc >= STEP && steps < 8) {
@@ -1415,17 +1511,7 @@ function frame(now) {
       }
       if (steps >= 8) state.acc = 0;
     }
-    // Coopération : avant de consommer game.events (ils partent aussi vers les invités).
-    // (un état inattendu de l'hôte n'arrête pas la boucle de l'invité)
-    if (coop.active) {
-      coop.speed = state.speed;
-      try {
-        coop.afterUpdate(dt);
-      } catch (e) {
-        console.error(e);
-      }
-    }
-    const hold = updateCoopGuest(g);
+    updateCoopGuest(g);
     try {
       handleEvents(g);
     } catch (e) {
@@ -1443,7 +1529,7 @@ function frame(now) {
         placeLastChanceArrow();
       }
     }
-    if (!guest && !state.challengeLost && g.challenge && challengeBroken(g)) {
+    if (!state.challengeLost && g.challenge && challengeBroken(g)) {
       state.challengeLost = true;
       hud.toast(`挑 Défi « ${g.level.challenge.name} » manqué`, true, 2600);
     }
@@ -1455,11 +1541,11 @@ function frame(now) {
     sheets.update();
     tutorial.update(state.paused || modalOpen());
     updateRoster();
-    // Invité : son menu ne fige pas le plateau (la partie continue) ; la pause de
-    // l'hôte, si. Les yokai sont interpolés entre deux états reçus (coop.alpha).
-    const still = guest ? hold === 'pause' : state.paused;
+    // Coopération : le plateau s'arrête quand la partie commune est arrêtée (pause de
+    // l'hôte atteinte, attente de l'hôte) ; le menu d'un invité ne fige rien.
+    const still = net ? coop.halted : state.paused;
     try {
-      renderer.render(still ? 0 : dt, guest ? coop.alpha ?? 1 : state.paused ? 1 : state.acc / STEP, input.ui);
+      renderer.render(still ? 0 : dt, net ? coop.alpha : state.paused ? 1 : state.acc / STEP, input.ui);
     } catch (e) {
       // un dessin qui échoue (API absente d'un vieux Safari…) ne fige pas le jeu
       if (!state.renderError) console.error(e);
@@ -1472,8 +1558,8 @@ function frame(now) {
 
 // ───────────────────────── Coopération ─────────────────────────
 
-// Sceau d'un joueur : l'élément qu'il a choisi au salon ; sans choix, un sceau
-// neutre à son initiale (il joue les éléments que personne n'a pris).
+// Sceau d'un joueur : son élément (à plusieurs, chacun en a un, choisi ou attribué) ;
+// à défaut, un sceau neutre à son initiale.
 function playerSeal(p, chosen) {
   const el = chosen && defs.elements?.[chosen] ? chosen : null;
   const info = el ? elementInfo(el, defs) : null;
@@ -1492,17 +1578,30 @@ function playerInfo(pid) {
   return state.coopInfo?.[pid] ?? null;
 }
 
-// Invité bloqué (pause de l'hôte, hôte injoignable) : aucune commande ne part.
+// ───────────────────────── Émetteur des commandes ─────────────────────────
+//
+// Solo : émetteur par défaut de la façade (game.issue : file du moteur).
+// Coopération (hôte comme invité) : l'émetteur du réseau, coop.sender. L'hôte date la
+// commande, la met dans sa file et la diffuse ; un invité la propose à l'hôte et publie
+// sa pose dans state.provisional (« en construction ») jusqu'à ce qu'elle soit datée.
+function branchSender(role, game) {
+  state.provisional = [];
+  const net = !!role && coop.active && coop.game === game;
+  coop.bindProvisional(net ? () => state.provisional : null);
+  commands.setSender(net ? coop.sender : null);
+}
+
+// Invité bloqué (pause de l'hôte, hôte injoignable, synchronisation) : aucune commande ne part.
 function coopFrozen() {
   return state.coopRole === 'guest' && !!state.guestBlocked;
 }
 
-// Fin de partie en coopération. Hôte : dernier état (avec l'événement de fin) puis
-// annonce à tous ; chacun affiche son résultat et garde ses étoiles. Invité : il
-// cesse d'attendre les états de l'hôte.
+// Fin de partie en coopération. Chacun la calcule lui-même (même partie partout) ;
+// l'hôte l'annonce aussi, avec l'image où elle s'est conclue (filet : un invité en
+// retard s'y rend d'un coup). Chacun affiche son résultat et garde ses étoiles.
 function endCoopGame(game, result) {
   if (state.coopRole === 'host' && coop.isHost) {
-    coop.flush();
+    coop.flush(); // dernier battement : les invités peuvent atteindre l'image finale
     session.endGame({
       ...result,
       level: state.levelId,
@@ -1512,20 +1611,20 @@ function endCoopGame(game, result) {
       kills: game.stats.kills,
       towers: game.stats.towersBuilt,
       wave: game.waveIndex + 1,
-    });
+    }, game.frame);
     coop.stop();
   } else if (state.coopRole === 'guest') coop.stop();
 }
 
-// Invité, chaque image : pause de l'hôte, hôte sans nouvelles, vitesse de l'hôte.
-// Renvoie 'pause' | 'stale' | null.
+// Invité, chaque image : synchronisation, pause de l'hôte, hôte sans nouvelles,
+// vitesse de l'hôte. Renvoie 'sync' | 'pause' | 'stale' | null.
 function updateCoopGuest(g) {
   if (state.coopRole !== 'guest') {
     updateCoopWait(null);
     return null;
   }
   const over = g.state === 'won' || g.state === 'lost' || state.resultShown || state.resultPending;
-  const kind = over || !coop.isGuest ? null : coop.remotePaused ? 'pause' : coop.stale() ? 'stale' : null;
+  const kind = over || !coop.isGuest ? null : coop.waitKind();
   updateCoopWait(kind);
   const blocked = kind != null;
   if (blocked !== !!state.guestBlocked) {
@@ -1541,7 +1640,8 @@ function updateCoopGuest(g) {
   return kind;
 }
 
-// Bandeau de l'invité : « Pause par l'hôte » ou « En attente de l'hôte… ».
+// Bandeau de l'invité : « Pause par l'hôte », « En attente de l'hôte… » ou
+// « Synchronisation… » (état complet de la partie en route depuis l'hôte).
 function updateCoopWait(kind) {
   if (kind === state.waitKind) return;
   state.waitKind = kind;
@@ -1552,7 +1652,9 @@ function updateCoopWait(kind) {
   el.innerHTML =
     kind === 'pause'
       ? `<span class="cw-kanji" aria-hidden="true">休</span><span class="cw-text"><b>Pause par l’hôte</b><small>${host} a mis la partie en pause</small></span>`
-      : `<span class="cw-kanji wait" aria-hidden="true">待</span><span class="cw-text"><b>En attente de l’hôte…</b><small>La partie reprend dès son retour</small></span>`;
+      : kind === 'sync'
+        ? `<span class="cw-kanji wait" aria-hidden="true">同</span><span class="cw-text"><b>Synchronisation…</b><small>La partie de ${host} arrive</small></span>`
+        : `<span class="cw-kanji wait" aria-hidden="true">待</span><span class="cw-text"><b>En attente de l’hôte…</b><small>La partie reprend dès son retour</small></span>`;
 }
 
 // Rangée des coéquipiers sous le HUD : sceau d'élément, nom, or, absent.
@@ -1661,8 +1763,9 @@ session.on('lobby', () => {
   guestGameOver();
 });
 
-// Invité : l'hôte lance une partie. Départ renvoyé (rechargement, reconnexion) alors
-// qu'on y est déjà : rien à faire, les états reprennent.
+// Invité : l'hôte lance une partie. Départ renvoyé (reconnexion) alors qu'on y est
+// déjà : rien à faire, les commandes et battements reprennent (une commande perdue
+// pendant la coupure : l'état complet suit).
 session.on('start', (msg) => {
   if (state.coopRole === 'guest' && state.screen === 'game' && state.gid === msg.seed && state.levelId === msg.level && !state.resultShown && !state.resultPending) return;
   startGuestGame(msg);
@@ -1677,9 +1780,10 @@ session.on('end', (msg) => {
   const g = state.game;
   if (r) {
     state.coopResult = r;
-    coop.client?.drain(); // le dernier état de l'hôte (et son événement de fin) d'abord
+    // la partie se rend à l'image finale de l'hôte et se conclut d'elle-même
+    if (!state.resultPending && !state.resultShown) coop.finish(msg.f);
     if (!state.resultPending && !state.resultShown && g && g.state !== 'won' && g.state !== 'lost') {
-      // l'état final n'est pas arrivé : on conclut d'après l'annonce de l'hôte
+      // (écart avec l'hôte, ou fin sans image) : on conclut d'après son annonce
       g.state = r.won ? 'won' : 'lost';
       if (r.lives != null) g.lives = r.lives;
       g.events.push(r.won ? { type: 'win', stars: r.stars ?? g.stars(), challenge: !!r.challenge } : { type: 'lose' });
@@ -1730,11 +1834,6 @@ function guestGameOver(later = false) {
     { label: 'Retour au salon', cls: 'primary', run: () => showScreen('title') },
   ]);
 }
-
-// Invité : pause de l'hôte (message direct ; l'état suivant la confirme).
-session.on('paused', (msg) => {
-  coop.client?.setPaused(!!msg.on);
-});
 
 // Invité : salon fermé. L'hôte parti pour de bon : retour à son propre salon.
 // Connexion coupée (la nôtre, ou celle de l'hôte, sans au revoir) : on tente d'abord
@@ -1832,9 +1931,10 @@ document.addEventListener(
   { passive: false },
 );
 
-// Pause automatique en arrière-plan. Hôte : c'est la pause de tous ; un état par
+// Pause automatique en arrière-plan. Hôte : c'est la pause de tous ; un battement par
 // seconde rassure les invités (sinon ils l'attendraient comme un hôte disparu).
-// Invité : rien (la partie continue chez l'hôte).
+// Invité : rien (la partie continue ; à son retour, il rattrape, ou reçoit l'état
+// complet s'il a plus de 5 s de retard).
 let heartbeat = 0;
 document.addEventListener('visibilitychange', () => {
   clearInterval(heartbeat);
@@ -1898,6 +1998,8 @@ window.__save = save;
 window.__session = session;
 window.__coop = coop;
 window.__lobby = lobbyUI;
+window.__commands = commands;
+window.__beginGame = beginGame; // (tests : partie coopérative simulée sans réseau)
 
 // Démarrage : ?level=<id> lance directement un niveau en solo (tests), sinon
 // l'accueil, où le salon se crée tout seul (ou rejoint celui de ?salon=CODE).

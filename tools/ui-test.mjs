@@ -5,6 +5,13 @@
 // Moteur v3 (événements tactiles réels) : palette regroupée par élément, socles
 // gravés, murs des Gardiens, vagues qui se chevauchent et appel anticipé, jauge de
 // Rembobinage et dernière chance, carte (leçon, Difficile, défi), tutoriel, débogage.
+// Commandes et construction (lockstep) : une pose apparaît « en construction » 2 s
+// (or réservé, socle refusé à une autre pose, « Annuler » pendant la construction
+// puis 3 s), la pause la fige ; à plusieurs, palette limitée à l'élément du joueur
+// et salon à éléments distincts. Recette solo de la construction (section 12) : pierres
+// posées en rafale, mur déplacé deux fois ou Gardien vendu pendant le déplacement,
+// tutoriel qui attend la pierre et le mur, fusion sur une jumelle en construction,
+// pause, victoire, Rembobinage pendant une construction.
 // Usage : (serveur local sur :8080) node tools/ui-test.mjs
 import { createRequire } from 'node:module';
 import { brokerQuery } from './relay.mjs';
@@ -52,11 +59,24 @@ const slotsOf = (type = null) =>
     return out;
   }, type);
 const towerName = (type) => page.evaluate((t) => window.__state.game.defs.towers[t].name, type);
+// État de la partie. `towers` compte aussi les lanternes en construction (pending :
+// pose en file, id « b<n° de commande> ») ; `built` : seulement les lanternes actives.
 const game = () =>
   page.evaluate(() => {
     const g = window.__state.game;
-    return { gold: g.gold, towers: g.towers.map((t) => ({ id: t.id, c: t.c, r: t.r, level: t.level, type: t.type, priority: t.priority })), tool: document.querySelector('.tool.selected')?.dataset.tool };
+    const built = g.towers.map((t) => ({ id: t.id, c: t.c, r: t.r, level: t.level, type: t.type, priority: t.priority }));
+    const pending = g.pendingPlacements().filter((e) => e.op === 'placeTower').map((e) => ({ id: `b${e.id}`, c: e.args[1], r: e.args[2], level: 1, type: e.args[0], priority: null, pending: true }));
+    return { gold: g.gold, spendable: g.spendable(), towers: [...built, ...pending], built, pending, tool: document.querySelector('.tool.selected')?.dataset.tool };
   });
+// Achève les constructions en cours sans attendre leurs 2 s (le moteur avance d'une image).
+const settle = () =>
+  page.evaluate(() => {
+    const g = window.__state.game;
+    for (const e of g.queue) e.frame = Math.min(e.frame, g.frame + 1);
+    g.update(1 / 60);
+  });
+// Annule les constructions en cours (commande 'cancel', comme « Annuler »).
+const cancelBuilds = () => page.evaluate(() => window.__state.game.pendingPlacements().forEach((e) => window.__state.game.issue('cancel', [e.id])));
 const ui = () => page.evaluate(() => JSON.parse(JSON.stringify({ ...window.__input.ui, press: window.__input.ui.press && { ...window.__input.ui.press, combos: (window.__input.ui.press.combos || []).map((c) => c.def.name), routes: (window.__input.ui.press.routes || []).length } })));
 // Doigt posé, maintenu puis déplacé : le fantôme se soulève au-dessus du doigt
 // (montée après ~260 ms, finie vers 430 ms ; avant, relâcher reste un toucher).
@@ -87,14 +107,18 @@ await open('1-1');
 let slots = await slotsOf();
 
 console.log('Pose et désélection (B1)');
-await page.evaluate(() => (window.__state.game.gold = 500));
+// moteur ralenti (×0,1) : la construction dure ~20 s réelles, le temps des vérifications
+await page.evaluate(() => {
+  window.__state.game.gold = 500;
+  window.__state.speed = 0.1;
+});
 await page.locator('.tool[data-tool="fire"]').click();
 const [c1, r1] = slots[0];
 let p = await at(c1, r1);
 await page.mouse.click(p.x, p.y);
 await page.waitForTimeout(150);
 let s = await game();
-check('un simple toucher pose sur la case touchée', s.towers.length === 1 && s.towers[0].c === c1 && s.towers[0].r === r1, JSON.stringify(s.towers));
+check('un simple toucher lance la construction sur la case touchée', s.pending.length === 1 && s.built.length === 0 && s.pending[0].c === c1 && s.pending[0].r === r1, JSON.stringify(s.towers));
 check('outil désélectionné après la pose', !s.tool);
 const [c2, r2] = slots[1];
 p = await at(c2, r2);
@@ -103,16 +127,81 @@ await page.waitForTimeout(150);
 s = await game();
 check('un toucher sur un socle vide n’achète rien', s.towers.length === 1);
 
+console.log('Construction (2 s) : visible, or réservé, socle pris');
+check('rien n’est encore payé : l’or est réservé (disponible = or − 50)', s.gold === 500 && s.spendable === 450, JSON.stringify({ gold: s.gold, spendable: s.spendable }));
+const hudGold = await page.evaluate(() => [document.getElementById('hud-gold').textContent, document.getElementById('hud-reserved').textContent, !document.getElementById('hud-reserved').classList.contains('hidden')]);
+check('HUD : or disponible et « −50 » promis à la construction', hudGold[0] === '450' && hudGold[1] === '−50' && hudGold[2], JSON.stringify(hudGold));
+const drawn = await page.evaluate(() => window.__renderer.builds.map((b) => [b.op, b.c, b.r, Math.round(b.k * 100) / 100]));
+check('la lanterne en construction est dessinée (avancement 0 → 1)', drawn.length === 1 && drawn[0][0] === 'placeTower' && drawn[0][1] === c1 && drawn[0][3] > 0 && drawn[0][3] < 1, JSON.stringify(drawn));
+await page.screenshot({ path: 'qa-output/ui-construction.png' });
+// le socle en construction refuse une autre pose
+await page.locator('.tool[data-tool="water"]').click();
+p = await at(c1, r1, LIFT);
+await press(p);
+{
+  const u = await ui();
+  const lab = await page.evaluate(() => window.__renderer.pressLabel(window.__input.ui.press));
+  check('socle en construction : pose refusée « En construction »', u.press?.valid === false && u.press.reason === 'pending' && lab?.text === 'En construction', JSON.stringify({ reason: u.press?.reason, lab }));
+}
+await page.mouse.up();
+await page.waitForTimeout(150);
+check('… et rien de plus n’est construit', (await game()).towers.length === 1);
+// toucher la construction : « En construction · Annuler »
+p = await at(c1, r1);
+await page.mouse.click(p.x, p.y);
+await page.waitForTimeout(200);
+const bbar = await page.evaluate(() => ({ shown: !document.getElementById('tower-bar').classList.contains('hidden'), text: document.getElementById('tower-bar').innerText.replace(/\s+/g, ' '), btns: [...document.querySelectorAll('#tower-bar button')].map((b) => b.getBoundingClientRect().height) }));
+check('toucher une construction : barre « En construction · Annuler » (≥ 44 pt)', bbar.shown && /En construction/.test(bbar.text) && /Annuler/.test(bbar.text) && bbar.btns.length === 1 && bbar.btns[0] >= 44, JSON.stringify(bbar));
+await page.screenshot({ path: 'qa-output/ui-construction-bar.png' });
+await page.locator('#tower-bar [data-act="cancelBuild"]').click();
+await page.waitForTimeout(150);
+s = await game();
+check('« Annuler » de la barre : construction retirée, rien n’est payé', s.towers.length === 0 && s.gold === 500 && s.spendable === 500, JSON.stringify(s));
+await page.evaluate(() => (window.__state.speed = 1));
+
 console.log('Annuler (B8)');
-check('« Annuler » visible après la pose', await visible('#btn-undo'));
+await selectTool('fire');
+p = await at(c1, r1);
+await page.mouse.click(p.x, p.y);
+await page.waitForTimeout(150);
+check('« Annuler » visible pendant la construction', await visible('#btn-undo'));
 const ub = await rect('#btn-undo');
 check('« Annuler » ≥ 44 pt', ub && ub.height >= 44 && ub.width >= 44, JSON.stringify(ub));
 const goldBefore = (await game()).gold;
 await page.locator('#btn-undo').click();
 await page.waitForTimeout(150);
 s = await game();
-check('annuler retire la lanterne et rend tout l’or', s.towers.length === 0 && s.gold === goldBefore + 50, `${goldBefore} → ${s.gold}`);
+check('annuler pendant la construction : retirée, rien n’est payé', s.towers.length === 0 && s.gold === goldBefore && s.spendable === goldBefore, `${goldBefore} → ${s.gold}`);
 check('« Annuler » masqué ensuite', !(await visible('#btn-undo')));
+// après l'activation (2 s, attendues en vrai) : « Annuler » reste 3 s et rend tout l'or
+await selectTool('fire');
+await page.mouse.click(p.x, p.y);
+await page.waitForTimeout(2300);
+s = await game();
+check('2 s plus tard, la lanterne s’allume (active, or payé)', s.built.length === 1 && s.pending.length === 0 && s.gold === goldBefore - 50, JSON.stringify(s));
+check('« Annuler » encore visible juste après l’activation', await visible('#btn-undo'));
+await page.locator('#btn-undo').click();
+await page.waitForTimeout(150);
+s = await game();
+check('annuler juste après : lanterne reprise, or rendu en entier', s.towers.length === 0 && s.gold === goldBefore, `${goldBefore} → ${s.gold}`);
+// la pause fige les constructions (le moteur n'avance pas)
+await selectTool('fire');
+await page.mouse.click(p.x, p.y);
+await page.waitForTimeout(100);
+await page.locator('#btn-pause').click();
+await page.waitForTimeout(2400);
+const frozen = await page.evaluate(() => ({ q: window.__state.game.pendingPlacements().length, t: window.__state.game.towers.length }));
+check('en pause, la construction attend (figée)', frozen.q === 1 && frozen.t === 0, JSON.stringify(frozen));
+await page.locator('#modal .btn.primary').click();
+await page.waitForTimeout(2300);
+check('reprise : la construction s’achève', (await game()).built.length === 1);
+await page.evaluate(() => {
+  const g = window.__state.game;
+  g.towers = [];
+  g.onTowersChanged();
+  g.gold = 500;
+});
+await page.waitForTimeout(3200); // « Annuler » de la lanterne effacée disparaît
 
 console.log('Pose au-dessus du doigt (B2, B16, D14)');
 await selectTool('fire');
@@ -126,7 +215,7 @@ check('case visée = case sous le fantôme', u.press?.c === target[0] && u.press
 await page.mouse.up();
 await page.waitForTimeout(150);
 s = await game();
-check('pose validée au relâchement sur la case visée', s.towers.some((t) => t.c === target[0] && t.r === target[1]), JSON.stringify(s.towers));
+check('pose validée au relâchement sur la case visée (en construction)', s.towers.some((t) => t.c === target[0] && t.r === target[1]), JSON.stringify(s.towers));
 // toucher lent (doigt immobile ~340 ms) : le fantôme n'a pas fini de monter, la pose
 // reste sur la case touchée (pas une rangée plus haut)
 await selectTool('water');
@@ -140,7 +229,7 @@ await page.waitForTimeout(150);
 const slowS = await game();
 const slowNew = slowS.towers.find((t) => !s.towers.some((o) => o.id === t.id));
 check('toucher lent (340 ms) : pose sur la case touchée', !!slowNew && slowNew.c === slowT[0] && slowNew.r === slowT[1], JSON.stringify(slowNew));
-if (slowNew) await page.evaluate((id) => window.__state.game.undoPlace(id), slowNew.id);
+if (slowNew) await page.evaluate(([c, r]) => window.__state.game.pendingPlacements().filter((e) => e.args[1] === c && e.args[2] === r).forEach((e) => window.__state.game.issue('cancel', [e.id])), [slowNew.c, slowNew.r]);
 // relâcher hors socle annule
 await selectTool('water');
 const path = await page.evaluate(() => {
@@ -148,6 +237,7 @@ const path = await page.evaluate(() => {
   for (let i = 0; i < g.size; i++) if (g.type(i) === 1 && g.row(i) > 3 && g.row(i) < 10) return [g.col(i), g.row(i)];
   return null;
 });
+await settle(); // constructions achevées (l'or du test change ensuite)
 const nb = (await game()).towers.length;
 const g0 = (await game()).gold;
 p = await at(path[0], path[1], LIFT);
@@ -187,6 +277,7 @@ const occNow = new Set((await game()).towers.map((t) => `${t.c},${t.r}`));
 const freeW = (await slotsOf('water')).filter(([c, r]) => !occNow.has(`${c},${r}`));
 const pairF = (await slotsOf('fire')).filter(([c, r]) => !occNow.has(`${c},${r}`)).map(([c, r]) => [c, r, freeW.find(([c2, r2]) => Math.max(Math.abs(c - c2), Math.abs(r - r2)) === 1)]).find((x) => x[2]);
 if (pairF) await page.evaluate(([c, r]) => window.__state.game.placeTower('fire', c, r), pairF);
+await settle();
 const nbSlot = pairF ? pairF[2] : null;
 if (nbSlot) {
   await selectTool('water');
@@ -214,6 +305,7 @@ s = await game();
 check('lanterne posée en glissant depuis la palette', s.towers.length === gp + 1 && s.towers.some((t) => t.c === dest[0] && t.r === dest[1]), JSON.stringify(s.towers.map((t) => [t.c, t.r])));
 
 console.log('Barre d’actions : priorité, fiche, vente confirmée (B7, B8)');
+await settle(); // constructions achevées
 await page.waitForTimeout(3300); // fin de la fenêtre d'annulation
 const sel = (await game()).towers.find((t) => t.type === 'fire');
 p = await at(sel.c, sel.r);
@@ -401,10 +493,13 @@ if (stones.blocked) {
 }
 await page.mouse.up();
 await page.waitForTimeout(150);
-const placed = await page.evaluate(() => window.__state.game.stonesPlaced);
-check('pierre posée au relâchement', placed === 1, String(placed));
+const stoneBuild = await page.evaluate(() => window.__renderer.builds.filter((b) => b.op === 'placeStone').map((b) => [b.c, b.r]));
+check('pierre fantôme en construction au relâchement', stoneBuild.length === 1 && stoneBuild[0][0] === stones.best[0] && stoneBuild[0][1] === stones.best[1], JSON.stringify(stoneBuild));
 const badge1 = await page.locator('.tool[data-tool="stone"] .tool-count').innerText();
-check('badge mis à jour', badge1 !== badge0, `${badge0} → ${badge1}`);
+check('badge mis à jour (pierre en construction comptée)', badge1 !== badge0, `${badge0} → ${badge1}`);
+await settle();
+const placed = await page.evaluate(() => window.__state.game.stonesPlaced);
+check('pierre posée à la fin de la construction', placed === 1, String(placed));
 await page.evaluate(() => {
   const g = window.__state.game;
   g.stats.stones = g.stoneConf().max;
@@ -750,6 +845,9 @@ check('bannière visible avec « réduire les animations »', Number(op) > 0.5, 
   });
   if (target) {
     await tap(await at(target.c, target.r));
+    const movingWall = await ev(() => window.__renderer.builds.filter((b) => b.op === 'setRally').map((b) => [b.c, b.r]));
+    check('toucher une case allumée : le mur se construit sur la case (2 s)', movingWall.length === 1 && movingWall[0][0] === target.c && movingWall[0][1] === target.r && (await ev(() => window.__state.game.barriers[0].tile)) === target.from, JSON.stringify(movingWall));
+    await settle();
     check('toucher une case allumée y déplace le mur (setRally)', (await ev(() => window.__state.game.barriers[0].tile)) === target.i && !(await ev(() => window.__input.ui.rally)));
   } else check('une case où déplacer le mur', false, 'aucune case');
   await tap(await center('#tower-bar .tb-rally'));
@@ -763,8 +861,10 @@ check('bannière visible avec « réduire les animations »', Number(op) > 0.5, 
   const hp1 = await page.locator('#info .hpbar.wall span').innerText();
   check('fiche du Gardien : PV du mur en direct', /Mur \d+ \/ \d+ PV/.test(hp0) && hp0 !== hp1, `${hp0} → ${hp1}`);
   await tap(await center('#info .sheet-close'));
+  // résistance du kappa à l'Eau, lue dans les données (l'équilibrage peut la changer)
+  const kappaRes = await ev(() => Math.round((window.__state.game.defs.enemies.kappa.resist?.water ?? 0) * 100));
   for (const [type, want] of [
-    ['kappa', ['Armure', 'Résistances', 'Eau', '−50 %', 'Murs', 'frappe']],
+    ['kappa', ['Armure', 'Résistances', 'Eau', `−${kappaRes} %`, 'Murs', 'frappe']],
     ['ushioni', ['Armure', 'fracasse les murs']],
     ['kasaobake', ['Saute par-dessus les murs']],
     ['tokihami', ['Hors du temps']],
@@ -1004,6 +1104,8 @@ check('bannière visible avec « réduire les animations »', Number(op) > 0.5, 
   });
   check('« barrier » : « Touchez une case allumée »', /case allumée/.test(hint), hint);
   await tap(await at(tileT.c, tileT.r));
+  await settle(); // le mur se dresse à la fin de sa construction
+  await page.waitForTimeout(150); // (événements lus à l'image suivante)
   check('« barrier » validé par le déplacement du mur', (await ev(() => window.__tutorial.done.has('barrier'))) === true);
   await open('1-3');
   await ev(() => window.__state.game.startNextWave());
@@ -1068,6 +1170,13 @@ console.log('9. Recette solo au doigt (défauts corrigés)');
       touch,
       ev: (fn, arg) => pg.evaluate(fn, arg),
       wait: (ms) => pg.waitForTimeout(ms),
+      // constructions achevées sans attendre leurs 2 s
+      settle: () =>
+        pg.evaluate(() => {
+          const g = window.__state.game;
+          for (const e of g.queue) e.frame = Math.min(e.frame, g.frame + 1);
+          g.update(1 / 60);
+        }),
       tap: async (q, ms = 60) => {
         await touch('touchStart', q);
         await pg.waitForTimeout(ms);
@@ -1209,6 +1318,7 @@ console.log('9. Recette solo au doigt (défauts corrigés)');
       return null;
     });
     await f.tap(await f.at(fs[0], fs[1]));
+    await f.settle(); // la lanterne s'allume (le combo se montre ensuite)
     await f.wait(900);
     let hi = await hint();
     check('combo, sans lanterne choisie : le doigt montre d’abord la palette', hi && (hi.key === 'combo-tool' || hi.key === 'combo-tab') && /prenez/.test(hi.text), JSON.stringify(hi));
@@ -1220,7 +1330,9 @@ console.log('9. Recette solo au doigt (défauts corrigés)');
     const ok = tile && (await f.ev(([t, c2, r2]) => window.__state.game.canPlaceTower(t, c2, r2).ok && window.__state.game.previewCombos(t, c2, r2).length > 0, [tool, tile.c, tile.r]));
     check('combo : puis un socle compatible où le combo naît', hi?.key === 'combo' && ok, JSON.stringify({ hi, tool, tile }));
     await f.tap({ x: hi.x, y: hi.y });
-    await f.wait(500);
+    await f.wait(300);
+    await f.settle();
+    await f.wait(200);
     check('combo validé au doigt', await f.ev(() => window.__tutorial.done.has('combo') && window.__state.game.zones.length > 0));
     // fusion : deux Braseros jumeaux, le doigt glisse d'une lanterne SUR l'autre
     await f.ev(() => (window.__state.game.gold = 999));
@@ -1235,6 +1347,7 @@ console.log('9. Recette solo au doigt (défauts corrigés)');
     }, fs);
     await f.tap(await f.center('.tool[data-tool="fire"]'));
     await f.tap(await f.at(fs2[0], fs2[1]));
+    await f.settle();
     await f.wait(700);
     hi = await hint();
     check('fusion : le doigt glisse d’une lanterne vers sa jumelle', hi?.key === 'fuse' && (hi.dx || hi.dy), JSON.stringify(hi));
@@ -1377,7 +1490,7 @@ console.log('9. Recette solo au doigt (défauts corrigés)');
     const shown = await f.ev(() => !document.getElementById('intro').classList.contains('hidden'));
     await f.tap(await f.center('.tool[data-tool="fire"]'));
     await f.tap(q);
-    const r = await f.ev(([c2, r2]) => ({ intro: !document.getElementById('intro').classList.contains('hidden'), placed: !!window.__state.game.towerAt(c2, r2), sheet: window.__sheets.isOpen }), slot);
+    const r = await f.ev(([c2, r2]) => ({ intro: !document.getElementById('intro').classList.contains('hidden'), placed: !!window.__state.game.towerAt(c2, r2) || window.__state.game.pendingPlacements().some((e) => e.args[1] === c2 && e.args[2] === r2), sheet: window.__sheets.isOpen }), slot);
     check('carte « Nouveau yokai » sur un socle : choisir une lanterne l’efface, la pose réussit', shown && !r.intro && r.placed && !r.sheet, JSON.stringify({ shown, ...r }));
     await c.close();
   }
@@ -1409,8 +1522,12 @@ console.log('9. Recette solo au doigt (défauts corrigés)');
       return i == null ? null : [g.grid.col(i), g.grid.row(i), i];
     }, t.id);
     await f.tap(await f.at(dest[0], dest[1]));
+    // en pause, la construction du mur attend (le moteur est figé) ; il se dresse à la reprise
+    const held = await f.ev(() => window.__state.game.pendingPlacements().filter((e) => e.op === 'setRally').length);
+    await f.tap(await f.center('#modal .btn.primary'));
+    await f.settle();
     const tile = await f.ev((id) => window.__state.game.barriers.find((x) => x.towerId === id).tile, t.id);
-    check('en pause : « Déplacer le mur » puis une case allumée déplace le mur', tile === dest[2] && (await f.ev(() => window.__state.paused)), JSON.stringify({ tile, dest }));
+    check('en pause : « Déplacer le mur » puis une case allumée : le mur se construit et se dresse à la reprise', held === 1 && tile === dest[2], JSON.stringify({ held, tile, dest }));
     await c.close();
   }
 
@@ -1766,6 +1883,410 @@ console.log('10. Correctifs de la relecture (dernière chance, pause, vieux Safa
   const native = await op.evaluate(() => /native code/.test(String(CanvasRenderingContext2D.prototype.roundRect)));
   check('sans ctx.roundRect (Safari < 16) : carte et plateau dessinés, boucle vivante', !native && nodes === 8 && t1 >= 0 && t2 > t1 && oldErr.length === 0, JSON.stringify({ nodes, t1, t2, native, err: oldErr.slice(0, 3) }));
   await old.close();
+}
+
+console.log('11. Coopération : un élément par joueur, constructions des coéquipiers, salon');
+{
+  // partie coopérative simulée (sans réseau) : Moi (Feu) et Aki (rien choisi → Eau)
+  const c = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+  const pg = await c.newPage();
+  pg.on('pageerror', (e) => errors.push(e.message));
+  pg.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
+  await pg.goto('http://localhost:8080/?broker=off', { waitUntil: 'networkidle' });
+  await pg.evaluate(async () => {
+    const { Game, assignElements } = await import('/src/core/game.js');
+    const { defs, loadLevel } = await import('/src/data.js');
+    const level = await loadLevel('2-3');
+    const els = assignElements(['fire', null]);
+    const players = [
+      { name: 'Moi', elements: els[0], element: 'fire' },
+      { name: 'Aki', elements: els[1], element: null },
+    ];
+    const game = new Game(level, defs, { seed: 3, players, localPlayer: 0 });
+    window.__state.coopRole = 'host';
+    window.__state.coopPlayers = players;
+    window.__beginGame('2-3', level, game, { hard: false, challenge: false });
+  });
+  await pg.waitForTimeout(800);
+  const box = await pg.locator('#board').boundingBox();
+  const atT = async (cc, rr, dy = 0) => {
+    const q = await pg.evaluate(([cc, rr]) => window.__renderer.toScreen(cc + 0.5, rr + 0.5), [cc, rr]);
+    return { x: box.x + q.x, y: box.y + q.y + dy };
+  };
+  const pal = await pg.evaluate(() => ({
+    tools: [...document.querySelectorAll('#palette .tool')].map((b) => b.dataset.tool),
+    tabs: !document.getElementById('palette-tabs').classList.contains('hidden'),
+    mine: window.__state.game.towersFor(0),
+  }));
+  check('palette coopérative : seulement les lanternes de son élément (Feu), sans pierre ni onglets', pal.tools.join() === pal.mine.join() && pal.mine.every((t) => t.startsWith('fire')) && !pal.tools.includes('stone') && !pal.tabs, JSON.stringify(pal));
+  const paths = await pg.evaluate(() => {
+    const g = window.__state.game;
+    const I = window.__input;
+    const slot = (() => {
+      for (let i = 0; i < g.grid.size; i++) if (g.grid.type(i) === 3 && !g.grid.slotElement[i]) return [g.grid.col(i), g.grid.row(i)];
+      return null;
+    })();
+    const set = I.setTool('water');
+    window.__sheets.open('type', 'water');
+    const sheet = document.querySelector('#info .sheet-actions')?.innerText || '';
+    const choose = !!document.querySelector('#info [data-act="choose"]');
+    window.__sheets.close();
+    return { allowed: I.allowed('water'), set, sheet, choose, check: window.__commands.check('placeTower', 'water', slot[0], slot[1]).reason, stone: I.allowed('stone') };
+  });
+  check('aucun chemin vers une lanterne d’un autre élément (outil, fiche, commande)', !paths.allowed && paths.set === null && !paths.choose && /autre joueur/.test(paths.sheet) && paths.check === 'element' && !paths.stone, JSON.stringify(paths));
+  // construction d'Aki (commande datée venue du réseau) : visible, liseré de son élément
+  const akiSlot = await pg.evaluate(() => {
+    const g = window.__state.game;
+    for (let i = 0; i < g.grid.size; i++) {
+      const c2 = g.grid.col(i);
+      const r2 = g.grid.row(i);
+      if (g.grid.type(i) === 3 && !g.grid.slotElement[i] && r2 > 3 && g.canIssue('placeTower', ['water', c2, r2], 1).ok) {
+        g.issue('placeTower', ['water', c2, r2], 1);
+        return [c2, r2];
+      }
+    }
+    return null;
+  });
+  await pg.evaluate(() => (window.__state.speed = 0.1)); // le temps des vérifications
+  const mate = await pg.evaluate(() => ({ builds: window.__renderer.builds.map((b) => ({ mine: b.mine, pid: b.pid, color: window.__renderer.buildOwner(b.pid)?.color })), spend: window.__commands.spendable(), gold: window.__state.game.gold, water: window.__state.game.defs.elements.water.color }));
+  check('construction d’un coéquipier : dessinée à la couleur de son élément, mon or intact', mate.builds.length === 1 && !mate.builds[0].mine && mate.builds[0].color === mate.water && mate.spend === mate.gold, JSON.stringify(mate));
+  await pg.locator('.tool[data-tool="fire"]').click();
+  let q = await atT(akiSlot[0], akiSlot[1], 60);
+  await pg.mouse.move(q.x, q.y);
+  await pg.mouse.down();
+  await pg.waitForTimeout(520);
+  await pg.mouse.move(q.x + 2, q.y + 1);
+  await pg.mouse.move(q.x, q.y);
+  await pg.waitForTimeout(60);
+  const lab = await pg.evaluate(() => window.__renderer.pressLabel(window.__input.ui.press));
+  await pg.mouse.up();
+  await pg.waitForTimeout(150);
+  check('socle en construction chez un coéquipier : « Pris par Aki »', lab?.text === 'Pris par Aki', JSON.stringify(lab));
+  q = await atT(akiSlot[0], akiSlot[1]);
+  await pg.mouse.click(q.x, q.y);
+  await pg.waitForTimeout(200);
+  const bar = await pg.evaluate(() => ({ text: document.getElementById('tower-bar').innerText.replace(/\s+/g, ' '), shown: !document.getElementById('tower-bar').classList.contains('hidden'), btns: document.querySelectorAll('#tower-bar button').length }));
+  check('toucher sa construction : « Pris par Aki », sans bouton d’annulation', bar.shown && /Pris par Aki/.test(bar.text) && bar.btns === 0, JSON.stringify(bar));
+  await pg.screenshot({ path: 'qa-output/ui-coop-construction.png' });
+  await c.close();
+
+  // salon à deux (relais local) : éléments distincts, attribution d'office affichée
+  if (!HOME.includes('broker=off')) {
+    const hc = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+    const host = await hc.newPage();
+    host.on('pageerror', (e) => errors.push(`[hôte] ${e.message}`));
+    host.on('console', (m) => m.type() === 'error' && errors.push(`[hôte] ${m.text()}`));
+    await host.goto(HOME, { waitUntil: 'networkidle' });
+    await host.waitForFunction(() => window.__session.online, null, { timeout: 10000 });
+    const code = await host.evaluate(() => window.__session.code);
+    const gc = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+    const guest = await gc.newPage();
+    guest.on('pageerror', (e) => errors.push(`[invité] ${e.message}`));
+    guest.on('console', (m) => m.type() === 'error' && errors.push(`[invité] ${m.text()}`));
+    await guest.goto(`${HOME}&salon=${code}`, { waitUntil: 'networkidle' });
+    await guest.waitForFunction(() => window.__session.role === 'guest' && window.__session.online, null, { timeout: 10000 });
+    await host.waitForFunction(() => (window.__session.lobby?.players.length ?? 0) === 2, null, { timeout: 10000 });
+    // l'invité reçoit un élément libre en arrivant ; l'hôte n'a rien choisi : le sien
+    // lui est attribué d'office (affiché)
+    await host.waitForTimeout(400);
+    const hs = await host.evaluate(() => {
+      const players = window.__session.lobby.players;
+      const taken = players[1].element;
+      return {
+        taken,
+        takenOff: document.querySelector(`.lobby-el[data-el="${taken}"]`)?.disabled,
+        note: document.querySelector('.lobby-note').textContent,
+        autoTag: document.querySelectorAll('.lobby-player .lobby-tag.auto').length,
+        autoSeal: document.querySelectorAll('.lobby-seal.auto').length,
+        autoEl: document.querySelector('.lobby-el.auto')?.dataset.el,
+        fold: document.querySelector('.lobby-fold').textContent,
+      };
+    });
+    check('salon à deux : « un élément par joueur », élément pris grisé, élément d’office de l’hôte affiché', /chacun ne pose que les lanternes de son élément/.test(hs.note) && !/à tous/.test(hs.note) && hs.takenOff === true && hs.autoTag === 1 && hs.autoSeal === 1 && hs.autoEl && hs.autoEl !== hs.taken, JSON.stringify(hs));
+    const pick = ['wind', 'earth', 'water', 'fire'].find((el) => el !== hs.taken);
+    await host.locator(`.lobby-el[data-el="${pick}"]`).click();
+    await guest.waitForFunction((el) => window.__session.lobby?.players.some((p) => p.element === el), pick, { timeout: 10000 });
+    await guest.waitForTimeout(300);
+    const gs = await guest.evaluate((el) => ({ off: document.querySelector(`.lobby-el[data-el="${el}"]`).disabled, auto: document.querySelectorAll('.lobby-tag.auto').length }), pick);
+    check('salon (invité) : l’élément choisi par l’hôte est grisé, plus d’attribution d’office', gs.off === true && gs.auto === 0, JSON.stringify(gs));
+    await host.locator(`.lobby-el[data-el="${pick}"]`).click();
+    await host.waitForTimeout(300);
+    check('à plusieurs, toucher son élément ne le retire pas', await host.evaluate((el) => window.__session.lobby.players[0].element === el, pick));
+    // l'hôte retire son choix… impossible ; on teste l'affichage de la fiche de niveau
+    // avec un joueur sans élément : on vide le choix de l'hôte côté salon
+    await host.evaluate(() => window.__session.assignElement(window.__session.id, null));
+    await host.waitForTimeout(300);
+    await host.screenshot({ path: 'qa-output/ui-lobby-two.png' });
+    await host.locator('#btn-play').click();
+    await host.waitForTimeout(600);
+    await host.locator('.map-node').first().click();
+    await host.waitForTimeout(500);
+    const team = await host.evaluate(() => document.querySelector('#modal .lv-team')?.parentElement?.innerText || '');
+    check('fiche de niveau de l’hôte : élément de chacun (attribué), règle d’un élément', /attribué/.test(team) && /Chacun ne pose que les lanternes de son élément/.test(team), team.replace(/\s+/g, ' ').slice(0, 200));
+    await hc.close();
+    await gc.close();
+  } else console.log('  (salon à deux : relais local injoignable, vérification sautée)');
+}
+
+console.log('12. Construction de 2 s en solo : recette au doigt (pierres en rafale, mur, Rembobinage, tutoriel, fusion, fin)');
+{
+  const c = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+  const pg = await c.newPage();
+  pg.on('pageerror', (e) => errors.push(e.message));
+  pg.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
+  const cd = await c.newCDPSession(pg);
+  const touch = (type, q) => cd.send('Input.dispatchTouchEvent', { type, touchPoints: type === 'touchEnd' ? [] : [{ x: q.x, y: q.y, id: 1, radiusX: 8, radiusY: 8 }] });
+  const ev = (fn, arg) => pg.evaluate(fn, arg);
+  const wait = (ms) => pg.waitForTimeout(ms);
+  const tap = async (q, ms = 60) => {
+    await touch('touchStart', q);
+    await wait(ms);
+    await touch('touchEnd');
+    await wait(150);
+  };
+  const center = async (sel) => {
+    const r = await pg.locator(sel).first().boundingBox();
+    return r && { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  };
+  const tapSel = async (sel) => tap(await center(sel));
+  let box = null;
+  const open = async (id) => {
+    await pg.goto(`http://localhost:8080/?level=${id}&broker=off`, { waitUntil: 'networkidle' });
+    await wait(500);
+    box = await pg.locator('#board').boundingBox();
+  };
+  const at = (cc, rr, dy = 0) => ev(([cc, rr]) => window.__renderer.toScreen(cc + 0.5, rr + 0.5), [cc, rr]).then((q) => ({ x: box.x + q.x, y: box.y + q.y + dy }));
+  // constructions achevées sans attendre leurs 2 s
+  const settle = () =>
+    ev(() => {
+      const g = window.__state.game;
+      for (const e of g.queue) e.frame = Math.min(e.frame, g.frame + 1);
+      g.update(1 / 60);
+    });
+  const hint = () => ev(() => (document.getElementById('hint').classList.contains('hidden') ? '' : document.getElementById('hint').innerText.trim()));
+  const queue = () => ev(() => window.__state.game.queue.map((e) => [e.op, ...e.args]));
+  await pg.goto('http://localhost:8080/?broker=off', { waitUntil: 'networkidle' });
+  await ev(() => window.__save.set('rewindTutorialSeen', true));
+
+  // ── Pierres posées coup sur coup : celles en construction comptent déjà ──
+  await open('1-4');
+  await ev(() => (window.__state.game.gold = 1000));
+  await tapSel('.tool[data-tool="stone"]');
+  for (const cc of [1, 2, 3, 5]) await tap(await at(cc, 7));
+  await settle();
+  await tap(await at(6, 7)); // en construction : seule, elle laisse passer par (7,7)
+  {
+    // doigt posé puis soulevé au-dessus de (7,7) : (6,7) et (7,7) ensemble fermeraient la rangée
+    const q = await at(7, 7, LIFT);
+    await touch('touchStart', q);
+    await wait(600);
+    await touch('touchMove', { x: q.x + 2, y: q.y + 1 });
+    await touch('touchMove', q);
+    await wait(80);
+    const pr = await ev(() => {
+      const p = window.__input.ui.press;
+      return p && { c: p.c, r: p.r, valid: p.valid, reason: p.reason, label: window.__renderer.pressLabel(p)?.text };
+    });
+    check('pierres en rafale : celle qui fermerait le passage avec une pierre en construction est refusée dès l’aperçu (« Bloqué ! »)', pr && pr.c === 7 && pr.r === 7 && !pr.valid && pr.reason === 'blocked' && pr.label === 'Bloqué !', JSON.stringify(pr));
+    await touch('touchEnd');
+    await wait(150);
+    const qs = await queue();
+    check('… rien n’est parti : seule la pierre précédente se construit', qs.length === 1 && qs[0][0] === 'placeStone' && qs[0][1] === 6, JSON.stringify(qs));
+  }
+  {
+    // (le refus du toucher est déjà écrit ; rien de nouveau ne doit s'y ajouter)
+    const t0 = await ev(() => window.__input.ui.flash?.t0 ?? null);
+    await settle();
+    await wait(100);
+    const s = await ev(() => ({ t0: window.__input.ui.flash?.t0 ?? null, stones: window.__state.game.grid.stone.reduce((a, b) => a + b, 0), six: window.__state.game.grid.stone[window.__state.game.grid.idx(6, 7)] }));
+    check('… et aucun refus ne tombe 2 s plus tard : la pierre en construction est posée', s.t0 === t0 && s.stones === 5 && s.six === 1, JSON.stringify(s));
+  }
+
+  // ── « Déplacer le mur » : un seul déplacement à la fois ; Gardien vendu pendant le déplacement ──
+  await open('1-4');
+  const gid = await ev(() => {
+    const g = window.__state.game;
+    g.gold = 1000;
+    return g.placeTower('earth_guard', 4, 7).id;
+  });
+  const rally = await ev((id) => {
+    const g = window.__state.game;
+    const bar = g.barriers.find((b) => b.towerId === id);
+    return g.rallyTiles(id).filter((i) => i !== bar?.tile).map((i) => [g.grid.col(i), g.grid.row(i)]);
+  }, gid);
+  await tap(await at(4, 7));
+  await tapSel('#tower-bar .tb-rally');
+  await tap(await at(...rally[0]));
+  await tapSel('#tower-bar .tb-rally');
+  await tap(await at(...rally[2]));
+  {
+    const b = await ev(() => window.__renderer.builds.filter((x) => x.op === 'setRally').map((x) => [x.c, x.r]));
+    check('mur déplacé deux fois pendant sa construction : un seul mur en construction (le dernier)', b.length === 1 && b[0][0] === rally[2][0] && b[0][1] === rally[2][1], JSON.stringify(b));
+  }
+  if (!(await ev(() => window.__input.ui.selectedTower))) await tap(await at(4, 7));
+  await tapSel('#tower-bar [data-act="sell"]');
+  await tapSel('#tower-bar [data-act="sell"]');
+  {
+    const s = await ev(() => ({ t: window.__state.game.towers.length, b: window.__renderer.builds.length, undo: !document.getElementById('btn-undo').classList.contains('hidden') }));
+    check('Gardien vendu pendant le déplacement de son mur : plus de mur fantôme ni d’« Annuler »', s.t === 0 && s.b === 0 && !s.undo, JSON.stringify(s));
+  }
+  await settle();
+  await wait(60);
+  check('… et pas de « Mur non déplacé » à l’échéance', !(await ev(() => /Mur/.test(window.__input.ui.flash?.text || ''))), await ev(() => window.__input.ui.flash?.text));
+
+  // ── Tutoriel 1-4 : la leçon attend la pierre, puis le mur, en construction ──
+  await open('1-4');
+  await ev(() => (window.__state.game.gold = 1000));
+  await tapSel('.tool[data-tool="fire"]');
+  await tap(await at(3, 1));
+  await settle();
+  await tapSel('.tool[data-tool="stone"]');
+  await wait(200);
+  const spot = await ev(() => {
+    const el = document.querySelector('#hint .finger');
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    const b = document.getElementById('board').getBoundingClientRect();
+    const t = window.__renderer.toTile(r.left + r.width / 2 - b.left, r.top + r.height / 2 - b.top);
+    return [t.c, t.r];
+  });
+  await tap(await at(...spot));
+  await wait(400);
+  check('tutoriel : pendant la construction de la pierre, le doigt ne réclame pas déjà la suivante', (await hint()) === '' && (await queue()).some((e) => e[0] === 'placeStone'), await hint());
+  await settle();
+  await tapSel('.tool[data-tool="stone"]'); // l'outil se range
+  const g2 = await ev(() => window.__state.game.placeTower('earth_guard', 2, 3).id);
+  await wait(200);
+  await tap(await at(2, 3));
+  await tapSel('#tower-bar .tb-rally');
+  const t2 = await ev((id) => {
+    const g = window.__state.game;
+    const bar = g.barriers.find((b) => b.towerId === id);
+    const i = g.rallyTiles(id).find((x) => x !== bar?.tile);
+    return [g.grid.col(i), g.grid.row(i)];
+  }, g2);
+  await tap(await at(...t2));
+  await wait(400);
+  check('tutoriel : pendant le déplacement du mur, plus de « Déplacez son mur… »', (await hint()) === '' && (await queue()).some((e) => e[0] === 'setRally'), await hint());
+
+  // ── Fusion : une jumelle encore en construction le dit (« En construction ») ──
+  await open('1-1');
+  await ev(() => {
+    const g = window.__state.game;
+    g.gold = 1000;
+    g.placeTower('fire', 4, 4);
+    window.__state.speed = 0.2; // la construction dure ~10 s réelles, le temps des gestes
+  });
+  await tapSel('.tool[data-tool="fire"]');
+  await tap(await at(2, 3));
+  {
+    // pause pendant la construction : « Annuler » ne dépasse plus à moitié de la feuille
+    const vis = () => ev(() => getComputedStyle(document.getElementById('btn-undo')).display !== 'none' && !document.getElementById('btn-undo').classList.contains('hidden'));
+    const before = await vis();
+    await tapSel('#btn-pause');
+    await wait(250);
+    const during = await vis();
+    await tapSel('#modal .btn.primary');
+    await wait(250);
+    check('pause pendant une construction : « Annuler » caché sous la feuille de pause, de retour à la reprise', before && !during && (await vis()), JSON.stringify({ before, during }));
+  }
+  {
+    const a = await at(4, 4, -10);
+    const b = await at(2, 3, -10);
+    await touch('touchStart', a);
+    await wait(60);
+    for (let k = 1; k <= 14; k++) {
+      await touch('touchMove', { x: a.x + ((b.x - a.x) * k) / 14, y: a.y + ((b.y + LIFT - a.y) * k) / 14 });
+      await wait(16);
+    }
+    await wait(150);
+    const h = await ev(() => window.__input.ui.drag?.hover);
+    await touch('touchEnd');
+    await wait(150);
+    const s = await ev(() => ({ flash: window.__input.ui.flash?.text, towers: window.__state.game.towers.map((t) => [t.c, t.r, t.level]), q: window.__state.game.queue.length }));
+    check('lanterne glissée sur sa jumelle en construction : refus « En construction », rien ne change', h?.reason === 'pending' && !h.valid && s.flash === 'En construction' && s.towers.length === 1 && s.towers[0][2] === 1 && s.q === 1, JSON.stringify({ h, s }));
+    // portée au-dessus de la jumelle jusqu'à son allumage : la cible devient valable
+    // sans bouger le doigt, relâcher fusionne
+    await touch('touchStart', a);
+    await wait(60);
+    for (let k = 1; k <= 14; k++) {
+      await touch('touchMove', { x: a.x + ((b.x - a.x) * k) / 14, y: a.y + ((b.y + LIFT - a.y) * k) / 14 });
+      await wait(16);
+    }
+    await wait(120);
+    const h1 = await ev(() => window.__input.ui.drag?.hover?.reason ?? null);
+    await settle();
+    await wait(120);
+    const h2 = await ev(() => window.__input.ui.drag?.hover?.valid ?? null);
+    await touch('touchEnd');
+    await wait(150);
+    const t = await ev(() => window.__state.game.towers.map((x) => [x.c, x.r, x.level]));
+    check('… tenue au-dessus jusqu’à son allumage : la fusion devient possible sans bouger le doigt', h1 === 'pending' && h2 === true && t.length === 1 && t[0][2] === 2, JSON.stringify({ h1, h2, t }));
+    await ev(() => (window.__state.speed = 1));
+  }
+
+  // ── Fin de partie : plus de construction figée ni d'or promis ──
+  await tapSel('.tool[data-tool="water"]');
+  await tap(await at(5, 2));
+  await ev(() => {
+    const g = window.__state.game;
+    g.waveIndex = g.waves.length - 1;
+    g.spawners = [];
+    g.enemies = [];
+    g.state = 'wave';
+    g.nextWaveT = null;
+  });
+  await wait(300);
+  {
+    const s = await ev(() => ({ state: window.__state.game.state, q: window.__state.game.queue.length, builds: window.__renderer.builds.length, res: !document.getElementById('hud-reserved').classList.contains('hidden') }));
+    check('victoire avec des constructions en cours : elles ne restent pas figées à l’écran, plus d’or promis', s.state === 'won' && s.q > 0 && s.builds === 0 && !s.res, JSON.stringify(s));
+  }
+
+  // ── Rembobinage pendant une construction : or jamais négatif, « Annuler » revient ──
+  await open('1-3');
+  await ev(() => (window.__state.game.gold = 400));
+  await tapSel('#btn-wave');
+  await ev(() => {
+    const g = window.__state.game;
+    for (let i = 0; i < 480; i++) g.update(1 / 60);
+    g.events.length = 0;
+    g.rewindCharge = 100;
+    for (const h of g.history) h.gold[0] = 60; // il y a 6 s : 60 or, le Mortier (70) ne sera plus payable
+    window.__state.speed = 0.5;
+  });
+  await wait(200);
+  await tapSel('.tool[data-tool="fire_mortar"]');
+  const fslot = await ev(() => {
+    const g = window.__state.game;
+    for (let i = 0; i < g.grid.size; i++) if (g.grid.type(i) === 3 && g.grid.slotElement[i] === 'fire' && !g.towerAt(g.grid.col(i), g.grid.row(i))) return [g.grid.col(i), g.grid.row(i)];
+    return null;
+  });
+  await tap(await at(...fslot));
+  {
+    const k = await pg.locator('#rewind .rewind-knob').boundingBox();
+    const tr = await pg.locator('#rewind .rewind-track').boundingBox();
+    const a = { x: k.x + k.width / 2, y: k.y + k.height / 2 };
+    await touch('touchStart', a);
+    await wait(30);
+    for (let i = 1; i <= 8; i++) {
+      await touch('touchMove', { x: a.x + (tr.x + 4 - a.x) * (i / 8), y: a.y });
+      await wait(16);
+    }
+    await touch('touchEnd');
+    const seen = [];
+    let back = false;
+    for (let i = 0; i < 140; i++) {
+      await wait(50);
+      const s = await ev(() => ({ gold: Number(document.getElementById('hud-gold').textContent), anim: !!window.__state.game.rewindAnim, q: window.__state.game.queue.length, undo: !document.getElementById('btn-undo').classList.contains('hidden'), flash: window.__input.ui.flash?.text }));
+      seen.push(s);
+      if (!s.anim && s.q === 1 && s.undo) back = true;
+      if (!s.q) break;
+    }
+    check('Rembobinage pendant une construction : l’or affiché n’est jamais négatif', seen.some((s) => s.anim) && seen.every((s) => s.gold >= 0), JSON.stringify(seen.map((s) => s.gold)));
+    check('… « Annuler » revient après l’animation tant que la construction continue', back, JSON.stringify(seen.map((s) => [s.anim, s.q, s.undo])));
+    check('… plus payable avec l’or revenu en arrière : refus dit sur la case', seen.some((s) => /or/.test(s.flash || '')), JSON.stringify(seen.at(-1)));
+  }
+  await c.close();
 }
 
 check('aucune erreur console', errors.length === 0, errors.join(' | '));

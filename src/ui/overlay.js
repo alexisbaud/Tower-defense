@@ -76,7 +76,8 @@ export class BoardOverlay {
       if (!se) continue;
       const c = g.col(i);
       const r = g.row(i);
-      if (game.towerAt(c, r)) continue;
+      // (une construction en cours occupe déjà le socle)
+      if (game.towerAt(c, r) || this.r.buildTiles?.has(c * 64 + r)) continue;
       const x = g.cx(i) * ts;
       const y = g.cy(i) * ts;
       const info = elementInfo(se, game.defs);

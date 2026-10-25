@@ -1,118 +1,144 @@
 // Lien entre le salon (NetSession), la partie et la boucle principale.
 //
-//   Hôte   : game.update() comme en solo, puis coop.afterUpdate(dt) avant de vider
-//            game.events (les événements partent aussi vers les invités).
-//   Invité : coop.afterUpdate(dt) remplace game.update() : le miroir avance ses
-//            effets visuels et reçoit l'état de l'hôte.
+// Chaque téléphone fait tourner sa propre partie, identique à celle des autres
+// (lockstep, voir src/net/lockstep.js) :
+//   Hôte   : coop.step(dt) avance la partie (pause et vitesse annoncées à tous), date
+//            les commandes (les siennes et celles des invités) et bat la mesure.
+//   Invité : coop.step(dt) avance sa partie au rythme de l'hôte, un peu en retard ;
+//            ses commandes partent vers l'hôte, qui les date pour tous.
+// Dans les deux cas, l'interface envoie ses commandes par coop.sender (émetteur de
+// src/ui/commands.js).
 
-import { HostSync, ClientSync, applyCommand, makeMirror } from './sync.js';
+import { HostLockstep, GuestLockstep, COMMAND_DELAY } from './lockstep.js';
 import { assignElements } from '../core/game.js';
 
 export class Coop {
   constructor(session) {
     this.session = session;
     this.game = null;
-    this.host = null;
-    this.client = null;
+    this.net = null; // HostLockstep | GuestLockstep
     this.offs = [];
-    this.lastSnapAt = 0;
+    this.provisional = () => null; // poses provisoires de l'interface (state.provisional)
+    // émetteur des commandes de l'interface : fn(op, args, game) → ticket | null
+    this.sender = (op, args) => (this.net ? this.net.issue(op, args) : null);
   }
 
   get active() {
-    return !!(this.host || this.client);
+    return !!this.net;
   }
 
   get isGuest() {
-    return !!this.client;
+    return this.net instanceof GuestLockstep;
   }
 
   get isHost() {
-    return !!this.host;
+    return this.net instanceof HostLockstep;
   }
 
-  // Joueurs de la partie à partir du salon : chacun garde son élément, les éléments libres sont partagés.
+  // Joueurs de la partie à partir du salon : un élément chacun (celui choisi, ou le
+  // premier libre). Les éléments que personne n'a pris ne sont à personne.
   playersFromLobby() {
     const list = this.session.lobby?.players || [];
     const els = assignElements(list.map((p) => p.element));
     return list.map((p, i) => ({ name: p.name, elements: els[i], element: p.element }));
   }
 
-  // Hôte : diffuse le départ et branche la partie déjà créée.
+  // Liste des poses provisoires de l'interface (l'invité y met ses poses envoyées,
+  // pas encore datées par l'hôte).
+  bindProvisional(fn) {
+    this.provisional = typeof fn === 'function' ? fn : () => null;
+  }
+
+  // Hôte : branche la partie déjà créée (même graine et mêmes joueurs que le départ).
   attachHost(game, start) {
     this.stop();
+    game.commandDelay = start?.cd ?? COMMAND_DELAY;
     this.game = game;
-    this.host = new HostSync(game, (snap) => this.session.broadcastSnapshot(snap));
-    this.host.gid = start?.seed ?? null;
-    this.offs.push(this.session.on('command', ({ pid, op, args }) => applyCommand(game, pid, op, args)));
-    // un joueur revenu en pleine partie reçoit aussitôt un état complet
-    this.offs.push(this.session.on('join', () => (this.host.forceKey = true)));
+    this.net = new HostLockstep(game, { send: (msg) => this.session.broadcast(msg), gid: start?.seed ?? null });
+    this.offs.push(this.session.on('command', (c) => this.net?.receive?.(c)));
+    this.offs.push(this.session.on('resync', ({ pid, id }) => this.net?.requestState?.(pid, id)));
     this.start = start;
   }
 
-  // Invité : construit le miroir de la partie annoncée par l'hôte.
+  // Invité : construit sa partie, identique à celle de l'hôte. Revenu en pleine
+  // partie (rechargement, coupure), il demande aussitôt l'état complet.
   attachGuest(Game, level, defs, start) {
     this.stop();
-    const mirror = makeMirror(Game, level, defs, start);
-    this.game = mirror;
-    this.client = new ClientSync(mirror, (op, args) => this.session.sendCommand(op, args));
-    this.client.gid = start.seed ?? null;
-    this.offs.push(this.session.on('snap', (snap) => {
-      // seuls les états acceptés (bien formés, de cette partie) disent que l'hôte est là
-      if (this.client.apply(snap)) this.lastSnapAt = performance.now();
-    }));
-    this.lastSnapAt = performance.now();
+    const game = new Game(level, defs, { seed: start.seed, players: start.players, localPlayer: start.you, hard: start.hard });
+    game.challenge = !!start.challenge;
+    game.commandDelay = start.cd ?? COMMAND_DELAY;
+    this.game = game;
+    this.net = new GuestLockstep(game, {
+      gid: start.seed ?? null,
+      send: (op, args, meta) => this.session.sendCommand(op, args, meta),
+      ask: (why) => this.session.requestState(why),
+      provisional: () => this.provisional(),
+      rejoin: !!start.rejoin,
+    });
+    this.offs.push(this.session.on('game', (msg) => this.net?.receive?.(msg)));
     this.start = start;
-    return mirror;
+    return game;
   }
 
-  // À appeler à chaque image, après la simulation et avant de consommer game.events.
-  afterUpdate(dt) {
-    if (this.host) {
-      this.host.collect(this.game.events);
-      this.host.tick(dt);
-    } else if (this.client) this.client.tick(dt);
+  // À chaque image d'affichage : avance la partie (hôte comme invité).
+  step(dt) {
+    return this.net ? this.net.step(dt) : 0;
   }
 
-  // Interpolation des yokai chez l'invité (0..1 entre deux états reçus).
+  // Interpolation de l'affichage entre deux pas de simulation (0..1).
   get alpha() {
-    return this.client ? this.client.alpha : null;
+    return this.net ? this.net.alpha : 1;
   }
 
-  // Invité sans nouvelles de l'hôte depuis plus de `ms`.
-  stale(ms = 2500) {
-    return !!this.client && performance.now() - this.lastSnapAt > ms;
+  // La partie est arrêtée (pause atteinte, invité en attente de l'hôte).
+  get halted() {
+    return !!this.net?.halted;
   }
 
+  // Invité : 'sync' (état complet attendu), 'pause' (pause de l'hôte), 'stale' (hôte
+  // sans nouvelles) ou null.
+  waitKind() {
+    return this.isGuest ? this.net.waitKind() : null;
+  }
+
+  // Hôte : sa pause est celle de tous (annoncée, à la même image chez chacun).
   setPaused(on) {
-    if (this.host) {
-      this.host.paused = !!on;
-      this.host.tick(0, true);
-    }
-  }
-
-  get remotePaused() {
-    return !!this.client?.paused;
+    if (this.isHost) this.net.setPaused(on);
   }
 
   // Vitesse de jeu : réglée par l'hôte (×1, ×2), suivie par les invités.
   get speed() {
-    return this.host ? this.host.speed : this.client ? this.client.speed : 1;
+    return this.net ? this.net.speed : 1;
   }
 
   set speed(v) {
-    if (this.host) this.host.speed = v;
+    if (this.isHost) this.net.setSpeed(v);
   }
 
-  // Force l'envoi immédiat d'un état (fin de partie, hôte en arrière-plan).
+  // Hôte : battement immédiat (fin de partie, arrière-plan).
   flush() {
-    if (this.host) this.host.tick(0, true);
+    if (this.isHost) this.net.heartbeat();
+  }
+
+  // Invité : fin annoncée par l'hôte à son image `f` ; la partie s'y rend et se conclut.
+  finish(f) {
+    if (this.isGuest) this.net.finish(f);
+  }
+
+  // Commandes dont l'annulation est demandée (l'interface ne les montre plus).
+  hiddenEntries() {
+    return this.isGuest ? this.net.hidden : null;
+  }
+
+  // Invité : commandes envoyées, pas encore datées par l'hôte (fusion, vente en route).
+  sentCommands() {
+    return this.isGuest ? this.net.sent() : null;
   }
 
   stop() {
     for (const off of this.offs) off();
     this.offs = [];
-    this.host = null;
-    this.client = null;
+    this.net = null;
     this.game = null;
   }
 }

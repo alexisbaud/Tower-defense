@@ -35,21 +35,22 @@ Aucun compte. À l'ouverture du jeu, **votre salon est créé automatiquement** 
 - **Jouer seul** : touchez « Jouer », choisissez un niveau. Seul, vous contrôlez les quatre éléments.
 - **Inviter** : touchez « Inviter » (partage du lien `…/?salon=CODE`) ou dictez le code. Jusqu'à 4 joueurs.
 - **Rejoindre** : « Rejoindre un salon », saisissez le code (ou ouvrez le lien reçu).
-- **Choisir son élément** : chaque joueur prend un élément (un seul joueur par élément). Les éléments que personne n'a choisis sont **partagés** par tous.
-- **Coopération** : l'hôte choisit le niveau et lance la partie pour tout le salon. Chacun a **sa bourse d'or** et bâtit les lanternes de ses éléments ; les **vies du sanctuaire sont communes**. Seuls les joueurs de la Terre posent des pierres. Les yokai ont plus de PV à plusieurs (×1,2 à ×1,6).
+- **Un élément par joueur** : à plusieurs, chacun prend un élément (un seul joueur par élément ; qui n'a rien choisi reçoit le premier libre) et ne pose **que** les lanternes de cet élément ; les pierres sont l'objet de la Terre. Les éléments que personne n'a pris ne sont à personne : leurs socles gravés deviennent universels.
+- **Coopération** : l'hôte choisit le niveau et lance la partie pour tout le salon. Chacun a **sa bourse d'or** ; les **vies du sanctuaire sont communes**. À plusieurs, les yokai ont un peu plus de PV (×1,05 à ×1,35) ; or de départ et primes suivent `rules.coop` (`data/rules.js`).
+- **Construction de 2 s** : une lanterne, une pierre ou un mur déplacé apparaît « en construction » et s'active 2 s après le toucher, seul comme à plusieurs (à plusieurs : au même instant chez tous). « Annuler » pendant la construction ne coûte rien, même quand l'annulation n'arrive qu'après l'activation (délai réseau) : la lanterne ou la pierre est reprise et payée en entier ; une annulation qui arriverait trop tard pour rien changer (mur déjà déplacé, lanterne au-delà de sa fenêtre d'annulation) est refusée par l'hôte : « Trop tard pour annuler », jamais acceptée sans effet. À plusieurs, une fusion ou une vente part après le délai des commandes (~1 s) : la lanterne glisse vers sa jumelle, ou s'efface, et ne peut être ni revendue ni refusionnée entre-temps.
 
-Le réseau passe par un relais MQTT public et gratuit (EMQX, puis HiveMQ, puis Mosquitto en secours) : l'hôte fait tourner la partie et diffuse son état 8 fois par seconde ; les invités envoient leurs commandes. Sans réseau, le salon reste « hors ligne » et le jeu solo fonctionne normalement.
+Le réseau passe par un relais MQTT public et gratuit (EMQX, puis HiveMQ, puis Mosquitto en secours). **Chaque téléphone fait tourner la même partie** (lockstep) : seules les commandes datées circulent (poser, vendre, appeler une vague…), plus un battement de l'hôte ~4 fois par seconde avec une empreinte de contrôle ; la position des yokai et des lanternes ne voyage jamais. Un invité reçoit environ 0,3 à 0,6 Ko/s en partie chargée (contre 6 à 8 Ko/s, 16 Ko/s en pointe, quand l'hôte diffusait son état 8 fois par seconde). Sans réseau, le salon reste « hors ligne » et le jeu solo fonctionne normalement.
 
 ### Contrôles
 
 | Geste | Action |
 | --- | --- |
-| Choisir une lanterne dans la palette (par élément), puis toucher ou glisser vers un socle | Poser : la lanterne fantôme flotte 60 px au-dessus du doigt, la pose se valide **au relâchement** ; liens et nom des combos en direct |
-| « ↶ Annuler » (3 s) | Annuler la dernière pose, or rendu en entier |
+| Choisir une lanterne dans la palette (par élément), puis toucher ou glisser vers un socle | Poser : la lanterne fantôme flotte 60 px au-dessus du doigt, la pose se valide **au relâchement** ; liens et nom des combos en direct. La lanterne se construit **2 s** (or réservé), puis s'allume |
+| « ↶ Annuler » | Pendant la construction : rien n'est payé ; puis 3 s après l'activation : or rendu en entier (pierre et mur : pendant la construction) |
 | Toucher une lanterne | Barre d'actions : **priorité de ciblage** (Premier → Dernier → Plus fort → Plus proche), fiche, vente (confirmée) ; Gardien de pierre : déplacer le mur |
 | Glisser une lanterne sur une lanterne identique | **Fusion** (même type, même niveau → niveau supérieur, 3 niveaux) ; l'aperçu montre les combos perdus et conservés |
 | Appui long sur une lanterne, un yokai ou un bouton de la palette | Fiche : statistiques, forces, faiblesses, contres |
-| Outil Pierre, glisser sur le gravier | Le nouveau chemin s'affiche en pointillés avec « +X cases » ; une pierre qui fermerait le passage est refusée |
+| Outil Pierre, glisser sur le gravier | Le nouveau chemin s'affiche en pointillés avec « +X cases » ; une pierre qui fermerait le passage est refusée (les pierres encore en construction comptent déjà : refus dès le toucher, jamais 2 s plus tard) |
 | Bouton de vague | Aperçu de la vague suivante ; **appel anticipé** à tout moment : or et charge de Rembobinage |
 | Glisser la jauge 巻 vers la gauche (jauge pleine) | **Rembobinage** |
 | ×1 / ×2, ❙❙ | Vitesse, pause (le plateau reste visible ; table des combos) |
@@ -102,7 +103,7 @@ Chaque yokai contre une stratégie et a au moins deux réponses (voir [BALANCE.m
 | Karasu-tengu | Vole : ignore chemin, pierres, barrières, Terre | Vent (Arc, Bourrasque), Tornade de flammes |
 | Nuppeppō | Se divise à sa mort | Dégâts de zone |
 | Kitsune | Absorbe un élément | Un autre élément, ou la Vapeur |
-| Yuki-onna | Soigne ses voisins ; insensible à l'Eau | Priorité « plus fort », Feu, Vapeur |
+| Yuki-onna | Soigne ses voisins ; insensible à l'Eau | Priorité « plus fort », Feu et Vent (qui disperse sa neige), Vapeur |
 | Ushi-oni | Fracasse les barrières ; armure 6 | Étourdissements, ralentissements |
 | Kasa-obake | Saute par-dessus les barrières | Vapeur (plus de saut), tirs directs |
 | Tokihami | Hors du temps : ni rembobinage ni recul | Givre, Séisme, ralentissements |
@@ -175,10 +176,11 @@ src/
     rng.js                  aléatoire déterministe
   render/                   RENDU Canvas 2D (pinceau, papier washi, particules)
   ui/                       HUD, entrées tactiles, palette, fiches, salon, jauge, tutoriel, menus
+    commands.js             façade des commandes (solo : file du moteur ; à plusieurs : réseau)
   net/                      MULTIJOUEUR
     mqtt.js                 client MQTT 3.1.1 minimal sur WebSocket (sans dépendance)
-    lobby.js                salons par code : hôte, invités, choix d'élément
-    sync.js                 états compacts hôte → invités, commandes invités → hôte, miroir
+    lobby.js                salons par code : hôte, invités, choix d'élément, messages signés
+    lockstep.js             partie commune : commandes datées, battements, empreintes, état complet
     coop.js                 lien entre salon, partie et boucle principale
   audio/sound.js            synthèse Web Audio (koto, taiko, cloche) + musique générative
 tools/                      simulateur, bots, validateur, tests, QA navigateur
@@ -190,8 +192,25 @@ tools/                      simulateur, bots, validateur, tests, QA navigateur
 - Les **données** décrivent *quoi* (valeurs, capacités activées) ; le moteur sait *comment*. Ajouter du contenu ne demande pas de toucher au moteur tant qu'on réutilise les capacités existantes.
 - Le chemin est un champ de flux BFS recalculé à chaque pierre ; une pierre qui couperait tout passage (pour une apparition ou un yokai déjà en route) est refusée avec un retour visuel et sonore.
 - Le rembobinage enregistre un instantané de l'état toutes les 0,1 s pendant la partie ; chaque yokai a une identité stable (`uid`) pour que rejouer les mêmes éliminations ne recharge pas la jauge deux fois.
-- **Multijoueur hôte-autoritaire** : seul l'hôte simule. Les invités tiennent un *miroir* (une instance de `Game` qui ne simule rien) mis à jour par les états reçus et interpolé à l'affichage ; leurs commandes (`placeTower`, `fuse`…) partent vers l'hôte, qui les valide avec l'identifiant du joueur. On ne simule pas chez chacun : les fonctions mathématiques diffèrent légèrement entre Safari et Chrome et les parties divergeraient.
-- **Relais public** : n'importe qui peut y lire et y publier. Les messages des invités sont **signés** (ECDSA P-256, clé gardée le temps de l'onglet, compteur contre le rejeu) : un tiers ne peut ni agir au nom d'un joueur ni le faire sortir. L'hôte vérifie la forme de chaque commande ; l'invité, celle de chaque état et du résultat (nombres bornés, jamais de HTML), et ignore une fin qui ne cite pas sa partie.
+- **Commandes datées** : l'interface et les bots n'appellent jamais les actions du moteur ; chaque geste devient une commande (`game.issue`, `src/ui/commands.js`) exécutée à une image précise. Une pose (lanterne, pierre, mur) attend la construction (`rules.buildTime`, 2 s) ; seul, les autres commandes s'exécutent aussitôt.
+- **Multijoueur en lockstep** : le moteur est déterministe (`src/core/dmath.js` : sinus, cosinus et longueurs identiques sur tous les navigateurs ; aléatoire à graine), chaque téléphone fait donc tourner la même partie. L'hôte date chaque commande, la sienne ou celle d'un invité, **au moins 10 images plus tard**, l'exécute par sa file et la diffuse ; un invité **ne dépasse jamais de plus de 8 images** la dernière image connue de l'hôte. Comme les messages de l'hôte arrivent dans l'ordre, un invité qui atteint une image a déjà reçu toutes ses commandes : rien n'arrive en retard, rien ne recule. Les 2 s de construction laissent à la commande d'une pose le temps de parvenir à tous ; les autres commandes attendent 0,75 s (`commandDelay`). L'hôte bat la mesure ~4 fois par seconde (son image, sa vitesse, sa pause, l'empreinte `stateHash` de son état toutes les 30 images) ; l'invité le suit ~0,2 s derrière, à sa vitesse, et compare chaque empreinte. Son horloge de l'hôte vient du battement le plus rapide des 4 dernières secondes (pas du dernier reçu) et sa marge couvre la gigue observée : sur un réseau irrégulier, la lecture garde la vitesse de l'hôte au lieu de ralentir ou de s'arrêter à chaque battement en retard (300-800 ms de latence : 0 % d'images ralenties contre 19 %). Pause et vitesse de l'hôte s'appliquent chez tous à une image annoncée (dans 10 images).
+- **Resynchronisation** : empreinte différente, commande perdue en route, plus de 5 s de retard (onglet en arrière-plan), rechargement de la page ou retour après une coupure : l'invité demande l'état complet (`game.exportState`, 15 à 50 Ko), l'importe et repart de cette image (« Synchronisation… »). L'historique du Rembobinage ne voyage pas : un Rembobinage exécuté moins de 6 s (de chronologie) après une resynchronisation en demande aussitôt une autre, qu'il ait réussi ou échoué chez l'invité (sans quoi, pendant une dernière chance, l'invité pouvait perdre seul la partie que les autres venaient de sauver).
+- **Relais public** : n'importe qui peut y lire et y publier. Les messages des invités sont **signés** (ECDSA P-256, clé gardée le temps de l'onglet, compteur contre le rejeu) : un tiers ne peut ni agir au nom d'un joueur ni le faire sortir. L'hôte vérifie la forme de chaque commande (types entiers, lanterne connue, joueur authentifié, image bornée) ; l'invité, celle de chaque commande datée, battement, état complet et résultat (nombres bornés, types connus, jamais de HTML), et ignore ce qui ne cite pas sa partie. Une commande forgée glissée dans la partie d'un invité est repérée par l'empreinte et effacée par l'état complet de l'hôte.
+
+**Protocole réseau (version 6)** — sujets `jde/v1/<CODE>/h` (hôte → invités) et `jde/v1/<CODE>/c` (invités → hôte, messages signés) :
+
+| Message | Sens | Contenu |
+| --- | --- | --- |
+| `hello`, `pick`, `name`, `bye` | invité → hôte | arrivée (version, clé publique), choix d'élément, nom, départ |
+| `lobby`, `refuse` | hôte → invités | état du salon ; refus (`full`, `version`, `inGame`) |
+| `start` | hôte → invités | `level`, `seed` (identifiant de la partie), `players` (un élément chacun), `hard`, `challenge`, `cd` (délai des commandes) ; renvoyé à un joueur qui revient (`rejoin`) |
+| `cmd` | invité → hôte | commande proposée : `op`, `args`, `f` (image souhaitée), `tmp` (numéro provisoire) |
+| `cmd` | hôte → invités | commande datée `e` = `{ id, frame, issued, pid, op, args, at }`, numéro de diffusion `k`, `tmp` de l'invité qui l'a proposée |
+| `nack` | hôte → invités | commande refusée (`pid`, `tmp`, raison) : la pose provisoire disparaît |
+| `hb` | hôte → invités | battement : `f` image, `k` dernière commande, `h`/`hf` empreinte et son image, `sp` vitesse (`ns`/`nf` : prochaine vitesse et son image), `pz` image de la pause |
+| `resync` | invité → hôte | demande d'état complet |
+| `state` | hôte → un invité | état complet `s` à l'image `f` (après l'animation d'un Rembobinage) |
+| `end`, `hostGone` | hôte → invités | fin (résultat, image finale `f`) ; départ de l'hôte |
 
 ---
 
@@ -429,18 +448,18 @@ Tous les outils tournent avec Node ≥ 22 (aucune dépendance npm dans le jeu ; 
 | --- | --- |
 | `node tools/test-core.mjs` | Tests du moteur : pierres, fusion, combos, capacités, armure, barrières, socles typés, coopération, vagues qui se chevauchent, rembobinage et dernière chance |
 | `node tools/validate-levels.mjs` | Validation du schéma des niveaux et des données (clés inconnues, éléments, une lanterne d'attaque par élément) |
-| `node tools/sim.mjs --check` | **Équilibrage** : le bot équilibré gagne chaque niveau seul et en coop ×2 / ×4, aucun niveau (sauf le premier) n'est gagnable avec une seule lanterne, aucune vague ne double la difficulté, dents de scie et climax en fin de niveau, 5 à 8 minutes, défi réussi, Difficile gagnable |
+| `node tools/sim.mjs --check` | **Équilibrage** : le bot équilibré gagne chaque niveau seul et dans les 11 équipes coop possibles (6 paires, 4 trios, les 4 éléments ; chaque bot limité à son élément, construction de 2 s comprise), aucun niveau (sauf le premier) n'est gagnable avec une seule lanterne, aucune vague ne double la difficulté, dents de scie et climax en fin de niveau, 5 à 8 minutes, défi réussi, Difficile gagnable |
 | `node tools/sim.mjs [ids] --bots=balanced,random,mono --seeds=1,2,3 --players=2 --verbose` | Simulations détaillées (bots : `balanced`, `random`, `mono` = une partie par lanterne) |
 | `node tools/balance-md.mjs > BALANCE.md` | Régénère les tableaux d'équilibrage depuis les données |
-| `node tools/net-test.mjs ws://localhost:8883/mqtt` | Multijoueur sans navigateur : salon, élément, salon plein, partie à 3, poses, annulation, débit |
-| `node tools/mp-test.mjs` | Multijoueur dans de vrais navigateurs (2 à 4 joueurs au doigt simulé) : salon, code et lien, élément unique, poses, or séparé, vies communes, pause de l'hôte, coupures, rechargement, fin de partie ; synchronisation avec gigue simulée. Les outils navigateur passent au jeu le relais local (`tools/relay.mjs`, variable `JDE_RELAY`) s'il répond, sinon `?broker=off` |
+| `node tools/net-test.mjs ws://localhost:8883/mqtt` | Multijoueur sans navigateur. En mémoire (horloge simulée) : trois parties 3 minutes avec Rembobinage, gigue, pertes et un invité à 30 Hz (empreintes identiques, chaque commande à la même image), poses simultanées, commande en retard, état corrompu puis resynchronisé, invité qui arrive en cours de partie, pause et vitesse, débit, Rembobinage juste après un état complet (dernière chance), lecture régulière sous 300-800 ms de gigue (chaque empreinte comparée), annulation tardive d'une pierre, d'un mur et d'une lanterne (refusée et dite plutôt qu'acceptée sans effet). Sur le relais : salon, élément unique, salon plein, ancienne version, parties à deux et à trois, rechargement, messages forgés, « bye » d'une connexion morte. `NET_ONLY=mot` ne lance que les sections dont le titre le contient |
+| `node tools/mp-test.mjs` | Multijoueur dans de vrais navigateurs (2, 4 puis 3 joueurs au doigt simulé) : salon, code et lien, élément unique, palette limitée à son élément, construction visible chez tous puis activée à la même image, « Annuler », fusion et vente d'un invité en route (ni revendue ni refusionnée pendant le délai), or séparé, vies communes, pause de l'hôte (même image chez tous), hôte sans nouvelles, coupures, rechargement (« Synchronisation… »), fin de partie, débit. Les outils navigateur passent au jeu le relais local (`tools/relay.mjs`, variable `JDE_RELAY`) s'il répond, sinon `?broker=off` |
 | `node tools/ui-test.mjs` | Gestes au doigt simulé : pose soulevée, annuler, fiches, fusion, pierres, palette, jauge… |
 | `node tools/play-browser.mjs [ids]` | Joue chaque niveau en entier dans le vrai jeu et vérifie victoire + console propre |
 | `node tools/qa.mjs`, `node tools/layout-check.mjs` | QA navigateur, mise en page 390×844, 375×667, 430×932 avec zones sûres |
 | `node tools/perf.mjs 2-4` | Temps de rendu (objectif : ≤ 20 ms en moyenne) |
 | `node tools/shot.mjs <id>`, `node tools/make-icons.mjs` | Captures, icônes |
 
-Les bots n'utilisent que l'API publique du moteur (`placeTower`, `fuse`, `placeStone`, `rewind`…), comme l'interface.
+Les bots passent par la file de commandes du moteur (`game.issue` : poses, fusions, pierres, vagues, rembobinage), comme l'interface.
 
 Le moteur applique des **rendements décroissants** au recul et aux étourdissements (`knockFatigue*`, `stunFatigue*` dans `data/rules.js`) : un yokai ne peut jamais être bloqué indéfiniment, une vague finit toujours.
 

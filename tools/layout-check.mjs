@@ -2,7 +2,8 @@
 // boutons visibles ≥ 44 px et espacés ≥ 8 px, textes ≥ 12 px, éléments dans
 // l'écran, palette sans défilement horizontal caché, avec des safe areas simulées.
 // États v3 : palette regroupée (12 lanternes), Gardien (déplacer le mur), fiche
-// de niveau avec options, dernière chance, panneau de débogage.
+// de niveau avec options, dernière chance, panneau de débogage, construction en
+// cours (« Annuler », barre « En construction », or réservé).
 // Coopération (relais local joignable) : accueil-salon à deux (hôte, invité) et
 // partie à deux (rangée des coéquipiers) ; sinon, salon « hors ligne ».
 // Usage : (serveur local sur :8080) node tools/layout-check.mjs
@@ -122,6 +123,30 @@ for (const [w, h, top, bottom] of sizes) {
   await page.locator('.modal .btn.primary').click();
   await page.waitForTimeout(1500);
   await check('partie');
+  // construction en cours : « Annuler », barre « En construction · Annuler », « −X » d'or réservé
+  const built = await page.evaluate(() => {
+    const st = window.__state;
+    const g = st.game;
+    st.speed = 0.05; // la construction dure le temps de la vérification
+    const gr = g.grid;
+    for (let i = 0; i < gr.size; i++) {
+      if (gr.type(i) !== 3 || gr.row(i) < 3) continue;
+      const type = g.availableTowers.find((t) => window.__commands.check('placeTower', t, gr.col(i), gr.row(i)).ok);
+      if (!type) continue;
+      const ticket = window.__commands.issue('placeTower', type, gr.col(i), gr.row(i));
+      window.__hud.showUndo(ticket, 'tower');
+      window.__input.ui.selectedBuild = { c: gr.col(i), r: gr.row(i) };
+      return true;
+    }
+    return false;
+  });
+  await page.waitForTimeout(300);
+  await check(built ? 'construction en cours (Annuler, barre, or réservé)' : 'construction en cours : aucun socle libre !');
+  await page.screenshot({ path: `qa-output/layout-construction-${w}x${h}.png` });
+  await page.evaluate(() => {
+    window.__state.speed = 1;
+    window.__input.ui.selectedBuild = null;
+  });
   await page.evaluate(() => window.__startLevel('2-4'));
   await page.waitForTimeout(1500);
   await check('partie 2-4 (onglets + 4 outils + jauge)');

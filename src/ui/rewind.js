@@ -6,6 +6,7 @@
 // Appui long : la règle du Rembobinage (fiche).
 
 import { LONG_PRESS_MS } from './input.js';
+import { commands } from './commands.js';
 
 const TRIGGER = 0.55; // part de la piste à parcourir pour déclencher
 const FLOAT_MS = 450; // gains de charge regroupés sur cette durée
@@ -110,7 +111,8 @@ export class RewindGauge {
     if (!g || g.rewindAnim) return;
     const pct = Math.round(this.ratio(g) * 100);
     let why = 'short';
-    if (pct < 100) why = 'charge';
+    if (commands.pending('rewind')) why = 'coming';
+    else if (pct < 100) why = 'charge';
     else if (g.state !== 'wave') why = 'wave';
     this.h.onRefuse?.(why, pct);
   }
@@ -119,9 +121,10 @@ export class RewindGauge {
     return typeof g.rewindRatio === 'function' ? g.rewindRatio() : 0;
   }
 
-  // Utilisable maintenant (méthode du moteur, défensif si elle évolue).
+  // Utilisable maintenant : la commande 'rewind' serait acceptée (moteur, et pas
+  // déjà un rembobinage en file).
   usable(g) {
-    return !!(g && typeof g.canRewind === 'function' && g.canRewind());
+    return !!g && commands.check('rewind').ok;
   }
 
   release(fire) {
@@ -163,6 +166,9 @@ export class RewindGauge {
     this.last.charge = charge;
     const full = ratio >= 0.999;
     const ready = this.usable(g);
+    // coopération : Rembobinage demandé (par soi ou un coéquipier), pas encore exécuté
+    // (délai des commandes) — sans cela, la jauge disait « Le passé s'accumule… »
+    const coming = !g.rewindAnim && commands.pending('rewind');
     const urgent = g.lastChanceT > 0;
     const sec = g.rules.rewindSeconds ?? 6;
     // Libellé en trois longueurs : la piste, étroite quand l'aperçu de vague est
@@ -172,6 +178,9 @@ export class RewindGauge {
     let mid = null;
     if (g.rewindAnim) {
       text = 'Le temps recule…';
+      mid = 'Recule…';
+    } else if (coming) {
+      text = 'Le temps va reculer…';
       mid = 'Recule…';
     } else if (urgent) {
       text = `◀◀ glissez · −${sec} s`;
@@ -183,7 +192,7 @@ export class RewindGauge {
     else if (g.state !== 'wave') text = 'Pleine · pendant la vague';
     else text = 'Le passé s’accumule…';
     // Compacte tant qu'elle n'est pas utilisable (et pas pendant un glisser).
-    const compact = !ready && !this.drag && !g.rewindAnim;
+    const compact = !ready && !this.drag && !g.rewindAnim && !coming;
     if (compact !== this.last.compact || text !== this.last.aria) {
       this.root.classList.toggle('compact', compact);
       this.root.setAttribute('aria-label', compact ? `Rembobinage : ${text}. Appui long : la règle` : 'Rembobinage : glissez vers la gauche');

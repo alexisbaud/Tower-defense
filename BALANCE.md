@@ -58,9 +58,9 @@ Faiblesse : Presque aucun dégât : ne tue rien seule.
 
 | Niv. | Coût total | Portée | Cadence | Dégâts | DPS | Effets |
 |---|---|---|---|---|---|---|
-| 1 | 45 | 2.2 | 1/s | 4 | 4 | ralentit ×0.6 1.4 s |
-| 2 | 90 | 2.5 | 1.15/s | 7 | 8.0 | zone 0.6, ralentit ×0.5 1.8 s |
-| 3 | 180 | 2.9 | 1.35/s | 11 | 14.9 | zone 0.9, ralentit ×0.42 2.2 s |
+| 1 | 45 | 2.2 | 1/s | 5 | 5 | ralentit ×0.6 1.4 s |
+| 2 | 90 | 2.5 | 1.15/s | 10 | 11.5 | zone 0.6, ralentit ×0.5 1.8 s |
+| 3 | 180 | 2.9 | 1.35/s | 16 | 21.6 | zone 0.9, ralentit ×0.42 2.2 s |
 
 **泉 Source sacrée** (`water_spring`) — Soin des barrières, soutien, cibles : aucune, priorité par défaut : first  
 Force : Rend les barrières presque indestructibles ; dissipe les étourdissements.  
@@ -78,9 +78,9 @@ Faiblesse : Faible contre un yokai isolé ; direction du jet imposée par la cib
 
 | Niv. | Coût total | Portée | Cadence | Dégâts | DPS | Effets |
 |---|---|---|---|---|---|---|
-| 1 | 65 | 3 | 0.70/s | 15 | 10.5 | ralentit ×0.8 1 s, largeur 0.45 |
-| 2 | 130 | 3.3 | 0.75/s | 27 | 20.3 | ralentit ×0.75 1.2 s, largeur 0.5 |
-| 3 | 260 | 3.6 | 0.80/s | 48 | 38.4 | ralentit ×0.7 1.4 s, largeur 0.55 |
+| 1 | 65 | 3 | 0.70/s | 17 | 11.9 | ralentit ×0.8 1 s, largeur 0.45 |
+| 2 | 130 | 3.3 | 0.75/s | 30 | 22.5 | ralentit ×0.75 1.2 s, largeur 0.5 |
+| 3 | 260 | 3.6 | 0.80/s | 52 | 41.6 | ralentit ×0.7 1.4 s, largeur 0.55 |
 
 ### 風 Vent
 
@@ -90,9 +90,9 @@ Faiblesse : Faible au sol ; boss et yokai hors du temps résistent au recul.
 
 | Niv. | Coût total | Portée | Cadence | Dégâts | DPS | Effets |
 |---|---|---|---|---|---|---|
-| 1 | 55 | 2.3 | 0.90/s | 7 | 6.3 | recul 0.5, volants ×2 |
-| 2 | 110 | 2.6 | 1/s | 13 | 13 | zone 0.5, recul 0.8, volants ×2 |
-| 3 | 220 | 3 | 1.15/s | 24 | 27.6 | zone 0.8, recul 1.1, volants ×2.2 |
+| 1 | 55 | 2.3 | 0.90/s | 9 | 8.1 | recul 0.5, volants ×2 |
+| 2 | 110 | 2.6 | 1/s | 16 | 16 | zone 0.5, recul 0.8, volants ×2 |
+| 3 | 220 | 3 | 1.15/s | 30 | 34.5 | zone 0.8, recul 1.1, volants ×2.2 |
 
 **鈴 Carillon fūrin** (`wind_chime`) — Soutien, soutien, cibles : aucune, priorité par défaut : first  
 Force : Accélère toutes les lanternes proches (non cumulable).  
@@ -157,7 +157,7 @@ Faiblesse : Impulsions espacées ; sans effet sur les volants.
 | Nuppeppō (`nuppeppo`) | 95 | 0.8 | 0 | — | 4 | 2 | 10/s | split |
 | Petit nuppeppō (`nuppeppo_ko`) | 34 | 1.15 | 0 | — | 2 | 1 | 5/s | — |
 | Kitsune (`kitsune`) | 85 | 1.3 | 0 | — | 5 | 1 | 10/s | absorb |
-| Yuki-onna (`yukionna`) | 80 | 0.9 | 0 | Eau −100 %, Feu +40 % | 7 | 2 | 8/s | healAura |
+| Yuki-onna (`yukionna`) | 80 | 0.9 | 0 | Eau −100 %, Feu +40 %, Vent +50 % | 7 | 2 | 8/s | healAura |
 | Ushi-oni (`ushioni`) | 260 | 0.7 | 6 | — | 11 | 3 | 70/s | — |
 | Kasa-obake (`kasaobake`) | 60 | 1.3 | 0 | — | 5 | 1 | 6/s | hop |
 | Tokihami (`tokihami`) | 150 | 0.9 | 0 | — | 8 | 2 | 12/s | timeless |
@@ -173,7 +173,7 @@ Faiblesse : Impulsions espacées ; sans effet sur les volants.
 | Nuppeppō | Se divise : les tirs à cible unique s’y épuisent. | Lent, fragments fragiles et groupés. | Zone : Catapulte, Mortier, Feux follets, Magma, Torrent |
 | Petit nuppeppō | Rapide. | Très fragile. | Dégâts de zone |
 | Kitsune | Absorbe un élément : punit les défenses d’un seul élément. | Sans défense contre les autres éléments. | Un autre élément, ou la Vapeur (pouvoirs suspendus) |
-| Yuki-onna | Soigne ses voisins ; insensible à l’Eau. | Fragile si on l’isole ; craint le Feu. | Priorité « plus fort », Vapeur, recul du Vent, Feu |
+| Yuki-onna | Soigne ses voisins ; insensible à l’Eau. | Fragile si on l’isole ; craint le Feu et le Vent, qui disperse sa neige. | Priorité « plus fort », Vapeur, Vent (Arc, Bourrasque), Feu |
 | Ushi-oni | Brise les barrières très vite ; armure 6, résiste au recul. | Lent hors charge ; se laisse étourdir et ralentir. | Séisme ou Givre (étourdissement), Eau, Source sacrée derrière la barrière |
 | Kasa-obake | Saute les barrières ; assez rapide. | Fragile ; aveuglé par la Vapeur, il ne saute plus. | Vapeur, Brasero, Bourrasque, Torrent |
 | Tokihami | Hors du temps : le Rembobinage ne le ramène pas en arrière, le Vent ne le repousse pas. | Se laisse ralentir et étourdir. | Givre ou Séisme (étourdissement), Eau et Boue (ralentissement), dégâts soutenus |
@@ -189,10 +189,10 @@ Une case à 0 : la lanterne ne peut pas toucher ce yokai (volant, absorption non
 | Brasero | 20.4 | 20.4 | 9.4 | 20.4 | 20.4 | 20.4 | 20.4 | 28.6 | 13.8 | 20.4 | 20.4 | 5.7 | 20.4 |
 | Mortier hanabi | 12.5 | 12.5 | 10.9 | 0 | 12.5 | 12.5 | 12.5 | 17.5 | 11.5 | 12.5 | 12.5 | 6.3 | 12.5 |
 | Feux follets | 7.5 | 7.5 | 7.5 | 7.5 | 7.5 | 7.5 | 7.5 | 10.5 | 7.5 | 7.5 | 7.5 | 5.3 | 7.5 |
-| Fontaine glacée | 4.4 | 4.4 | 0.4 | 4.4 | 4.4 | 4.4 | 4.4 | 0 | 0.9 | 4.4 | 4.4 | 0.9 | 4.4 |
-| Torrent | 8.1 | 8.1 | 0.8 | 8.1 | 8.1 | 8.1 | 8.1 | 0 | 4.8 | 8.1 | 8.1 | 1.6 | 8.1 |
-| Bourrasque | 5.7 | 2.9 | 1.1 | 11.5 | 5.7 | 5.7 | 5.7 | 5.7 | 1.1 | 5.7 | 5.7 | 1.1 | 5.7 |
-| Arc-tempête | 11.1 | 5.6 | 9 | 27.9 | 11.1 | 11.1 | 11.1 | 11.1 | 9.9 | 11.1 | 11.1 | 7.9 | 11.1 |
+| Fontaine glacée | 5.6 | 5.6 | 0.6 | 5.6 | 5.6 | 5.6 | 5.6 | 0 | 1.1 | 5.6 | 5.6 | 1.1 | 5.6 |
+| Torrent | 9.2 | 9.2 | 0.9 | 9.2 | 9.2 | 9.2 | 9.2 | 0 | 5.9 | 9.2 | 9.2 | 1.8 | 9.2 |
+| Bourrasque | 7.4 | 3.7 | 1.5 | 14.7 | 7.4 | 7.4 | 7.4 | 11.0 | 2.5 | 7.4 | 7.4 | 1.5 | 7.4 |
+| Arc-tempête | 11.1 | 5.6 | 9 | 27.9 | 11.1 | 11.1 | 11.1 | 16.7 | 9.9 | 11.1 | 11.1 | 7.9 | 11.1 |
 | Catapulte de roc | 10.2 | 10.2 | 8.0 | 0 | 10.2 | 10.2 | 10.2 | 10.2 | 8.9 | 10.2 | 10.2 | 7.0 | 10.2 |
 | Tambour du séisme | 3 | 3 | 2.2 | 0 | 3 | 3 | 3 | 3 | 2.5 | 3 | 3 | 1.8 | 3 |
 
@@ -224,7 +224,7 @@ Deux lanternes d’éléments différents voisines (diagonale comprise). Puissan
 | Rembobinage | 6 s en arrière pour une jauge de 100 (1.5 par pièce d’or de récompense) ; échos 10 s à 50 % |
 | Dernière chance | 4 s pour rembobiner après une fuite fatale (jauge pleine) |
 | Étoiles | 3★ ≥ 85 % des vies, 2★ ≥ 50 % |
-| Coopération (1 → 4 joueurs) | or de départ ×1 / 0.65 / 0.55 / 0.5 par joueur, récompenses ×1 / 0.6 / 0.45 / 0.38 à chacun, PV des yokai ×1 / 1.2 / 1.4 / 1.6 |
+| Coopération (1 → 4 joueurs) | or de départ ×1 / 0.8 / 0.62 / 0.5 par joueur, récompenses ×1 / 0.75 / 0.55 / 0.42 à chacun, PV des yokai ×1 / 1.05 / 1.15 / 1.35 |
 
 ## Niveaux
 
@@ -245,12 +245,12 @@ Menace = PV effectifs (armure, vitesse, dégâts au sanctuaire) de la vague, en 
 
 ```
 1-1  ▁▁▁▁▁▂▁▃▅▂█▲  4 7 10 6 20 26 11 51 98 39 191
-1-2  ▁▁▁▁▁▂▁▃▃▅▂█▲  9 14 16 13 32 60 17 117 132 182 79 353
+1-2  ▁▁▁▁▂▂▁▄▄▅▃█▲  9 12 14 11 27 42 19 81 77 103 61 202
 1-3  ▁▁▁▁▁▁▁▂▃▁▅█▲  5 11 20 4 32 39 8 62 94 31 178 345
 1-4  ▁▁▁▁▂▂▁▃▃▁▅█▲  24 40 46 12 75 82 18 101 103 30 203 391
-2-1  ▁▁▁▁▁▂▁▃▃▁▅█▲  19 21 41 12 42 80 36 88 111 26 177 347
+2-1  ▁▁▁▁▁▂▁▃▃▁▅█▲  19 18 35 12 35 66 26 81 86 26 156 287
 2-2  ▁▁▁▁▂▂▁▂▂▃▂▅█▲  8 9 16 6 25 27 11 33 36 50 32 99 191
 2-3  ▁▁▁▁▁▁▁▂▂▁▄▆█▲  13 14 17 14 33 55 32 94 102 31 199 296 457
-2-4  ▁▁▁▁▁▂▁▂▃▁▂▄▅█▲  18 41 73 23 76 150 30 168 264 82 175 343 531 890
+2-4  ▁▁▁▁▁▂▁▂▄▁▃▅▆█▲  18 40 79 23 73 143 30 153 264 59 174 343 471 645
 ```
 

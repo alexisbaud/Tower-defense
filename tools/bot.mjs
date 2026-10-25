@@ -1,5 +1,9 @@
-// Bots joueurs pour le simulateur. Ils n'utilisent que l'API publique du moteur
-// (placeTower, fuse, placeStone, startNextWave, rewind…), comme le ferait l'UI.
+// Bots joueurs pour le simulateur. Comme l'interface, ils passent toutes leurs
+// actions par la file de commandes du moteur (game.issue : placeTower, fuse,
+// placeStone, setPriority, startNextWave, rewind) : une pose n'est active qu'après
+// la construction (rules.buildTime, 2 s) et son or est réservé dès la commande
+// (game.spendable). Les poses en construction comptent dans leurs choix (diversité,
+// combos, soutiens) mais ne tirent pas encore.
 //
 // Stratégies :
 //   balanced     mélange d'éléments selon les yokai annoncés (contres, combos, soutiens,
@@ -12,7 +16,11 @@
 //   random       lanternes et socles au hasard, sans pierre (indicatif)
 //   smart        alias de balanced
 //
-// En coopération, chaque joueur a son propre bot : bot(strategy, game, { pid }).
+// En coopération, chaque joueur a son propre bot : bot(strategy, game, { pid }), limité
+// aux lanternes de SON élément (game.towersFor). Les bots jouent en équipe : contres
+// pris parmi leurs lanternes, Carillon et Source au service des lanternes et des murs
+// des autres joueurs, et jamais deux poses sur le même socle (les poses en attente de
+// tous les joueurs sont réservées ; game.canIssue refuse un doublon).
 
 import { T } from '../src/core/grid.js';
 import { Rng } from '../src/core/rng.js';
@@ -40,6 +48,21 @@ export function bot(strategy, game, opts = {}) {
   const available = () => game.towersFor(pid).filter((t) => !mono || t === mono);
   const attackOf = (def) => def.attack ?? 'projectile';
   const isSupport = (type) => ['support', 'barrier'].includes(attackOf(defs.towers[type]));
+  const solo = game.players.length === 1;
+  const own = (t) => solo || t.owner === pid;
+
+  // Lanternes en construction (poses en file, tous joueurs) : mêmes champs qu'une lanterne.
+  function planned() {
+    const out = [];
+    for (const e of game.pendingPlacements()) {
+      if (e.op !== 'placeTower' || !defs.towers[e.args[0]]) continue;
+      const [type, c, r] = e.args;
+      out.push({ type, c, r, x: c + 0.5, y: r + 0.5, level: 1, element: defs.towers[type].element, owner: e.pid, invested: defs.towers[type].cost, rateMult: 1, pending: true });
+    }
+    return out;
+  }
+  // Lanternes de l'équipe : posées et en construction.
+  const team = () => [...game.towers, ...planned()];
 
   // ───────── lecture de la carte ─────────
 
@@ -122,7 +145,7 @@ export function bot(strategy, game, opts = {}) {
       const x0 = g.cx(s), y0 = g.cy(s), x1 = g.cx(goal), y1 = g.cy(goal);
       const n = Math.ceil(Math.hypot(x1 - x0, y1 - y0) * 2);
       let dmg = 0;
-      for (const t of game.towers) {
+      for (const t of team()) {
         const def = defs.towers[t.type];
         const tg = def.targets ?? { ground: true, air: true };
         if (!tg.air || isSupport(t.type)) continue;
@@ -146,14 +169,53 @@ export function bot(strategy, game, opts = {}) {
     return airCover() < 1.5 * need ? 3 : 1;
   }
 
+  // Couverture de l'équipe : DPS estimé de toutes ses lanternes (posées et en
+  // construction) contre un groupe annoncé.
+  function teamDps(x) {
+    let s = 0;
+    for (const t of team()) s += dpsVs(t.type, t.level, x.def, x.absorb);
+    return s;
+  }
+
+  // Poids des groupes annoncés : PV (volants mal couverts ×3, voir airBoost), puis
+  // jusqu'à ×3 pour un groupe que les lanternes de l'équipe abattent mal (absorption,
+  // armure, résistance, volants). En coopération, chacun n'a qu'un élément : celui
+  // qui peut répondre à ce yokai s'en charge en priorité.
+  function weights(list) {
+    const boost = airBoost(list);
+    const base = list.map((x) => x.hp * (x.def.abilities?.flying ? boost : 1));
+    const total = base.reduce((a, b) => a + b, 0) || 1;
+    const cover = list.map(teamDps);
+    const avg = list.reduce((s, x, i) => s + (base[i] / total) * cover[i], 0);
+    if (!(avg > 0)) return base;
+    return base.map((b, i) => b * Math.min(3, Math.max(1, avg / Math.max(cover[i], avg / 3))));
+  }
+
+  // DPS utile gagné par les lanternes voisines d'un Carillon posé en (c, r) : chacune
+  // accélère de ce qu'un autre carillon ne lui donne pas déjà (non cumulable).
+  function chimeValue(c, r, st) {
+    const list = upcoming();
+    const w = weights(list);
+    const total = w.reduce((a, b) => a + b, 0) || 1;
+    let v = 0;
+    for (const t of team()) {
+      if (isSupport(t.type) || Math.hypot(t.x - (c + 0.5), t.y - (r + 0.5)) > st.range) continue;
+      const gain = Math.max(0, 1 + st.rateBonus - (t.rateMult || 1));
+      if (!gain) continue;
+      let dps = 0;
+      list.forEach((x, i) => (dps += (w[i] / total) * dpsVs(t.type, t.level, x.def, x.absorb)));
+      v += gain * dps;
+    }
+    return v;
+  }
+
   // Valeur d'un type de lanterne pour les prochaines vagues (dégâts utiles par pièce d'or).
   function valueOf(type) {
     const list = upcoming();
-    const boost = airBoost(list);
-    const w = (x) => x.hp * (x.def.abilities?.flying ? boost : 1);
-    const total = list.reduce((s, x) => s + w(x), 0) || 1;
+    const w = weights(list);
+    const total = w.reduce((a, b) => a + b, 0) || 1;
     let v = 0;
-    for (const x of list) v += (w(x) / total) * dpsVs(type, 1, x.def, x.absorb);
+    list.forEach((x, i) => (v += (w[i] / total) * dpsVs(type, 1, x.def, x.absorb)));
     return v / defs.towers[type].cost;
   }
 
@@ -184,7 +246,8 @@ export function bot(strategy, game, opts = {}) {
     const atk = attackOf(def);
     let score = 0;
     if (atk === 'support') {
-      for (const t of game.towers) {
+      // lanternes de tous les joueurs : le Carillon accélère aussi celles des autres
+      for (const t of team()) {
         if (t.c === c && t.r === r) continue;
         const d = Math.hypot(t.x - x, t.y - y);
         if (d > st.range) continue;
@@ -200,7 +263,7 @@ export function bot(strategy, game, opts = {}) {
         if (Math.hypot(g.cx(i) - x, g.cy(i) - y) > st.range) continue;
         if (barrierTiles().includes(i)) continue;
         let s = 1;
-        for (const t of game.towers) if (!isSupport(t.type) && Math.hypot(t.x - g.cx(i), t.y - g.cy(i)) <= game.towerStats(t).range) s += 2 ** (t.level - 1);
+        for (const t of team()) if (!isSupport(t.type) && Math.hypot(t.x - g.cx(i), t.y - g.cy(i)) <= game.towerStats(t).range) s += 2 ** (t.level - 1);
         // loin du sanctuaire : plus de temps pour frapper les yokai arrêtés
         s *= 1 + Math.min(1, game.flow.dist[i] / 20);
         best = Math.max(best, s);
@@ -215,17 +278,20 @@ export function bot(strategy, game, opts = {}) {
       }
     }
     if (tg.air && air.length) {
-      const share = airShare();
-      for (const [px, py] of air) if (Math.hypot(px - x, py - y) <= st.range) score += share * 1.5;
+      // une lanterne antiaérienne (Arc ×2,5, Bourrasque ×2) vaut d'autant plus sur la ligne de vol
+      const share = airShare() * 1.5 * (st.airMultiplier ?? 1);
+      for (const [px, py] of air) if (Math.hypot(px - x, py - y) <= st.range) score += share;
     }
     if (opt.combos) {
-      for (const t of [...game.towers, ...game.echoes]) {
+      // combos avec les lanternes voisines, en construction comprises (en coopération,
+      // celles des autres joueurs : chacun n'a qu'un élément)
+      for (const t of [...team(), ...game.echoes]) {
         if (t.element === def.element || Math.max(Math.abs(t.c - c), Math.abs(t.r - r)) !== 1) continue;
         if (game.comboFor(t.type, type)) score += 3;
       }
     }
     // un Carillon voisin accélère
-    for (const t of game.towers) {
+    for (const t of team()) {
       const tst = game.towerStats(t);
       if (tst.rateBonus && Math.hypot(t.x - x, t.y - y) <= tst.range) score *= 1 + tst.rateBonus * 0.5;
     }
@@ -276,10 +342,12 @@ export function bot(strategy, game, opts = {}) {
     if (!avail.length) return null;
     if (opt.random) return avail[Math.floor(rng.next() * avail.length)];
     if (mono) return avail[0];
-    const mine = game.towers.filter((t) => t.owner === pid || game.players.length === 1);
+    const all = team();
+    const mine = all.filter(own);
     const count = {};
     for (const t of mine) count[t.type] = (count[t.type] || 0) + 2 ** (t.level - 1);
-    const dmgTowers = mine.filter((t) => !isSupport(t.type)).length;
+    // lanternes d'attaque de toute l'équipe : un Carillon ou un mur sert celles des autres
+    const dmgTowers = all.filter((t) => !isSupport(t.type)).length;
     // part de l'or investi par élément (diversifier : kitsune, coopération)
     const inv = mine.reduce((s, t) => s + t.invested, 0) || 1;
     const elShare = {};
@@ -293,11 +361,16 @@ export function bot(strategy, game, opts = {}) {
       let score;
       if (atk === 'support') {
         if (!opt.support) continue;
+        const st0 = def.levels[0];
+        // un Carillon sert l'équipe, mais pas avant que le joueur ait ses propres attaquants
+        if (st0.rateBonus && (dmgTowers < 4 || mine.filter((t) => !isSupport(t.type)).length < 2)) continue;
+        if (st0.heal && !game.barriers.length) continue;
         const slot = bestSlot(type);
         if (!slot) continue;
-        score = (def.levels[0].rateBonus ? slot.score * 0.012 : slot.score * 0.006) / (1 + (count[type] || 0));
-        if (def.levels[0].rateBonus && dmgTowers < 4) continue;
-        if (def.levels[0].heal && !game.barriers.length) continue;
+        // Carillon : la cadence gagnée par ses voisines (de tous les joueurs), en dégâts
+        // utiles contre les vagues annoncées, par pièce d'or — comme une lanterne d'attaque.
+        // Source : selon les murs qu'elle soigne.
+        score = (st0.rateBonus ? chimeValue(slot.c, slot.r, st0) / def.cost : slot.score * 0.006) / (1 + (count[type] || 0));
       } else if (atk === 'barrier') {
         if (!opt.support || dmgTowers < 2 || ground < 0.5) continue;
         if ((count[type] || 0) >= 2) continue;
@@ -320,7 +393,9 @@ export function bot(strategy, game, opts = {}) {
 
   function tryFuse() {
     if (!opt.fuse) return false;
-    const mine = game.towers.filter((t) => t.owner === pid || game.players.length === 1);
+    // une fusion à la fois (avec un délai réseau, la précédente peut être encore en file)
+    if (game.queue.some((e) => e.op === 'fuse' && e.pid === pid && !e.cancelled)) return false;
+    const mine = game.towers.filter(own);
     for (let lvl = 1; lvl < game.rules.maxTowerLevel; lvl++) {
       const types = [...new Set(mine.map((t) => t.type))];
       for (const type of types) {
@@ -334,7 +409,7 @@ export function bot(strategy, game, opts = {}) {
         list.sort((a, b) => score(b) - score(a));
         const dst = list[0];
         const src = list[list.length - 1];
-        if (game.fuse(src.id, dst.id, pid)) {
+        if (game.issue('fuse', [src.id, dst.id], pid)) {
           log.push(`t=${game.time.toFixed(1)} fusion ${type} -> N${lvl + 1}`);
           return true;
         }
@@ -403,11 +478,11 @@ export function bot(strategy, game, opts = {}) {
     if (opt.random) return;
     const wantAir = airShare() > 0.1;
     for (const t of game.towers) {
-      if (game.players.length > 1 && t.owner !== pid) continue;
+      if (!own(t)) continue;
       const def = defs.towers[t.type];
       if (def.priority !== 'strong' || !((def.levels[0].airMultiplier ?? 1) > 1)) continue;
       const want = wantAir ? 'first' : 'strong';
-      if (t.priority !== want) game.setPriority(t.id, want, pid);
+      if (t.priority !== want) game.issue('setPriority', [t.id, want], pid);
     }
   }
 
@@ -433,13 +508,13 @@ export function bot(strategy, game, opts = {}) {
       nextDecision = t + 0.5;
       spend();
       retarget();
-      if (opt.rewind && game.lives < lastLives && game.canRewind()) {
-        game.rewind(pid);
+      if (opt.rewind && game.lives < lastLives && game.canIssue('rewind', [], pid).ok) {
+        game.issue('rewind', [], pid);
         log.push(`t=${game.time.toFixed(1)} rembobinage`);
       }
-      if (game.lastChanceT > 0 && game.canRewind()) game.rewind(pid);
+      if (game.lastChanceT > 0 && game.canIssue('rewind', [], pid).ok) game.issue('rewind', [], pid);
       lastLives = game.lives;
-      if (game.state === 'build' && pid === 0) game.startNextWave(pid, false);
+      if (game.state === 'build' && pid === 0) game.issue('startNextWave', [], pid);
     },
   };
 }

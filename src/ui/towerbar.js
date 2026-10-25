@@ -2,7 +2,11 @@
 // [priorité de ciblage | déplacer le mur | « Lanterne d’Aki »] [Fiche] [Vendre — secondaire, confirmé
 // par un second toucher]. Les lanternes qui ne visent pas (aura, impulsion,
 // soutien) n'ont pas de priorité ; le Gardien de pierre déplace son mur.
+// Construction en cours touchée : [建 En construction · 1 s] [↶ Annuler], ou, pour
+// celle d'un coéquipier, « Pris par Aki » (sans bouton).
+// Les réglages partent comme commandes (commands.js), jamais en direct au moteur.
 import { PRIORITIES } from '../core/game.js';
+import { commands } from './commands.js';
 
 // La priorité de ciblage compte-t-elle pour cette lanterne ?
 export function aims(def) {
@@ -21,14 +25,15 @@ export function priorityInfo(p) {
   return PRIORITY_INFO[p] || { kanji: '的', label: String(p || 'Premier'), desc: '' };
 }
 
-// Priorité suivante (Premier → Dernier → Plus fort → Plus proche → …).
+// Priorité suivante (Premier → Dernier → Plus fort → Plus proche → …), envoyée comme
+// commande 'setPriority' (valeur explicite : deux touchers rapides, même avant
+// l'exécution de la première commande, avancent bien de deux crans).
+// Renvoie la priorité demandée, ou null si la commande est refusée.
 export function cyclePriority(game, t) {
-  if (game.cyclePriority) return game.cyclePriority(t.id);
   const list = PRIORITIES || Object.keys(PRIORITY_INFO);
-  const next = list[(list.indexOf(t.priority) + 1) % list.length];
-  if (game.setPriority) game.setPriority(t.id, next);
-  else t.priority = next;
-  return next;
+  const cur = commands.priorityOf(t) ?? t.priority;
+  const next = list[(list.indexOf(cur) + 1) % list.length];
+  return commands.issue('setPriority', t.id, next) ? next : null;
 }
 
 const CONFIRM_MS = 2600;
@@ -45,7 +50,7 @@ export class TowerBar {
   /**
    * @param {HTMLElement} el  #tower-bar (dans #stage)
    * @param {object} h  game(), input, renderer, sheetOpen(), onPriority(t), onSheet(t), onSell(t), onRally(t),
-   *                    owner(pid) → { name, color, … } (coopération)
+   *                    onCancelBuild(build) (construction en cours), owner(pid) → { name, color, … } (coopération)
    */
   constructor(el, h) {
     this.el = el;
@@ -60,6 +65,16 @@ export class TowerBar {
   onClick(e) {
     const b = e.target.closest('button');
     const g = this.h.game();
+    // barre d'une construction en cours
+    const sb = this.h.input.ui.selectedBuild;
+    if (b && sb && b.dataset.act === 'cancelBuild') {
+      const build = commands.buildAt(sb.c, sb.r);
+      this.h.input.ui.selectedBuild = null;
+      if (build) this.h.onCancelBuild?.(build);
+      this.sig = null;
+      this.update();
+      return;
+    }
     const t = g && this.h.input.ui.selectedTower != null ? g.towerById(this.h.input.ui.selectedTower) : null;
     if (!b || !t) return;
     const act = b.dataset.act;
@@ -99,23 +114,26 @@ export class TowerBar {
   update() {
     const g = this.h.game();
     const input = this.h.input;
+    if (input.ui.selectedBuild && g && this.updateBuild(g, input)) return;
     const id = input.ui.selectedTower;
     const t = g && id != null ? g.towerById(id) : null;
     // Fiche ouverte : ses propres boutons suffisent (pas de doublon « Vendre »).
     // « Déplacer le mur » : la barre s'efface pour laisser voir les cases allumées.
-    if (!t || input.ui.drag || input.ui.press || input.ui.rally || this.h.sheetOpen?.() || g.rewindAnim || g.lastChanceT > 0 || g.state === 'won' || g.state === 'lost') {
+    // (fusion ou vente en route : plus rien à régler sur cette lanterne)
+    if (!t || input.ui.drag || input.ui.press || input.ui.rally || this.h.sheetOpen?.() || g.rewindAnim || g.lastChanceT > 0 || g.state === 'won' || g.state === 'lost' || commands.towerBusy(t.id)) {
       this.hide();
       return;
     }
     if (this.confirm != null && this.confirm !== t.id) this.confirm = null;
     const sell = g.sellValue(t);
-    const p = priorityInfo(t.priority);
+    // priorité demandée (commande en attente comprise)
+    const p = priorityInfo(commands.priorityOf(t) ?? t.priority);
     const def = g.defs.towers[t.type];
     const wall = def?.attack === 'barrier';
     const rally = wall && input.ui.rally?.towerId === t.id;
     // en coopération, la lanterne d'un autre joueur ne se règle ni ne se vend : fiche seule
     const mine = !(g.players?.length > 1) || t.owner === g.localPlayer;
-    const sig = `${t.id}|${t.priority}|${sell}|${this.confirm === t.id}|${rally}|${mine}|${t.owner}`;
+    const sig = `${t.id}|${p.label}|${sell}|${this.confirm === t.id}|${rally}|${mine}|${t.owner}`;
     if (sig !== this.sig) {
       this.sig = sig;
       const confirm = this.confirm === t.id;
@@ -136,6 +154,39 @@ export class TowerBar {
       this.pos = null;
     }
     this.place(t);
+  }
+
+  // Construction en cours sélectionnée (toucher sur son socle) : « En construction »
+  // et son temps restant, « Annuler » pour la sienne ; « Pris par Aki » pour celle
+  // d'un coéquipier. Renvoie faux si elle n'existe plus (la barre normale reprend).
+  updateBuild(g, input) {
+    const sb = input.ui.selectedBuild;
+    const b = commands.buildAt(sb.c, sb.r);
+    if (!b || input.ui.drag || input.ui.press || this.h.sheetOpen?.() || g.rewindAnim || g.lastChanceT > 0 || g.state === 'won' || g.state === 'lost') {
+      if (!b) return false;
+      this.hide();
+      return true;
+    }
+    const secs = Math.max(1, Math.ceil(b.left));
+    const what = b.op === 'placeStone' ? 'Pierre' : g.defs.towers[b.type]?.name ?? 'Lanterne';
+    const sig = `build|${b.c},${b.r}|${b.mine}|${secs}|${b.pid}`;
+    if (sig !== this.sig) {
+      this.sig = sig;
+      if (b.mine) {
+        this.el.innerHTML =
+          `<span class="tb-owner tb-build" role="status" aria-label="${escapeHtml(what)} en construction, encore ${secs} seconde${secs > 1 ? 's' : ''}"><span class="tb-owner-seal" aria-hidden="true">建</span><span class="tb-txt">En construction · ${secs} s</span></span>` +
+          `<button class="tb-btn tb-cancel" data-act="cancelBuild" aria-label="Annuler la construction : rien n’est payé"><span class="tb-ico">↶</span><span class="tb-txt">Annuler</span></button>`;
+      } else {
+        const o = this.h.owner?.(b.pid);
+        const name = o?.name ?? g.players[b.pid]?.name ?? 'un coéquipier';
+        const glyph = GLYPHS[o?.shape] ?? escapeHtml(o?.initial ?? '●');
+        this.el.innerHTML = `<span class="tb-owner tb-build" role="status" style="--el:${o?.color ?? '#6d6a78'}"><span class="tb-owner-seal" aria-hidden="true">${glyph}</span><span class="tb-txt">Pris par ${escapeHtml(name)} · ${secs} s</span></span>`;
+      }
+      this.el.classList.remove('hidden');
+      this.pos = null;
+    }
+    this.place({ id: null, x: b.c + 0.5, y: b.r + 0.5 });
+    return true;
   }
 
   // Au-dessus de la lanterne (sous elle près du haut du plateau), dans le plateau.

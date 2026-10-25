@@ -55,13 +55,16 @@ export default {
   stars3: 0.85,
   stars2: 0.5,
   // Coopération (1 à 4 joueurs) : facteurs selon le nombre de joueurs.
-  // Chaque joueur a sa bourse ; les vies du sanctuaire sont communes. L'or de départ
-  // par joueur laisse chacun poser au moins une lanterne de son élément dès le début
-  // (la Terre coûte 65) ; les PV montent moins vite que l'or total, car chaque joueur
-  // n'utilise que les socles de son élément et les socles universels.
+  // Chaque joueur a sa bourse et n'a QUE son élément ; les vies du sanctuaire sont
+  // communes. À deux, l'équipe n'a que deux familles de lanternes sur quatre (et un
+  // yokai qui absorbe l'élément de l'un ne craint plus que l'autre) : l'or total monte
+  // nettement (×1,6 au départ, ×1,5 en récompenses) et les PV à peine (×1,05). Plus on
+  // est nombreux, plus l'équipe couvre d'éléments : les PV montent, l'or par joueur
+  // baisse. L'or de départ par joueur laisse chacun poser au moins deux lanternes de
+  // son élément dès le début (la plus chère coûte 75).
   coop: {
-    startGold: [1, 0.65, 0.55, 0.5], // part de l'or de départ du niveau, par joueur
-    reward: [1, 0.6, 0.45, 0.38], // part de chaque récompense, versée à chaque joueur
-    hp: [1, 1.2, 1.4, 1.6], // multiplicateur des PV des yokai
+    startGold: [1, 0.8, 0.62, 0.5], // part de l'or de départ du niveau, par joueur
+    reward: [1, 0.75, 0.55, 0.42], // part de chaque récompense, versée à chaque joueur
+    hp: [1, 1.05, 1.15, 1.35], // multiplicateur des PV des yokai
   },
 };
