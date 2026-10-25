@@ -4,6 +4,7 @@
 import { makePaper } from '../render/paper.js';
 import { INK, PALETTE, withAlpha, wash, brushStroke, quadPts, seeded, mix, makeCanvas } from '../render/brush.js';
 import { drawPine, drawTorii } from '../render/terrain.js';
+import { digitsHTML } from './fmt.js';
 
 const NUMERALS = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十'];
 const PAPER = '#efe4c8';
@@ -293,13 +294,12 @@ export class TitleScreen {
   }
 
   // Mise en page de la scène : tout se cale entre le bas du titre et le haut
-  // des boutons — ou du salon, s'il est affiché au-dessus d'eux —, pour que le
-  // soleil ne passe jamais sous le texte et que le torii reste visible.
+  // des boutons (zone d'annonce comprise), pour que le soleil ne passe jamais
+  // sous le texte et que le torii reste visible.
   layoutScene(w, h) {
     const box = this.el.getBoundingClientRect();
     const tw = this.el.querySelector('.title-wrap')?.getBoundingClientRect();
-    const lobby = this.el.querySelector('.title-lobby')?.getBoundingClientRect();
-    const act = lobby && lobby.height ? lobby : this.el.querySelector('.title-actions')?.getBoundingClientRect();
+    const act = this.el.querySelector('.title-actions')?.getBoundingClientRect();
     const tb = tw && tw.height ? tw.bottom - box.top : h * 0.32;
     const kj = this.el.querySelector('.title-kanji')?.getBoundingClientRect();
     const skyH = kj && kj.height ? kj.bottom - box.top + 26 : h * 0.12;
@@ -307,7 +307,11 @@ export class TitleScreen {
     const span = Math.max(h * 0.3, ab - tb);
     const at = (k) => tb + span * k;
     const sunR = Math.min(w * 0.19, span * 0.16);
+    // haut de la page (zone sûre, garde-fou d'une ancienne installation) : aplat plein
+    const tools = this.el.querySelector('.title-tools')?.getBoundingClientRect();
+    const top = tools && tools.height ? tools.top - box.top : 0;
     return {
+      top,
       tb,
       ab,
       skyH,
@@ -334,14 +338,19 @@ export class TitleScreen {
     this.scene = S;
 
     // ciel : bandeau d'indigo dégradé en haut (bokashi), typique des
-    // estampes ; il s'arrête sous le kanji, avant le titre noir
+    // estampes ; il part d'un indigo OPAQUE (= theme-color, la barre d'état et la
+    // bande d'une ancienne installation sont un aplat sans texte) et s'arrête sous
+    // le kanji, avant le titre noir
     const sky = S.skyH;
-    let g = ctx.createLinearGradient(0, 0, 0, sky);
-    g.addColorStop(0, withAlpha(PALETTE.indigo, 0.95));
-    g.addColorStop(0.55, withAlpha(PALETTE.indigo, 0.72));
+    const solid = Math.min(sky * 0.5, Math.max(0, S.top));
+    ctx.fillStyle = PALETTE.indigo;
+    ctx.fillRect(0, 0, w, solid);
+    let g = ctx.createLinearGradient(0, solid, 0, sky);
+    g.addColorStop(0, withAlpha(PALETTE.indigo, 1));
+    g.addColorStop(0.5, withAlpha(PALETTE.indigo, 0.74));
     g.addColorStop(1, withAlpha(PALETTE.indigo, 0));
     ctx.fillStyle = g;
-    ctx.fillRect(0, 0, w, sky);
+    ctx.fillRect(0, solid, w, sky - solid);
 
     // soleil : disque plat, halo doré très doux
     const { sun } = S;
@@ -552,27 +561,59 @@ export class TitleScreen {
 
 // ───────────────────────── Carte des niveaux ─────────────────────────
 
-const LABEL_H = 50; // hauteur réservée au cartouche du monde en haut de bande
-const FOOT_H = 38; // marge basse (étoiles du dernier nœud)
+const LABEL_H = 56; // hauteur réservée au cartouche du monde en haut de bande
+const FOOT_H = 44; // marge basse (étoiles du dernier nœud)
+const STEP_MIN = 86; // écart vertical minimal entre deux nœuds (étiquettes sur deux lignes)
+const LABEL_GAP = 10; // entre le nœud et son étiquette
+const LOCK_ICON = '<svg class="lock" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><rect x="3" y="7" width="10" height="7.5" rx="1.6" fill="currentColor"/><path d="M5.2 7V5.2a2.8 2.8 0 0 1 5.6 0V7" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>';
+
+
+// Nom d'un niveau dans l'étiquette de la carte : jamais de mot court en fin de ligne
+// (« Le », « de »…) ni de dernier mot seul sur la 2e ligne (« Torii ») ; espaces insécables.
+function labelName(n) {
+  return String(n)
+    .replace(/(^|\s)(Le|La|Les|de|des|du|au|aux|à|et) /g, '$1$2\u00a0')
+    .replace(/ (\S{1,5})$/, '\u00a0$1'); // dernier mot court (« Torii », « fer ») : jamais seul
+}
+
+const reduced = () => {
+  try {
+    return matchMedia('(prefers-reduced-motion: reduce)').matches || document.documentElement.classList.contains('fx-sober');
+  } catch {
+    return false;
+  }
+};
 
 export class MapScreen {
-  constructor(el, onSelect) {
+  // opts : { sound(name, data) }
+  constructor(el, onSelect, opts = {}) {
     this.el = el;
     this.onSelect = onSelect;
+    this.sound = opts.sound || (() => {});
+    this.body = el.querySelector('.map-body');
+    this.inner = el.querySelector('.map-inner') || this.body;
     this.canvas = el.querySelector('canvas');
     this.nodesEl = el.querySelector('.map-nodes');
     onFontsReady(() => this.resize());
   }
 
-  show(order, worlds, save) {
+  // opts.justCleared : niveau qu'on vient de gagner (célébration au retour)
+  show(order, worlds, save, opts = {}) {
     this.order = order;
     this.worlds = worlds;
     this.save = save;
+    const k = opts.justCleared ? order.findIndex((o) => o.id === opts.justCleared) : -1;
+    // célébration : étoiles du niveau gagné, chemin d'encre et sceau brisé vers le suivant
+    // s'il vient de s'ouvrir (encore sans étoile)
+    this.celebrate = k >= 0 && save.stars(order[k].id) > 0 ? { k, opened: k + 1 < order.length && !save.stars(order[k + 1].id) && save.isUnlocked(order, k + 1) } : null;
     this.el.classList.add('active');
+    this.body.scrollTop = 0;
     this.render();
+    this.scrollToFocus();
+    if (this.celebrate) this.playCelebration();
   }
 
-  // Données des niveaux (chargées à part) : leçon de chaque niveau sur la carte.
+  // Données des niveaux (chargées à part) : nom et leçon de chaque niveau sur la carte.
   setLevels(levels) {
     this.levels = levels;
     if (this.el.classList.contains('active') && this.pts) this.buildNodes(this.pts, this.bands);
@@ -580,10 +621,16 @@ export class MapScreen {
 
   hide() {
     this.el.classList.remove('active');
+    cancelAnimationFrame(this.scrollRaf);
+    cancelAnimationFrame(this.inkRaf);
+    clearTimeout(this.fxTimer);
   }
 
   resize() {
-    if (this.el.classList.contains('active') && this.order) this.render();
+    if (this.el.classList.contains('active') && this.order) {
+      this.celebrate = null;
+      this.render();
+    }
   }
 
   layout(w, h) {
@@ -603,31 +650,51 @@ export class MapScreen {
       for (let k = 0; k < n; k++) {
         const boss = k === n - 1;
         const zig = boss ? 0.5 : k % 2 === 0 ? 0.27 : 0.73;
-        pts.push({ x: w * zig, y: areaTop + (areaH * (k + 0.5)) / n, i: idx++, world: wd, boss });
+        const x = w * zig;
+        // étiquette du côté intérieur (vers le centre ; le boss, à droite)
+        const right = x < w / 2 || (boss && x <= w / 2);
+        const half = boss ? 36 : 31;
+        const lx0 = right ? x + half + LABEL_GAP : 12;
+        const lx1 = right ? w - 12 : x - half - LABEL_GAP;
+        pts.push({ x, y: areaTop + (areaH * (k + 0.5)) / n, i: idx++, world: wd, boss, right, half, lx0, lx1 });
       }
       bands.push({ world: wd, top, h: bandH, first, last: idx - 1 });
     });
     return { pts, bands };
   }
 
+  // Hauteur de la carte : au moins l'écran, au plus serré STEP_MIN entre deux nœuds ;
+  // au-delà, elle défile (sous l'indicateur d'accueil : la marge du bas = zone sûre).
+  measure() {
+    const vis = this.body.clientHeight || this.el.clientHeight;
+    const sab = parseFloat(getComputedStyle(this.inner).paddingBottom) || 0;
+    const maxN = Math.max(1, ...this.worlds.map((w) => w.levels.length));
+    const need = this.worlds.length * (LABEL_H + FOOT_H + maxN * STEP_MIN);
+    const h = Math.max(vis - sab, need);
+    if (this.inner !== this.body) this.inner.style.height = `${Math.round(h + sab)}px`;
+    return { h, sab };
+  }
+
   render() {
+    const { h: hc } = this.measure();
     const { w, h, dpr } = fitCanvas(this.canvas);
     const ctx = this.canvas.getContext('2d');
-    const { pts, bands } = this.layout(w, h);
+    const { pts, bands } = this.layout(w, hc);
     const paper = makePaper(w, h, dpr, PAPER, 21);
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.drawImage(paper, 0, 0);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const rnd = seeded(9);
 
-    bands.forEach((b, i) => this.paintBand(ctx, b, w, rnd, i, pts));
+    // la dernière bande descend jusqu'au bas de la page (sous l'indicateur d'accueil)
+    bands.forEach((b, i) => this.paintBand(ctx, i === bands.length - 1 ? { ...b, h: h - b.top } : b, w, rnd, i, pts));
     // séparation des mondes : bandes de brume
     for (let i = 1; i < bands.length; i++) {
       const y = bands[i].top;
       kasumi(ctx, -20, y - 3, w * 0.62, 11);
       kasumi(ctx, w * 0.38, y + 6, w * 0.7, 9);
     }
-    this.paintPath(ctx, pts);
+    this.pathPts = this.paintPath(ctx, pts, this.celebrate?.opened ? this.celebrate.k : -1);
     this.pts = pts;
     this.bands = bands;
     this.buildNodes(pts, bands);
@@ -699,19 +766,21 @@ export class MapScreen {
     for (const [fx, fy] of spots) {
       const x = w * fx + (rnd() - 0.5) * 8;
       const y = b.top + b.h * fy;
-      const clash = pts.some((p) => Math.abs(p.x - x) < 52 && Math.abs(p.y - (y - size * 0.4)) < 56);
+      const clash = pts.some((p) => (Math.abs(p.x - x) < 52 || (x > p.lx0 - 18 && x < p.lx1 + 18)) && Math.abs(p.y - (y - size * 0.4)) < 56);
       if (!clash) drawPine(ctx, x, y, size, rnd, tth);
     }
     void i;
   }
 
   // Chemin d'encre reliant les niveaux ; au-delà du dernier niveau débloqué,
-  // de simples pas japonais (tobi-ishi) à peine esquissés.
-  paintPath(ctx, pts) {
+  // de simples pas japonais (tobi-ishi) à peine esquissés. `pending` : segment qui
+  // vient de s'ouvrir, encore en pas japonais (l'encre le trace ensuite, animée).
+  paintPath(ctx, pts, pending = -1) {
+    const curves = [];
     for (let k = 0; k < pts.length - 1; k++) {
       const a = pts[k];
       const b = pts[k + 1];
-      const unlocked = this.save.isUnlocked(this.order, k + 1);
+      const unlocked = this.save.isUnlocked(this.order, k + 1) && k !== pending;
       const dx = b.x - a.x;
       const dy = b.y - a.y;
       const len = Math.hypot(dx, dy) || 1;
@@ -719,14 +788,9 @@ export class MapScreen {
       const mx = (a.x + b.x) / 2 - (dy / len) * bend;
       const my = (a.y + b.y) / 2 + (dx / len) * bend;
       const p = quadPts(a.x, a.y, mx, my, b.x, b.y, 22);
-      if (unlocked) {
-        brushStroke(ctx, p, 16, withAlpha('#f6eedb', 0.85), { taperIn: 0.02, taperOut: 0.02 });
-        brushStroke(ctx, p, 6, withAlpha(INK, 0.82), {
-          taperIn: 0.04,
-          taperOut: 0.04,
-          pressure: (t) => 0.8 + Math.sin(t * Math.PI) * 0.25 + Math.sin(t * 17 + k) * 0.06,
-        });
-      } else {
+      curves.push(p);
+      if (unlocked) inkPath(ctx, p, k);
+      else {
         const steps = Math.max(3, Math.round(len / 18));
         for (let s = 1; s < steps; s++) {
           const q = p[Math.round((s / steps) * (p.length - 1))];
@@ -740,9 +804,12 @@ export class MapScreen {
         }
       }
     }
+    return curves;
   }
 
-  // Nœuds-sceaux et cartouches de monde (DOM : texte net, feedback tactile).
+  // Nœuds-sceaux, étiquettes « 1-1 · Nom » + leçon et cartouches de monde (DOM :
+  // texte net, retour tactile). L'étiquette est DANS le bouton du nœud : la toucher
+  // ouvre aussi la fiche du niveau.
   buildNodes(pts, bands) {
     const frag = document.createDocumentFragment();
     for (const b of bands) {
@@ -753,44 +820,132 @@ export class MapScreen {
       const lab = document.createElement('div');
       lab.className = `map-world${open ? '' : ' locked'}`;
       lab.style.top = `${b.top + 8}px`;
-      lab.innerHTML = `<span class="mw-seal">${wd.kanji}</span><span class="mw-text"><b>${wd.name}</b><small>${wd.subtitle || ''}<span class="mw-stars"><i></i>${got}/${wd.levels.length * 3}</span></small></span>`;
+      lab.innerHTML = `<span class="mw-seal" aria-hidden="true">${wd.kanji}</span><span class="mw-text"><b>${wd.name}</b><small>${wd.subtitle || ''}<span class="mw-stars" aria-label="${got} étoiles sur ${wd.levels.length * 3}"><i class="mw-star"></i>${digitsHTML(got)}/${digitsHTML(wd.levels.length * 3)}</span></small></span>`;
       frag.appendChild(lab);
     }
-    const W = this.nodesEl.clientWidth || this.el.clientWidth;
     for (const p of pts) {
       const entry = this.order[p.i];
       const unlocked = this.save.isUnlocked(this.order, p.i);
       const rec = this.save.level ? this.save.level(entry.id) : { stars: this.save.stars(entry.id), hard: 0, challenge: false };
       const stars = rec.stars;
       const level = this.levels?.[entry.id];
+      const next = unlocked && !stars;
       const b = document.createElement('button');
-      b.className = `map-node${unlocked ? '' : ' locked'}${p.boss ? ' boss' : ''}${unlocked && !stars ? ' next' : ''}${stars ? ' cleared' : ''}${rec.hard ? ' hard' : ''}`;
+      b.className = `map-node${unlocked ? '' : ' locked'}${p.boss ? ' boss' : ''}${next ? ' next' : ''}${stars ? ' cleared' : ''}${rec.hard ? ' hard' : ''}`;
+      b.dataset.level = entry.id;
       b.style.left = `${p.x}px`;
       b.style.top = `${p.y}px`;
       const marks = [rec.hard ? 'gagné en Difficile' : '', rec.challenge ? 'défi réussi' : ''].filter(Boolean).join(', ');
-      b.setAttribute('aria-label', `Niveau ${p.i + 1}${level?.concept ? ` : ${level.concept}` : ''}${p.boss ? ' (boss)' : ''}${unlocked ? `, ${stars} étoile${stars > 1 ? 's' : ''}${marks ? `, ${marks}` : ''}` : ' (verrouillé)'}`);
-      b.innerHTML = `<span class="face"><span class="num">${unlocked ? NUMERALS[p.i] ?? p.i + 1 : '封'}</span></span><span class="latin">${p.i + 1}</span>
+      const name = level?.name ? ` · ${level.name}` : '';
+      b.setAttribute('aria-label', `${entry.id}${name}${level?.concept ? `, leçon : ${level.concept}` : ''}${p.boss ? ' (boss)' : ''}${unlocked ? `, ${stars} étoile${stars > 1 ? 's' : ''}${marks ? `, ${marks}` : ''}${next ? ', à jouer' : ''}` : ', scellé'}`);
+      const sub = unlocked ? `${level?.concept || ''}${next ? `${level?.concept ? ' · ' : ''}<em>à jouer</em>` : ''}` : `${LOCK_ICON}Scellé`;
+      const maxW = Math.max(80, Math.round(p.lx1 - p.lx0));
+      b.innerHTML = `<span class="face"><span class="num">${unlocked ? NUMERALS[p.i] ?? p.i + 1 : '封'}</span></span>
+        ${unlocked ? '' : `<span class="node-lock" aria-hidden="true">${LOCK_ICON}</span>`}
         ${p.boss ? '<span class="boss-tag">Boss</span>' : ''}
         ${rec.hard ? '<span class="node-mark hard" aria-hidden="true">難</span>' : ''}
         ${rec.challenge ? '<span class="node-mark ch" aria-hidden="true">挑</span>' : ''}
-        <span class="stars">${[0, 1, 2].map((k) => `<i class="${k < stars ? 'on' : ''}"></i>`).join('')}</span>`;
+        <span class="stars" aria-hidden="true">${[0, 1, 2].map((k) => `<i class="${k < stars ? 'on' : ''}"></i>`).join('')}</span>
+        <span class="map-label ${p.right ? 'right' : 'left'}" aria-hidden="true" style="--lw:${maxW}px"><b><span class="ml-id">${entry.id}${level?.name ? '\u00a0·' : ''}</span>${level?.name ? ` ${labelName(level.name)}` : ''}</b>${sub ? `<small>${sub}</small>` : ''}</span>`;
       b.addEventListener('click', () => this.onSelect(entry, unlocked));
       frag.appendChild(b);
-      // Leçon du niveau, à côté du nœud (côté intérieur de la carte).
-      if (level?.concept) {
-        const lab = document.createElement('span');
-        const right = p.x < W / 2 || (p.boss && p.x <= W / 2);
-        lab.className = `map-concept${unlocked ? '' : ' locked'}${right ? ' right' : ' left'}`;
-        lab.setAttribute('aria-hidden', 'true');
-        lab.textContent = level.concept;
-        const half = (p.boss ? 36 : 31) + 10;
-        if (right) lab.style.left = `${Math.round(p.x + half)}px`;
-        else lab.style.right = `${Math.round(W - p.x + half)}px`;
-        lab.style.top = `${Math.round(p.y - 2)}px`;
-        frag.appendChild(lab);
-      }
     }
     this.nodesEl.innerHTML = '';
     this.nodesEl.appendChild(frag);
+    if (this.celebrate) this.markCelebration();
   }
+
+  // Défilement vers le niveau à jouer (ou celui qu'on vient de gagner), 500 ms.
+  scrollToFocus() {
+    const body = this.body;
+    const max = body.scrollHeight - body.clientHeight;
+    if (max <= 0) return;
+    const id = this.celebrate ? this.order[this.celebrate.opened ? this.celebrate.k + 1 : this.celebrate.k].id : null;
+    const target = (id && this.nodesEl.querySelector(`.map-node[data-level="${id}"]`)) || this.nodesEl.querySelector('.map-node.next') || [...this.nodesEl.querySelectorAll('.map-node:not(.locked)')].pop();
+    if (!target) return;
+    const y = parseFloat(target.style.top) || 0;
+    const to = Math.max(0, Math.min(max, Math.round(y - body.clientHeight * 0.45)));
+    cancelAnimationFrame(this.scrollRaf);
+    if (reduced() || Math.abs(to - body.scrollTop) < 4) {
+      body.scrollTop = to;
+      return;
+    }
+    const from = body.scrollTop;
+    const t0 = performance.now();
+    const ease = (t) => 1 - Math.pow(1 - t, 3);
+    const step = (now) => {
+      const t = Math.min(1, (now - t0) / 500);
+      body.scrollTop = from + (to - from) * ease(t);
+      if (t < 1) this.scrollRaf = requestAnimationFrame(step);
+    };
+    // un doigt sur la carte reprend la main
+    body.addEventListener('pointerdown', () => cancelAnimationFrame(this.scrollRaf), { once: true });
+    this.scrollRaf = requestAnimationFrame(step);
+  }
+
+  // Classes de la célébration (posées à chaque reconstruction des nœuds).
+  markCelebration() {
+    const c = this.celebrate;
+    const won = this.nodesEl.querySelector(`.map-node[data-level="${this.order[c.k].id}"]`);
+    won?.classList.add('celebrate');
+    if (c.opened) this.nodesEl.querySelector(`.map-node[data-level="${this.order[c.k + 1].id}"]`)?.classList.add('unseal');
+  }
+
+  // Retour d'une victoire : étoiles tamponnées sur le nœud (120 ms d'écart), puis
+  // chemin d'encre tracé vers le niveau suivant (700 ms), dont le sceau 封 se brise.
+  playCelebration() {
+    const c = this.celebrate;
+    const n = this.save.stars(this.order[c.k].id);
+    if (reduced()) {
+      this.celebrate = null;
+      this.render();
+      return;
+    }
+    for (let i = 0; i < n; i++) setTimeout(() => this.sound('star', { i }), 260 + i * 120);
+    if (!c.opened) {
+      this.fxTimer = setTimeout(() => (this.celebrate = null), 900);
+      return;
+    }
+    this.fxTimer = setTimeout(() => {
+      const curve = this.pathPts?.[c.k];
+      if (!curve) return;
+      const fx = document.createElement('canvas');
+      fx.className = 'map-fx';
+      this.inner.appendChild(fx);
+      const { w, dpr } = fitCanvas(fx);
+      const g = fx.getContext('2d');
+      const t0 = performance.now();
+      const step = (now) => {
+        const t = Math.min(1, (now - t0) / 700);
+        g.setTransform(1, 0, 0, 1, 0, 0);
+        g.clearRect(0, 0, fx.width, fx.height);
+        g.setTransform(dpr, 0, 0, dpr, 0, 0);
+        const m = Math.max(2, Math.ceil(curve.length * (1 - Math.pow(1 - t, 2))));
+        inkPath(g, curve.slice(0, m), c.k);
+        if (t < 1) this.inkRaf = requestAnimationFrame(step);
+        else {
+          this.sound('select');
+          const node = this.nodesEl.querySelector('.map-node.unseal');
+          node?.classList.add('broken');
+          this.fxTimer = setTimeout(() => {
+            this.celebrate = null;
+            fx.remove();
+            this.render();
+          }, 480);
+        }
+      };
+      void w;
+      this.inkRaf = requestAnimationFrame(step);
+    }, 260 + n * 120 + 160);
+  }
+}
+
+// Tracé d'encre d'un segment de chemin débloqué (fond crème + trait d'encre).
+function inkPath(ctx, p, k) {
+  brushStroke(ctx, p, 16, withAlpha('#f6eedb', 0.85), { taperIn: 0.02, taperOut: 0.02 });
+  brushStroke(ctx, p, 6, withAlpha(INK, 0.82), {
+    taperIn: 0.04,
+    taperOut: 0.04,
+    pressure: (t) => 0.8 + Math.sin(t * Math.PI) * 0.25 + Math.sin(t * 17 + k) * 0.06,
+  });
 }

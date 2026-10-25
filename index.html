@@ -8,9 +8,23 @@
     />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <!-- Pas de balise apple-mobile-web-app-status-bar-style : en mode « translucide noir »,
+         iOS 26.1+ dessine sous la barre d'état un flou que la page ne peut pas retirer
+         (WebKit 317153). Sans elle, la barre est opaque (theme-color) et la page commence dessous. -->
     <meta name="apple-mobile-web-app-title" content="Jardin Esprits" />
+    <!-- = indigo du HUD. Ne JAMAIS le modifier à l'exécution (l'app installée fige le premier changement). -->
     <meta name="theme-color" content="#1f2f4f" />
+    <script>
+      // Ancienne installation possible : app installée sur iOS ≥ 26 (WebKit ≤ 18 ne connaît
+      // pas animation-timeline). Le garde-fou :root.ios26-app (styles.css) ne joue que si
+      // l'encart haut est non nul, c'est-à-dire si l'icône garde l'ancienne balise.
+      (function () {
+        var n = navigator, d = document.documentElement;
+        var ios = /iP(hone|od|ad)/.test(n.userAgent) || (n.platform === 'MacIntel' && n.maxTouchPoints > 1);
+        var app = n.standalone === true || (window.matchMedia && matchMedia('(display-mode: standalone)').matches);
+        if (ios && app && window.CSS && CSS.supports('animation-timeline: scroll()')) d.classList.add('ios26-app');
+      })();
+    </script>
     <meta name="format-detection" content="telephone=no" />
     <meta name="description" content="Tower defense au style estampe japonaise : protégez le sanctuaire des yokai." />
     <title>Jardin des Esprits</title>
@@ -28,86 +42,108 @@
   </head>
   <body>
     <div id="app">
-      <section id="screen-title" class="screen" aria-label="Titre">
+      <section id="screen-title" class="screen" aria-label="Accueil">
         <canvas class="bg"></canvas>
+        <div class="title-tools">
+          <button id="btn-title-sound" class="icon-btn title-ico" aria-label="Son" aria-pressed="true"><svg viewBox="0 0 20 20" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 7.5h3l4.5-3.8v12.6l-4.5-3.8h-3z" /><path class="spk-on" d="M13.2 7.3a3.8 3.8 0 0 1 0 5.4M15.6 5a7 7 0 0 1 0 10" /><path class="spk-off" d="M13.2 7.6l4.8 4.8M18 7.6l-4.8 4.8" /></svg></button>
+          <button id="btn-title-settings" class="icon-btn title-ico" aria-label="Réglages"><svg viewBox="0 0 20 20" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M2.5 6h8.5M15.5 6h2M2.5 14h2M9 14h8.5" /><circle cx="13.2" cy="6" r="2.2" /><circle cx="6.8" cy="14" r="2.2" /></svg></button>
+        </div>
         <div class="title-wrap">
           <div class="title-kanji">精霊の庭</div>
           <h1>Jardin<br />des Esprits</h1>
           <p class="tagline">Allumez les lanternes,<br />protégez le sanctuaire.</p>
         </div>
-        <div id="title-lobby" class="title-lobby" aria-label="Salon multijoueur"></div>
         <div class="title-actions">
-          <button id="btn-play" class="btn primary big"><span class="btn-kanji" aria-hidden="true">遊</span>Jouer</button>
+          <div id="title-notice" class="title-notice hidden" role="status" aria-live="polite"></div>
+          <div id="title-team" class="title-team hidden" aria-label="Joueurs du salon"></div>
+          <button id="btn-play" class="btn primary hero"><span class="hero-seal" aria-hidden="true">遊</span><span class="hero-text"><b id="btn-play-label">Jouer</b><small id="btn-play-sub">1-1</small></span><span class="hero-chev" aria-hidden="true">›</span></button>
           <p id="title-wait" class="title-wait hidden" role="status"></p>
-          <button id="btn-title-sound" class="icon-btn light" aria-label="Son"><span>音</span></button>
+          <div class="title-row">
+            <button id="btn-levels" class="btn secondary">Niveaux</button>
+            <button id="btn-multi" class="btn dark"><span class="multi-seal" aria-hidden="true">人</span><span id="btn-multi-label">À plusieurs</span><i id="btn-multi-count" class="multi-count hidden"></i></button>
+          </div>
         </div>
-        <p class="title-foot" id="title-foot">Partager ▸ « Sur l'écran d'accueil » pour jouer en plein écran</p>
+        <div class="lobby-park" hidden><div id="title-lobby" class="title-lobby" aria-label="Salon multijoueur"></div></div>
       </section>
 
       <section id="screen-map" class="screen" aria-label="Carte des niveaux">
         <header class="map-head">
-          <button id="btn-map-back" class="icon-btn" aria-label="Retour"><span>戻</span></button>
-          <h2>Le Jardin des Esprits</h2>
-          <div class="map-stars"><span class="seal seal-gold">★</span><b id="map-stars">0</b></div>
+          <button id="btn-map-back" class="map-back" aria-label="Retour à l’accueil"><svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.5 4l-6 6 6 6" /></svg><span>Accueil</span></button>
+          <h2>Niveaux</h2>
+          <div class="map-stars" aria-label="Étoiles"><span class="seal seal-gold" aria-hidden="true">★</span><b id="map-stars">0</b></div>
         </header>
-        <div class="map-body"><canvas></canvas><div class="map-nodes"></div></div>
+        <div class="map-body scroll"><div class="map-inner"><canvas></canvas><div class="map-nodes"></div></div></div>
       </section>
 
       <section id="screen-game" class="screen" aria-label="Partie">
+        <!-- HUD 44 (docs/UI-UX.md §6.3) : vies, or, or promis, bloc vague, capsule du temps -->
         <header id="hud-top" class="hud-top">
-          <div class="stats">
-            <div class="stat stat-lives" aria-label="Vies"><span class="seal seal-red">命</span><b id="hud-lives">20</b></div>
-            <div class="stat stat-gold" aria-label="Or"><span class="seal seal-gold">金</span><b id="hud-gold">0</b><i id="hud-reserved" class="stat-reserved hidden" aria-hidden="true"></i></div>
+          <div class="stat stat-lives" aria-label="Vies"><span class="seal seal-red seal-24" aria-hidden="true">命</span><b id="hud-lives" class="num">20</b></div>
+          <div class="stat-goldzone">
+            <div class="stat stat-gold" aria-label="Or"><span class="seal seal-gold seal-24" aria-hidden="true">金</span><b id="hud-gold" class="num">0</b></div>
+            <span class="stat-reserve-slot"><i id="hud-reserved" class="stat-reserved hidden" aria-hidden="true"></i></span>
           </div>
-          <div class="wave-label" id="hud-wave"><small>Vague</small><b>0<i>/0</i></b></div>
-          <div class="hud-buttons">
-            <button class="icon-btn" id="btn-speed" aria-label="Vitesse"><span>×1</span></button>
-            <button class="icon-btn" id="btn-pause" aria-label="Pause"><span class="ico-pause" aria-hidden="true"></span></button>
+          <div class="wave-label" id="hud-wave" role="img" aria-label="Vague 0 sur 0">
+            <small><span>Vague</span><span class="hard-seal" aria-hidden="true">難</span></small>
+            <b class="wave-num"><span class="wave-cur" id="hud-wave-n">0</span><i id="hud-wave-total">/0</i></b>
+            <span class="wave-bar" aria-hidden="true"><i class="wave-bar-fill"></i><i class="wave-bar-climax"></i></span>
+          </div>
+          <div class="time-capsule hud-buttons" role="group" aria-label="Temps">
+            <button class="tc-btn" id="btn-speed" aria-label="Vitesse ×1"><span>×1</span></button>
+            <button class="tc-btn" id="btn-pause" aria-label="Pause"><span class="ico-pause" aria-hidden="true"></span></button>
           </div>
         </header>
-        <div id="coop-roster" class="coop-roster hidden" aria-label="Coéquipiers"></div>
         <div id="stage">
           <canvas id="board"></canvas>
           <div id="bossbar" class="bossbar hidden"><span class="boss-name"></span><div class="boss-track"><div class="boss-fill"></div></div></div>
-          <div id="intro" class="intro hidden" role="button" aria-label="Fiche du yokai"></div>
+          <!-- couloir de messages : un seul message global à la fois, hors portails et sanctuaire (§6.4) -->
+          <div id="lane" class="lane hidden" role="status" aria-live="polite"></div>
           <div id="tower-bar" class="tower-bar hidden" role="toolbar" aria-label="Actions de la lanterne"></div>
           <div id="last-chance" class="last-chance hidden" role="alert" aria-live="assertive">
             <div class="lc-card">
               <span class="lc-kanji" aria-hidden="true">巻</span>
               <b class="lc-title">Rembobinez !</b>
               <span class="lc-count" id="lc-count">4</span>
-              <small class="lc-text">Le sanctuaire tombe : glissez la jauge ◀◀ pour remonter le temps</small>
+              <small class="lc-text">Le sanctuaire tombe : touchez la poignée ◀◀ pour remonter le temps</small>
             </div>
             <span class="lc-arrow" id="lc-arrow" aria-hidden="true"></span>
           </div>
           <div id="coop-wait" class="coop-wait hidden" role="status" aria-live="polite"></div>
         </div>
+        <!-- bas 156 (142 petits écrans) : rangée d'action, onglets ou équipe, boîte à lanternes, pierre épinglée (§6.5, §6.6) -->
         <footer id="hud-bottom" class="hud-bottom">
           <div class="action-row">
-            <div id="rewind" class="rewind hidden" aria-label="Rembobinage : glissez vers la gauche">
+            <div id="rewind" class="rewind hidden" aria-label="Rembobinage">
               <div class="rewind-track">
+                <svg class="rewind-ring" viewBox="0 0 46 46" aria-hidden="true"><circle class="rr-bg" cx="23" cy="23" r="20.5" /><circle class="rr-ghost" cx="23" cy="23" r="20.5" /><circle class="rr-fill" cx="23" cy="23" r="20.5" /></svg>
                 <div class="rewind-fill" id="rewind-fill"></div>
-                <div class="rewind-label">◀◀ glisser · 巻戻</div>
-                <div class="rewind-knob" id="rewind-knob">巻</div>
+                <div class="rewind-label">◀◀</div>
+                <div class="rewind-knob" id="rewind-knob"><b>巻</b><small class="rewind-pct" id="rewind-pct">0 %</small></div>
               </div>
             </div>
             <div id="wave-preview" class="wave-preview" aria-label="Prochaine vague"></div>
-            <button id="btn-wave" class="wave-btn"><span class="wave-btn-kanji" id="btn-wave-kanji">波</span><span class="wave-btn-text"><span id="btn-wave-label">Vague</span><small id="btn-wave-sub"></small></span></button>
+            <button id="btn-undo" class="undo-pill hidden" aria-label="Annuler la pose"><span class="undo-dial" aria-hidden="true"><span class="undo-ico">↶</span></span><span class="undo-text"><b>Annuler</b><small id="btn-undo-sub">gratuit</small></span></button>
+            <button id="btn-wave" class="wave-btn"><span class="wave-dial" aria-hidden="true"><span class="wave-dial-txt" id="btn-wave-kanji">波</span></span><span class="wave-btn-text"><span id="btn-wave-label">Vague 1</span><small id="btn-wave-sub">Lancer</small></span></button>
           </div>
-          <div id="palette-tabs" class="palette-tabs hidden" role="tablist" aria-label="Éléments"></div>
-          <div id="palette" class="palette"></div>
+          <div class="palette-area">
+            <div id="palette-tabs" class="palette-tabs hidden" role="tablist" aria-label="Éléments"></div>
+            <div id="team-row" class="team-row hidden" aria-label="Coéquipiers"></div>
+            <div id="palette" class="palette"></div>
+            <div id="palette-pin" class="palette-pin hidden"></div>
+          </div>
         </footer>
-        <button id="btn-undo" class="undo-pill hidden" aria-label="Annuler la pose"><span class="undo-ico" aria-hidden="true">↶</span>Annuler<i class="undo-bar"></i></button>
-        <div id="toast" class="toast" role="status" aria-live="polite"></div>
+        <!-- (l’ancienne rangée des coéquipiers : les coéquipiers prennent la place des onglets ; élément gardé, toujours caché, pour le code des écrans) -->
+        <div id="coop-roster" class="coop-roster hidden" aria-hidden="true"></div>
+        <div id="tip" class="tip hidden" role="status" aria-live="polite"></div>
         <div id="banner" class="banner"></div>
         <div id="info" class="sheet hidden"></div>
         <div id="hint" class="hint hidden"></div>
         <div id="hold" class="hold hidden" aria-hidden="true"><svg viewBox="0 0 80 80"><circle class="hold-bg" cx="40" cy="40" r="31"/><circle class="hold-ink" cx="40" cy="40" r="31"/><circle class="hold-fill" cx="40" cy="40" r="31"/></svg></div>
       </section>
       <div id="modal" class="modal hidden"><div class="modal-card"></div></div>
-      <div id="app-toast" class="toast app-toast" role="status" aria-live="polite"></div>
+      <div id="app-toast" class="app-toast" role="status" aria-live="polite"></div>
     </div>
-    <div id="rotate" class="rotate"><div><span class="rotate-seal">縦</span><p>Tournez votre téléphone<br />en portrait</p></div></div>
+    <div id="rotate" class="rotate" role="alert"><div><span class="rotate-seal" aria-hidden="true">縦</span><p>Tournez votre téléphone<br />en portrait</p><p class="rotate-sub" id="rotate-sub"></p></div></div>
     <script type="module" src="src/main.js"></script>
   </body>
 </html>

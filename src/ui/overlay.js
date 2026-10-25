@@ -107,6 +107,11 @@ export class BoardOverlay {
     if (!game) return;
     const type = this.placingType(ui);
     if (type) items.push({ y: -1e6, k: 9, draw: (ctx, ts, time) => this.dimSlots(ctx, ts, time, game, type) });
+    // Indice passif de fusion : petit sceau 合 au coin des lanternes qui ont une jumelle
+    // (hors mode « Fusionner », où les jumelles ont déjà leur anneau or).
+    if (ui?.fuseFrom == null && !ui?.drag) {
+      for (const t of this.fusable(game)) items.push({ y: t.y + 0.021, k: 9, draw: (ctx, ts) => this.drawFuseSeal(ctx, t, ts) });
+    }
     // Coopération : liseré sous la lanterne (dessiné avant elle) et sceau après.
     if (this.h.owner && game.players?.length > 1) {
       for (const t of game.towers) {
@@ -117,6 +122,65 @@ export class BoardOverlay {
         items.push({ y: t.y + 0.02, k: 9, draw: (ctx, ts) => drawOwnerSeal(ctx, t, o, ts) });
       }
     }
+  }
+
+  // Lanternes du joueur local qui ont une jumelle (même type, même niveau, niveau max non
+  // atteint). Recalculé seulement quand l'ensemble des lanternes change.
+  fusable(game) {
+    let sig = game.towers.length * 131 + game.localPlayer;
+    for (const t of game.towers) sig = (sig * 31 + t.id * 7 + t.level * 3 + (t.owner ?? 0)) % 2147483647;
+    if (this.fuseCache?.sig === sig && this.fuseCache.game === game) return this.fuseCache.list;
+    const solo = !(game.players?.length > 1);
+    const groups = new Map();
+    for (const t of game.towers) {
+      if (!solo && t.owner !== game.localPlayer) continue;
+      if (t.level >= game.maxLevelOf(t.type)) continue;
+      const k = `${t.type}|${t.level}`;
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k).push(t);
+    }
+    const list = [];
+    for (const g of groups.values()) if (g.length > 1) list.push(...g);
+    this.fuseCache = { sig, game, list };
+    return list;
+  }
+
+  // Sceau 合 de 14 px à 70 %, coin haut gauche du socle (le sceau du joueur est en bas
+  // à droite) ; dessiné une fois dans un petit canevas puis recopié.
+  drawFuseSeal(ctx, t, ts) {
+    const s = 14;
+    if (!this.fuseSeal) {
+      const k = 3;
+      const cv = document.createElement('canvas');
+      cv.width = cv.height = s * k;
+      const c = cv.getContext('2d');
+      c.scale(k, k);
+      c.fillStyle = PALETTE.gold ?? '#c99a2e';
+      c.strokeStyle = INK;
+      c.lineWidth = 1.2;
+      roundRect(c, 0.6, 0.6, s - 1.2, s - 1.2, 3);
+      c.fill();
+      c.stroke();
+      c.fillStyle = INK;
+      c.font = '800 10px "Shippori Mincho", serif';
+      c.textAlign = 'center';
+      c.textBaseline = 'middle';
+      c.fillText('合', s / 2, s / 2 + 0.5);
+      this.fuseSeal = cv;
+      // police pas encore chargée : on redessinera à la prochaine image
+      if (document.fonts && !document.fonts.check('800 10px "Shippori Mincho"')) {
+        ctx.save();
+        ctx.globalAlpha = 0.7;
+        ctx.drawImage(cv, (t.c + 0.08) * ts, (t.r + 0.08) * ts, s, s);
+        ctx.restore();
+        this.fuseSeal = null;
+        return;
+      }
+    }
+    ctx.save();
+    ctx.globalAlpha = 0.7;
+    ctx.drawImage(this.fuseSeal, (t.c + 0.08) * ts, (t.r + 0.08) * ts, s, s);
+    ctx.restore();
   }
 
   // Socles gravés d'un autre élément : voile de papier, hachures et forme de

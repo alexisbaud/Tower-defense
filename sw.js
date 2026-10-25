@@ -2,13 +2,14 @@
 // Stratégie « réseau d'abord » pour nos fichiers (les mises à jour arrivent
 // dès qu'on est en ligne), repli sur le cache hors ligne. Les polices Google
 // sont mises en cache à la volée.
-const VERSION = 'jde-v3';
+const VERSION = 'jde-v4';
 const CORE = [
   './',
   'index.html',
   'styles.css',
   'lobby.css',
   'manifest.json',
+  'diag.html',
   'icons/icon-180.png',
   'icons/icon-192.png',
   'icons/icon-512.png',
@@ -44,6 +45,7 @@ const CORE = [
   'src/ui/overlay.js',
   'src/ui/debug.js',
   'src/ui/lobby.js',
+  'src/ui/settings.js',
   'src/net/mqtt.js',
   'src/net/lobby.js',
   'src/net/lockstep.js',
@@ -52,6 +54,11 @@ const CORE = [
   'src/render/barriers.js',
   'src/render/construction.js',
   'src/ui/commands.js',
+  'src/ui/press.js',
+  'src/ui/fmt.js',
+  'src/ui/sheet.js',
+  'src/ui/lane.js',
+  'src/ui/coins.js',
   'data/rules.js',
   'data/elements.js',
   'data/towers.js',

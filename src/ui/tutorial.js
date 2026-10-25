@@ -11,7 +11,7 @@ import { bfs } from '../core/flowfield.js';
 import { rallyTiles, isBarrierTower } from './overlay.js';
 import { rewindRules } from './sheets.js';
 import { aims } from './towerbar.js';
-import { elementWithArticle } from './elements.js';
+import { elementWithArticle, elementInfo } from './elements.js';
 import { earlyCharge } from './wavepreview.js';
 import { commands } from './commands.js';
 
@@ -32,6 +32,11 @@ export class Tutorial {
     document.fonts?.addEventListener?.('loadingdone', () => (this.current = null));
   }
 
+  // Une bulle est-elle affichée ? (le couloir de messages retient alors ses messages 0–1)
+  get showing() {
+    return this.current !== null;
+  }
+
   // `enabled` : faux en coopération (le tutoriel n'accompagne que la partie en solo).
   start(game, enabled = true) {
     // Masquer d'abord l'indication éventuelle du niveau précédent.
@@ -43,6 +48,7 @@ export class Tutorial {
     // défi « sans Rembobinage » : la jauge est cachée, pas de leçon à son sujet
     this.rewindPhase = this.steps.includes('rewind') && game.rewindEnabled !== false ? 1 : 0;
     this.waveT0 = null; // instant (game.time) du lancement de la première vague
+    this.wave1Done = false; // l'appel anticipé ne s'apprend qu'après la première vague
   }
 
   onEvent(ev) {
@@ -50,6 +56,9 @@ export class Tutorial {
     switch (ev.type) {
       case 'place':
         this.done.add('place');
+        break;
+      case 'waveEnd':
+        this.wave1Done = true;
         break;
       case 'waveStart':
         this.done.add('wave');
@@ -115,6 +124,11 @@ export class Tutorial {
       const dx = drag.x - x;
       const dy = drag.y - y;
       html += `<div class="finger drag" style="left:${lx}px;top:${ly}px;--dx:${dx}px;--dy:${dy}px"></div>`;
+    } else if (opts.halo) {
+      // halo autour de la cible (cadran du bouton de vague) : le repère l'entoure sans
+      // couvrir le 波 ni les secondes
+      const d = Math.round(opts.halo);
+      html += `<div class="finger halo" style="left:${lx}px;top:${ly}px;width:${d}px;height:${d}px;margin:${-d / 2}px 0 0 ${-d / 2}px"></div>`;
     } else {
       html += `<div class="finger" style="left:${lx}px;top:${ly}px"></div>`;
     }
@@ -129,12 +143,15 @@ export class Tutorial {
     const avoid = (opts.avoid || []).map(rel);
     avoid.push({ l: lx - 24, t: ly - 24, r: lx + 24, b: ly + 24 });
     if (drag) avoid.push({ l: drag.x - root.left - 30, t: drag.y - root.top - 30, r: drag.x - root.left + 30, b: drag.y - root.top + 30 });
+    // Enveloppe du geste montré (cibles, doigt, arrivée) : le sanctuaire n'en fait pas
+    // partie (en bas du plateau, il étirait l'enveloppe à tout le plateau et la bulle
+    // retombait sur la lanterne qu'elle demande de glisser).
+    const union = avoid.reduce((u, r) => ({ l: Math.min(u.l, r.l), t: Math.min(u.t, r.t), r: Math.max(u.r, r.r), b: Math.max(u.b, r.b) }), { l: Infinity, t: Infinity, r: -Infinity, b: -Infinity });
     const goal = this.goalRect();
     if (goal) avoid.push(rel(goal));
     const top = this.topBand(root);
     let bottom = this.bottomBand(root);
     if (opts.above != null) bottom = Math.min(bottom, opts.above - root.top - 10);
-    const union = avoid.reduce((u, r) => ({ l: Math.min(u.l, r.l), t: Math.min(u.t, r.t), r: Math.max(u.r, r.r), b: Math.max(u.b, r.b) }), { l: Infinity, t: Infinity, r: -Infinity, b: -Infinity });
     // Positions candidates (centre x, bas de la bulle y), de la plus naturelle à la plus lointaine.
     const cands = [
       [lx, ly - 30],
@@ -145,15 +162,22 @@ export class Tutorial {
       [union.r + 10 + bw / 2, ly + bh / 2],
     ];
     const hit = (a, b) => a.l < b.r && a.r > b.l && a.t < b.b && a.b > b.t;
+    const over = (a, b) => Math.max(0, Math.min(a.r, b.r) - Math.max(a.l, b.l)) * Math.max(0, Math.min(a.b, b.b) - Math.max(a.t, b.t));
     let best = null;
+    let least = null; // repli : la place dans l'écran qui couvre le moins les zones à voir
     for (const [cx, by] of cands) {
       const l = Math.max(8, Math.min(W - bw - 8, cx - bw / 2));
       const r = { l, r: l + bw, t: by - bh, b: by };
       if (r.t < top || r.b > bottom) continue;
-      if (avoid.some((a) => hit(a, r))) continue;
+      if (avoid.some((a) => hit(a, r))) {
+        const o = avoid.reduce((n, a) => n + over(a, r), 0);
+        if (!least || o < least.o) least = { ...r, o };
+        continue;
+      }
       best = r;
       break;
     }
+    if (!best && least) best = least;
     if (!best) {
       // repli : au-dessus du doigt, gardée à l'écran
       const l = Math.max(8, Math.min(W - bw - 8, lx - bw / 2));
@@ -210,6 +234,24 @@ export class Tutorial {
     return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
   }
 
+  // Bord haut d'une carte de la palette : l'anneau du doigt la montre sans couvrir son nom.
+  edgeOf(el) {
+    const r = el.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top - 8 };
+  }
+
+  // Cadran du bouton de vague : l'anneau du doigt ne couvre pas « Vague 1 ».
+  dialOf(btn) {
+    const d = btn.querySelector('.wave-dial') || btn;
+    return this.elCenter(d);
+  }
+
+  // Diamètre du halo autour du cadran (cadran + 12).
+  dialSize(btn) {
+    const d = btn.querySelector('.wave-dial');
+    return (d ? d.getBoundingClientRect().width : 38) + 12;
+  }
+
   update(paused) {
     const g = this.c.game();
     const input = this.c.input;
@@ -241,15 +283,19 @@ export class Tutorial {
         if (!tool || tool === 'stone') {
           const first = hud.tools.find((t) => t.id !== 'stone' && !t.el.classList.contains('off-tab'));
           if (!first) return false;
-          const p = this.elCenter(first.el);
-          this.show('place-tool', p.x, p.y - 6, 'Choisissez une lanterne', null, { above: this.footerTop() });
+          const p = this.edgeOf(first.el);
+          this.show('place-tool', p.x, p.y, 'Choisissez une lanterne', null, { above: this.footerTop() });
           return true;
         }
         const tdef = g.defs.towers[tool];
-        const slot = this.bestSlot(g, tdef.levels[0].range, tdef.element ?? tool);
+        const el = tdef.element ?? tool;
+        const slot = this.bestSlot(g, tdef.levels[0].range, el);
         if (!slot) return false;
         const p = this.tileToPage(slot.c, slot.r);
-        this.show('place-slot', p.x, p.y, 'Touchez un socle près du chemin', null, { avoid: [this.tileRect(slot.c, slot.r, 0)] });
+        // la règle des socles réservés tient dans la bulle de pose
+        const reserved = g.grid.slotElement?.some((x) => x === el);
+        const text = reserved ? `Touchez un socle lisse, ou réservé ${elementInfo(el, g.defs).glyph}` : 'Touchez un socle près du chemin';
+        this.show('place-slot', p.x, p.y, text, null, { avoid: [this.tileRect(slot.c, slot.r, 0)] });
         return true;
       }
       case 'wave': {
@@ -258,8 +304,8 @@ export class Tutorial {
           return false;
         }
         if (!hasTowers(g)) return false;
-        const p = this.elCenter(hud.waveBtn);
-        this.show('wave', p.x, p.y, 'Lancez la vague !');
+        const p = this.dialOf(hud.waveBtn);
+        this.show('wave', p.x, p.y, 'Lancez la vague !', null, { avoid: [hud.waveBtn.getBoundingClientRect()], halo: this.dialSize(hud.waveBtn) });
         return true;
       }
       case 'fuse': {
@@ -331,17 +377,17 @@ export class Tutorial {
         return true;
       }
       case 'early': {
-        // Appeler la vague suivante en avance : quand la vague en cours a fini
-        // d'apparaître (ou qu'il ne reste presque plus de yokai).
-        if (g.waveIndex < 0 || !g.canCallNextWave?.()) return false;
+        // Appeler la vague suivante en avance : seulement après la fin de la première
+        // vague, quand la vague en cours a fini d'apparaître (ou presque plus de yokai).
+        if (g.waveIndex < 0 || !this.wave1Done || !g.canCallNextWave?.()) return false;
         const pv = g.nextWavePreview?.();
         if (!pv || !(pv.bonus > 0)) return false;
         const calm = g.spawnersDone?.(g.waveIndex) || g.enemies.length <= 2;
         if (!calm) return false;
-        const p = this.elCenter(hud.waveBtn);
+        const p = this.dialOf(hud.waveBtn);
         const charge = earlyCharge(g, pv);
         const gain = `+${pv.bonus} or${charge > 0 ? ` · +${charge} 巻` : ''}`;
-        this.show('early', p.x, p.y, `Appelez la vague suivante en avance : ${gain}`, null, { above: this.footerTop() });
+        this.show('early', p.x, p.y, `Appelez la vague suivante en avance : ${gain}`, null, { above: this.footerTop(), halo: this.dialSize(hud.waveBtn) });
         return true;
       }
       case 'priority': {
@@ -349,10 +395,18 @@ export class Tutorial {
         const t = g.towers.find((x) => aims(g.defs.towers[x.type]));
         if (!t) return false;
         const bar = this.c.towerBar;
-        const prio = bar && !bar.classList.contains('hidden') ? bar.querySelector('.tb-prio') : null;
+        const shown = bar && !bar.classList.contains('hidden');
+        // les quatre choix ouverts : « Fort »
+        const strong = shown ? bar.querySelector('.tb-pick[data-p="strong"]') : null;
+        if (strong && input.ui.selectedTower === t.id) {
+          const p = this.elCenter(strong);
+          this.show('priority-pick', p.x, p.y, 'Visez « Fort » : la yuki-onna qui soigne tombe la première', null, { avoid: [bar.getBoundingClientRect()] });
+          return true;
+        }
+        const prio = shown ? bar.querySelector('.tb-prio') : null;
         if (prio && input.ui.selectedTower === t.id) {
           const p = this.elCenter(prio);
-          this.show('priority-btn', p.x, p.y, 'Visez « Plus fort » : la yuki-onna qui soigne tombe la première', null, { avoid: [prio.getBoundingClientRect()] });
+          this.show('priority-btn', p.x, p.y, 'Choisissez sa cible : visez « Fort »', null, { avoid: [prio.getBoundingClientRect()] });
           return true;
         }
         if (input.ui.selectedTower != null || input.ui.tool) return false;
@@ -436,7 +490,7 @@ export class Tutorial {
       this.c.modal(
         `<div class="modal-kanji">巻戻</div>
          <h2>Le Rembobinage</h2>
-         <p>La <b>jauge 巻</b> se remplit quand vous apaisez des yokai et quand vous appelez une vague en avance. <b>Pleine, glissez-la vers la gauche</b> : le temps recule de ${sec} secondes.</p>
+         <p>La <b>jauge 巻</b> se remplit quand vous apaisez des yokai et quand vous appelez une vague en avance. <b>Pleine, touchez-la deux fois</b> (ou glissez-la vers la gauche) : le temps recule de ${sec} secondes.</p>
          <div class="demo-gauge"><span class="demo-knob">巻</span></div>
          <div class="rules">${rewindRules(g, true)}</div>`,
         [{ label: 'Compris', cls: 'primary', run: () => this.c.pause(false, true) }],
@@ -449,7 +503,7 @@ export class Tutorial {
       const from = { x: kr.left + kr.width / 2, y: kr.top + kr.height / 2 };
       const to = { x: tr.left + tr.width * 0.25, y: from.y };
       const recent = g.towers.some((t) => g.time - t.bornAt < 5);
-      this.show('rewind', from.x, from.y, recent ? 'Jauge pleine : glissez ◀◀, la lanterne laissera un écho' : 'Jauge pleine : glissez ◀◀ pour remonter le temps', to);
+      this.show('rewind', from.x, from.y, recent ? 'Jauge pleine : touchez-la deux fois, la lanterne laissera un écho' : 'Jauge pleine : touchez-la deux fois (ou glissez ◀◀) pour remonter le temps', to);
       return true;
     }
     return false;

@@ -30,30 +30,38 @@ Tower defense mobile au style estampe japonaise (ukiyo-e). Des yokai envahissent
 
 ### Seul ou à plusieurs (1 à 4)
 
-Aucun compte. À l'ouverture du jeu, **votre salon est créé automatiquement** : son code de 4 lettres s'affiche sur l'écran d'accueil.
+Aucun compte. L'accueil sert à jouer : **« Continuer · 2-3 »** relance d'un toucher le premier niveau ouvert pas encore gagné (au tout premier lancement : « Jouer · 1-1 »), **« Niveaux »** ouvre la carte, **« À plusieurs »** la feuille du salon. Son et Réglages sont en haut à droite. À l'ouverture du jeu, **votre salon est créé automatiquement** ; son code de 4 lettres s'affiche dans la feuille « Jouer à plusieurs ».
 
-- **Jouer seul** : touchez « Jouer », choisissez un niveau. Seul, vous contrôlez les quatre éléments.
-- **Inviter** : touchez « Inviter » (partage du lien `…/?salon=CODE`) ou dictez le code. Jusqu'à 4 joueurs.
-- **Rejoindre** : « Rejoindre un salon », saisissez le code (ou ouvrez le lien reçu).
+- **Jouer seul** : « Continuer », ou « Niveaux » puis un niveau. Seul, vous contrôlez les quatre éléments.
+- **Inviter** : « À plusieurs » ▸ « Inviter » (partage du lien `…/?salon=CODE`) ou dictez le code. Jusqu'à 4 joueurs. Un ami qui arrive est annoncé sur l'accueil (« Aki a rejoint votre salon ») ; l'hôte voit alors « Jouer à 2 · Choisir le niveau ».
+- **Rejoindre** : ouvrez le lien reçu (la feuille du salon s'ouvre d'elle-même), ou « À plusieurs » ▸ « Rejoindre un autre salon », saisissez le code. Un invité attend sur l'accueil que l'hôte choisisse le niveau ; « Salon » rouvre la feuille, d'où « Quitter le salon » (second toucher pour confirmer).
 - **Un élément par joueur** : à plusieurs, chacun prend un élément (un seul joueur par élément ; qui n'a rien choisi reçoit le premier libre) et ne pose **que** les lanternes de cet élément ; les pierres sont l'objet de la Terre. Les éléments que personne n'a pris ne sont à personne : leurs socles gravés deviennent universels.
 - **Coopération** : l'hôte choisit le niveau et lance la partie pour tout le salon. Chacun a **sa bourse d'or** ; les **vies du sanctuaire sont communes**. À plusieurs, les yokai ont un peu plus de PV (×1,05 à ×1,35) ; or de départ et primes suivent `rules.coop` (`data/rules.js`).
 - **Construction de 2 s** : une lanterne, une pierre ou un mur déplacé apparaît « en construction » et s'active 2 s après le toucher, seul comme à plusieurs (à plusieurs : au même instant chez tous). « Annuler » pendant la construction ne coûte rien, même quand l'annulation n'arrive qu'après l'activation (délai réseau) : la lanterne ou la pierre est reprise et payée en entier ; une annulation qui arriverait trop tard pour rien changer (mur déjà déplacé, lanterne au-delà de sa fenêtre d'annulation) est refusée par l'hôte : « Trop tard pour annuler », jamais acceptée sans effet. À plusieurs, une fusion ou une vente part après le délai des commandes (~1 s) : la lanterne glisse vers sa jumelle, ou s'efface, et ne peut être ni revendue ni refusionnée entre-temps.
 
 Le réseau passe par un relais MQTT public et gratuit (EMQX, puis HiveMQ, puis Mosquitto en secours). **Chaque téléphone fait tourner la même partie** (lockstep) : seules les commandes datées circulent (poser, vendre, appeler une vague…), plus un battement de l'hôte ~4 fois par seconde avec une empreinte de contrôle ; la position des yokai et des lanternes ne voyage jamais. Un invité reçoit environ 0,3 à 0,6 Ko/s en partie chargée (contre 6 à 8 Ko/s, 16 Ko/s en pointe, quand l'hôte diffusait son état 8 fois par seconde). Sans réseau, le salon reste « hors ligne » et le jeu solo fonctionne normalement.
 
+### Transfert de progression
+
+La progression vit dans le stockage du navigateur ; une app ajoutée à l'écran d'accueil a **son propre stockage**. Pour la garder d'une installation à l'autre (ou d'un téléphone à l'autre) : **Réglages ▸ Ma progression** affiche un code `JDE1-XXXXX-XXXXX` (10 caractères, base 32 de Crockford : ni I, ni L, ni O, ni U ; « Copier », « Partager »), à saisir dans l'autre installation (**Importer un code**). L'import est tolérant (minuscules, tirets ou espaces oubliés, O pour 0, I ou L pour 1) et **ne baisse jamais un record** : chaque niveau garde le meilleur des deux (étoiles, Difficile, défi). Un code mal recopié est refusé (somme de contrôle). Au-delà de 8 niveaux, le code devient `JDE2-…` (un caractère de plus par niveau).
+
+**Haut de l'écran flou (iOS 26/27, app installée avant la version 4)** : iOS fige à l'installation la balise de barre d'état « translucide », sous laquelle il floute le haut de la page. Le jeu le détecte (encart haut non nul), décale son interface de 40 px sous la bande floue et propose une fois, sur l'accueil, de réinstaller : copier le code, supprimer l'icône, Safari ▸ Partager ▸ Sur l'écran d'accueil, importer le code. L'explication reste dans Réglages ; `diag.html` (lien « Diagnostic de l'écran ») mesure la bande réelle sur l'iPhone.
+
 ### Contrôles
 
 | Geste | Action |
 | --- | --- |
-| Choisir une lanterne dans la palette (par élément), puis toucher ou glisser vers un socle | Poser : la lanterne fantôme flotte 60 px au-dessus du doigt, la pose se valide **au relâchement** ; liens et nom des combos en direct. La lanterne se construit **2 s** (or réservé), puis s'allume |
-| « ↶ Annuler » | Pendant la construction : rien n'est payé ; puis 3 s après l'activation : or rendu en entier (pierre et mur : pendant la construction) |
-| Toucher une lanterne | Barre d'actions : **priorité de ciblage** (Premier → Dernier → Plus fort → Plus proche), fiche, vente (confirmée) ; Gardien de pierre : déplacer le mur |
-| Glisser une lanterne sur une lanterne identique | **Fusion** (même type, même niveau → niveau supérieur, 3 niveaux) ; l'aperçu montre les combos perdus et conservés |
-| Appui long sur une lanterne, un yokai ou un bouton de la palette | Fiche : statistiques, forces, faiblesses, contres |
-| Outil Pierre, glisser sur le gravier | Le nouveau chemin s'affiche en pointillés avec « +X cases » ; une pierre qui fermerait le passage est refusée (les pierres encore en construction comptent déjà : refus dès le toucher, jamais 2 s plus tard) |
-| Bouton de vague | Aperçu de la vague suivante ; **appel anticipé** à tout moment : or et charge de Rembobinage |
-| Glisser la jauge 巻 vers la gauche (jauge pleine) | **Rembobinage** |
-| ×1 / ×2, ❙❙ | Vitesse, pause (le plateau reste visible ; table des combos) |
+| Choisir une lanterne dans la palette (onglet de son élément), puis toucher ou glisser vers un socle | Poser : la lanterne fantôme flotte 60 px au-dessus du doigt, la pose se valide **au relâchement** ; liens et nom des combos en direct. La lanterne se construit **2 s** (or réservé, « −50 » à côté de l'or), puis s'allume |
+| Toucher d'abord un socle libre (**socle d'abord**) | Le socle s'entoure d'or et la palette grise les cartes qui n'y vont pas ; toucher une carte y pose aussitôt ; toucher ailleurs annule |
+| « ↶ Annuler » (rangée d'action, à la place de l'aperçu) | Pendant la construction : rien n'est payé ; puis 3 s après l'activation : or rendu en entier (pierre et mur : pendant la construction) |
+| Toucher une lanterne | Barre d'actions 64 × 52 près d'elle : « Premier ▾ » ouvre les **4 priorités** (un toucher règle et ferme), **Fusionner** (si une jumelle est posée : les jumelles s'allument, toucher l'une l'absorbe), Fiche, Vendre (second toucher pour confirmer) ; Gardien de pierre : « Mur » (déplacer le mur). Elle se ferme après une action, ailleurs, ou 6 s sans geste ; toucher la lanterne la rouvre |
+| Glisser une lanterne sur une lanterne identique | **Fusion** (raccourci : même type, même niveau → niveau supérieur, 3 niveaux) ; l'aperçu montre les combos perdus et conservés. Un petit sceau 合 marque les lanternes qui ont une jumelle |
+| Appui long sur une lanterne, un yokai, une carte ou un onglet de la palette | **Fiche** en feuille du bas (le plateau reste visible) : force, faiblesse, 4 chiffres, action principale ; « Détails ⌃ » (ou tirer la poignée) l'agrandit : évolution, cibles, armure, vente |
+| Outil Pierre (épinglé à droite), glisser sur le gravier | Le nouveau chemin s'affiche en pointillés avec « +X cases » ; une pierre qui fermerait le passage est refusée (les pierres encore en construction comptent déjà : refus dès le toucher, jamais 2 s plus tard) |
+| Bouton de vague | Le cadran compte les secondes avant la vague suivante, la sous-ligne dit la prime « ◉ +12 » ; **appel anticipé** à tout moment : les pièces volent jusqu'à 金, l'arc fantôme de la jauge montre la charge gagnée. Les puces à côté sont la vague suivante (toucher : la fiche du yokai) |
+| Jauge 巻 : glisser vers la gauche, ou **deux touchers** (jauge pleine) | **Rembobinage** ; un toucher sur la jauge pas encore pleine dit comment la remplir, un appui long la règle |
+| ×1 / ×2, ❙❙ | Vitesse, pause : feuille du bas sans voile (Reprendre, Combos, son, musique, effets, réglages ; Recommencer et Quitter se confirment) |
+| Messages | Un seul à la fois dans le **couloir** du plateau, jamais sur un portail ni sur le sanctuaire (toucher : sa fiche ou les combos) ; les refus s'écrivent près du doigt |
 | 5 touchers rapides sur le titre | Panneau de débogage (or infini, choix de la vague, vitesse ×4…) |
 
 ### Éléments et lanternes
@@ -89,7 +97,7 @@ Deux lanternes d'éléments différents **adjacentes** (diagonale comprise) cré
 
 ### Rembobinage 巻戻
 
-Une **jauge** se remplit en éliminant des yokai et en appelant les vagues en avance. Pleine, glissez-la vers la gauche : le temps recule de **6 secondes** (yokai, or, vies, pierres). Les lanternes posées après cet instant disparaissent du présent (**or rendu à 100 %**) et laissent un **écho** qui tire à 50 % pendant 10 s et compte pour les combos. Une fuite fatale avec la jauge pleine ouvre une **dernière chance** de 4 s pour rembobiner. Les **tokihami**, hors du temps, ne reculent pas et les vies qu'ils prennent ne reviennent pas.
+Une **jauge** se remplit en éliminant des yokai et en appelant les vagues en avance. Pleine, glissez-la vers la gauche (ou touchez-la deux fois) : le temps recule de **6 secondes** (yokai, or, vies, pierres). Les lanternes posées après cet instant disparaissent du présent (**or rendu à 100 %**) et laissent un **écho** qui tire à 50 % pendant 10 s et compte pour les combos. Une fuite fatale avec la jauge pleine ouvre une **dernière chance** de 4 s pour rembobiner. Les **tokihami**, hors du temps, ne reculent pas et les vies qu'ils prennent ne reviennent pas.
 
 ### Yokai
 
@@ -456,6 +464,7 @@ Tous les outils tournent avec Node ≥ 22 (aucune dépendance npm dans le jeu ; 
 | `node tools/ui-test.mjs` | Gestes au doigt simulé : pose soulevée, annuler, fiches, fusion, pierres, palette, jauge… |
 | `node tools/play-browser.mjs [ids]` | Joue chaque niveau en entier dans le vrai jeu et vérifie victoire + console propre |
 | `node tools/qa.mjs`, `node tools/layout-check.mjs` | QA navigateur, mise en page 390×844, 375×667, 430×932 avec zones sûres |
+| `node tools/menus-check.mjs` | Écrans hors partie au doigt simulé : code de progression (aller-retour, code abîmé refusé, import par maximum), accueil (« Jouer » lance 1-1 d'un toucher, « Continuer »), salon en feuille (code entier, voile), réglages, carte (étiquettes jamais tronquées ni superposées, défilement vers le niveau à jouer, retour d'une victoire), fiche de niveau (variantes après la 1re victoire), rotation ; installation actuelle (375×647 à 430×873) et ancienne installation (rien dans la bande floue, invitation à réinstaller) ; accueil de l'hôte et de l'invité si le relais local répond |
 | `node tools/perf.mjs 2-4` | Temps de rendu (objectif : ≤ 20 ms en moyenne) |
 | `node tools/shot.mjs <id>`, `node tools/make-icons.mjs` | Captures, icônes |
 

@@ -10,6 +10,10 @@
 //   Lanterne           toucher : sélection (barre d'actions) ; appui long : fiche ;
 //                      glisser : fusion (la lanterne portée flotte au-dessus du doigt).
 //                      En coopération, la lanterne d'un coéquipier ne se fusionne pas.
+//   Socle d'abord      sans outil, un toucher sur un socle libre le choisit (anneau or) :
+//                      la carte touchée ensuite y pose aussitôt (main.js, pickTool).
+//   Fusion guidée      « Fusionner » (barre d'actions) : les jumelles s'allument ; un toucher
+//                      sur l'une d'elles l'absorbe dans la lanterne choisie ; ailleurs, annulé.
 //   Yokai              appui long sur le yokai le plus proche du doigt : sa fiche.
 //   Déplacer le mur    (Gardien de pierre) un toucher sur une case allumée y déplace
 //                      sa barrière ; ailleurs, le mode s'annule.
@@ -48,7 +52,9 @@ export class Input {
     // État lu par le rendu : outil, aperçu de pose, sélection, lanterne portée,
     // retour animé d'un dépôt raté, message éphémère, yokai visé.
     // selectedBuild : case d'une construction touchée ({ c, r }, barre « En construction »).
-    this.ui = { tool: null, press: null, selectedTower: null, selectedBuild: null, drag: null, dragBack: null, flash: null, focusEnemy: null, rally: null };
+    // selectedSlot : socle choisi sans outil ({ c, r, element }) ; fuseFrom : lanterne dont on
+    // cherche la jumelle (fusion guidée).
+    this.ui = { tool: null, press: null, selectedTower: null, selectedBuild: null, selectedSlot: null, fuseFrom: null, drag: null, dragBack: null, flash: null, focusEnemy: null, rally: null };
     this.down = null;
     this.enabled = true;
     this.inspect = false; // pause : étude du plateau seulement
@@ -75,8 +81,21 @@ export class Input {
     this.ui.tool = this.ui.tool === tool || !this.allowed(tool) ? null : tool;
     this.ui.selectedTower = null;
     this.ui.selectedBuild = null;
+    this.ui.selectedSlot = null;
+    this.ui.fuseFrom = null;
     this.ui.rally = null;
     return this.ui.tool;
+  }
+
+  // Fusion guidée : la lanterne d'identifiant id cherche sa jumelle (null : fin).
+  setFuse(id) {
+    this.ui.fuseFrom = id;
+    if (id != null) {
+      this.ui.tool = null;
+      this.ui.selectedSlot = null;
+      this.ui.rally = null;
+      this.ui.selectedTower = id;
+    }
   }
 
   // L'outil est-il celui du joueur local ? (palette : game.availableTowers)
@@ -123,7 +142,8 @@ export class Input {
 
   // ───────────────────────── cibles sous le doigt ─────────────────────────
 
-  // Lanterne sous le doigt, ou la plus proche dans un rayon d'au moins 22 px (B21).
+  // Lanterne sous le doigt, ou la plus proche dans un rayon d'au moins 24 px
+  // (0,6 case : une lanterne reste touchable sur les petites cases de l'iPhone SE).
   towerNear(p) {
     const game = this.game;
     const tile = this.tileOf(p);
@@ -133,7 +153,7 @@ export class Input {
     }
     const ts = this.renderer.ts;
     let best = null;
-    let bd = Math.max(22, ts * 0.5);
+    let bd = Math.max(24, ts * 0.6);
     for (const t of game.towers) {
       const s = this.renderer.toScreen(t.x, t.y - 0.3);
       const d = Math.hypot(s.x - p.x, s.y - p.y);
@@ -217,6 +237,12 @@ export class Input {
       d.mode = 'rally';
       return;
     }
+    // fusion guidée : le toucher choisit la jumelle (ou annule)
+    if (this.ui.fuseFrom != null && !this.inspect) {
+      d.mode = 'fuse';
+      d.tower = this.towerNear(p);
+      return;
+    }
     const tool = this.inspect ? null : this.ui.tool;
     if (tool) {
       d.mode = tool === 'stone' ? 'stone' : 'place';
@@ -262,6 +288,9 @@ export class Input {
     } else if (inB && commands.buildAt(tile.c, tile.r)) {
       // Construction en cours (lanterne ou pierre) : un toucher ouvre sa petite barre.
       d.mode = 'build';
+    } else if (inB && !this.inspect && g.type(g.idx(tile.c, tile.r)) === T.SLOT && !game.echoes?.some((t) => t.c === tile.c && t.r === tile.r)) {
+      // Socle libre sans outil : socle d'abord (un toucher le choisit).
+      d.mode = 'slot';
     }
   }
 
@@ -511,9 +540,59 @@ export class Input {
       case 'build':
         if (!d.moved) this.tapBuild(d.tile);
         return;
+      case 'fuse':
+        if (!d.moved) this.tapFuse(d);
+        return;
+      case 'slot':
+        if (!d.moved) this.tapSlot(d.tile);
+        return;
       default:
         if (!d.moved) this.tapEmpty();
     }
+  }
+
+  // Fusion guidée : la jumelle touchée est absorbée par la lanterne choisie.
+  tapFuse(d) {
+    const game = this.game;
+    const src = d.tower;
+    const dst = game.towerById(this.ui.fuseFrom);
+    this.ui.fuseFrom = null;
+    if (src && dst && src.id !== dst.id && commands.check('fuse', src.id, dst.id).ok && commands.issue('fuse', src.id, dst.id)) {
+      this.ui.selectedTower = null;
+      this.h.onAction?.('fused', { tower: dst });
+      return;
+    }
+    this.h.onAction?.('fuseCancel');
+    this.h.onFeedback?.('fuseCancel', { x: d.x, y: d.y });
+  }
+
+  // Socle d'abord : choisir (ou rechoisir) un socle libre.
+  tapSlot(tile) {
+    const game = this.game;
+    const cur = this.ui.selectedSlot;
+    this.ui.selectedTower = null;
+    this.ui.selectedBuild = null;
+    this.ui.rally = null;
+    if (cur && cur.c === tile.c && cur.r === tile.r) {
+      this.ui.selectedSlot = null;
+      this.h.onAction?.('slot', null);
+      return;
+    }
+    const element = game.grid.slotElement?.[game.grid.idx(tile.c, tile.r)] || null;
+    // Socle réservé à un élément qu'aucune de MES lanternes ne peut prendre (celui d'un
+    // coéquipier, ou interdit par le défi) : refus dit sur le socle. Le choisir affichait
+    // « Choisissez une lanterne » avec toutes les cartes grisées (consigne impossible).
+    if (element && !game.availableTowers.some((t) => commands.check('placeTower', t, tile.c, tile.r).reason !== 'slotElement')) {
+      if (cur) {
+        this.ui.selectedSlot = null;
+        this.h.onAction?.('slot', null);
+      }
+      game.emit?.('reject', { c: tile.c, r: tile.r, reason: 'slotElement' });
+      this.h.onFeedback?.('reject', { reason: 'slotElement', element, c: tile.c, r: tile.r });
+      return;
+    }
+    this.ui.selectedSlot = { c: tile.c, r: tile.r, element };
+    this.h.onAction?.('slot', this.ui.selectedSlot);
   }
 
   releasePlace(d) {
@@ -673,7 +752,14 @@ export class Input {
     if (this.ui.tool) this.clearTool();
     this.ui.rally = null;
     this.ui.selectedBuild = null;
-    this.ui.selectedTower = this.ui.selectedTower === tower.id ? null : tower.id;
+    if (this.ui.selectedSlot) {
+      this.ui.selectedSlot = null;
+      this.h.onAction?.('slot', null);
+    }
+    // lanterne déjà choisie dont la barre s'est refermée (action faite, 6 s sans geste) :
+    // le toucher la rouvre au lieu de la désélectionner
+    if (this.ui.selectedTower === tower.id && this.h.barClosed?.(tower.id)) this.h.reopenBar?.(tower.id);
+    else this.ui.selectedTower = this.ui.selectedTower === tower.id ? null : tower.id;
     this.h.onAction?.('selectTower', { tower });
   }
 
@@ -687,6 +773,10 @@ export class Input {
   }
 
   tapEmpty() {
+    if (this.ui.selectedSlot) {
+      this.ui.selectedSlot = null;
+      this.h.onAction?.('slot', null);
+    }
     // Avec une lanterne sélectionnée, un toucher ailleurs ne fait que désélectionner.
     if (this.ui.selectedTower != null || this.ui.selectedBuild) {
       this.ui.selectedTower = null;
@@ -712,6 +802,13 @@ export class Input {
     this.ui.selectedTower = null;
     this.ui.selectedBuild = null;
     this.ui.rally = null;
+    this.ui.fuseFrom = null;
+    // socle choisi d'abord, puis carte glissée ailleurs : ce geste remplace le choix
+    // (sinon le socle restait choisi, consigne comprise, et la carte touchée ensuite y posait)
+    if (this.ui.selectedSlot) {
+      this.ui.selectedSlot = null;
+      this.h.onAction?.('slot', null);
+    }
     const p = this.pos(e);
     this.down = { id: e.pointerId, x0: p.x, y0: p.y, x: p.x, y: p.y, t0: performance.now(), tile: this.tileOf(p), moved: true, long: false, lifted: true, external: true, mode: tool === 'stone' ? 'stone' : 'place' };
     this.stoneKey = null;
@@ -720,9 +817,12 @@ export class Input {
     return true;
   }
 
-  // Message éphémère dessiné près du geste (refus, « annulé »).
-  flash(text, x, y, bad = false) {
-    this.ui.flash = { text, x, y, bad, t0: performance.now() };
+  // Message éphémère dessiné près du geste (refus, « annulé »). Un refus reste le temps
+  // d'être lu : clamp(2200, 1000 + 50 × caractères, 5000) ms ; tile : la case visée
+  // (la bulle se pose au-dessus, sa queue vers elle).
+  flash(text, x, y, bad = false, tile = null) {
+    const ms = bad ? Math.max(2200, Math.min(5000, 1000 + 50 * String(text).length)) : 1100;
+    this.ui.flash = { text, x, y, bad, tile, ms, t0: performance.now() };
   }
 
   // Chaque frame : l'aperçu suit l'or disponible même si le doigt ne bouge pas, et
@@ -751,7 +851,11 @@ export class Input {
 
   cancel() {
     if (this.down) this.stopHold(this.down);
+    // pose glissée depuis la palette, interrompue (pause de l'hôte, geste du système) :
+    // l'outil se range, comme pour un glisser relâché hors socle
+    const external = !!this.down?.external;
     this.down = null;
+    if (external) this.clearTool();
     this.ui.press = null;
     this.ui.drag = null;
     this.stoneKey = null;
@@ -764,6 +868,8 @@ export class Input {
     this.ui.tool = null;
     this.ui.selectedTower = null;
     this.ui.selectedBuild = null;
+    this.ui.selectedSlot = null;
+    this.ui.fuseFrom = null;
     this.ui.dragBack = null;
     this.ui.flash = null;
     this.ui.focusEnemy = null;

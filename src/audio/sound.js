@@ -1580,13 +1580,34 @@ export class Sound {
         this.bell(this.nf(10), 0.7, 0.14, 3.5);
         break;
       case 'place': {
+        // activation (fin de la construction) : bois, koto, puis une cloche (coéquipier : à 50 %)
         if (!this.throttle('place', 50)) return;
         const pan = this.pan(data.tower?.x);
-        this.fx('stoneKnock', { vel: 0.14, pan, prio: 2 });
-        this.koto(this.nf(5), 0.02, 0.16, 1.2, this.sfx, { pan, prio: 2 });
-        this.koto(this.nf(7), 0.08, 0.14, 1.2, this.sfx, { pan, prio: 2 });
+        const k = data.pid != null && this.localPid != null && data.pid !== this.localPid ? 0.5 : 1;
+        this.fx('stoneKnock', { vel: 0.14 * k, pan, prio: 2 });
+        this.koto(this.nf(5), 0.02, 0.16 * k, 1.2, this.sfx, { pan, prio: 2 });
+        this.koto(this.nf(7), 0.08, 0.14 * k, 1.2, this.sfx, { pan, prio: 2 });
+        this.bell(this.nf(12), 0.06, 0.08 * k, 1.6, this.sfx, { pan, prio: 1 });
         break;
       }
+      case 'build': {
+        // pose au relâchement du doigt (la construction commence) : pierre, puis bambou
+        if (!this.throttle('build', 60)) return;
+        const pan = this.pan(data.x);
+        this.fx('stoneKnock', { vel: 0.12, rate: 1.1, pan, prio: 2 });
+        this.fx('bamboo', { vel: 0.09, rate: 1.25, when: 0.04, pan, prio: 2 });
+        break;
+      }
+      case 'undo':
+        this.koto(this.nf(7), 0, 0.13, 0.8, this.sfx, { prio: 2 });
+        this.koto(this.nf(5), 0.07, 0.13, 0.9, this.sfx, { prio: 2 });
+        break;
+      case 'coin':
+        if (this.throttle('coin', 45)) this.bell(this.nf(13), 0, 0.05, 0.6, this.sfx, { prio: 1 });
+        break;
+      case 'tick':
+        if (this.throttle('tick', 70)) this.fx('tick', { vel: 0.02, rate: 1.1, out: this.freq, prio: 0, send: null });
+        break;
       case 'sell': {
         if (!this.throttle('sell', 50)) return;
         const pan = this.pan(data.tower?.x);

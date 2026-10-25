@@ -1,19 +1,22 @@
-// Salon de l'écran d'accueil : code à partager, joueurs (1 à 4), choix de l'élément,
-// rejoindre un autre salon par son code. Le salon est créé automatiquement à
-// l'ouverture du jeu ; « Jouer » lance seul ou avec les joueurs présents.
-//
-// Seul, le choix de l'élément se replie (une ligne « Votre élément : Feu ▾ ») —
-// seul, on joue de toute façon les quatre éléments — et laisse voir la scène ;
-// il se déplie dès qu'un ami arrive.
+// Salon multijoueur, dans la feuille « Jouer à plusieurs » (ouverte depuis l'accueil) :
+// code à partager, joueurs (1 à 4), choix de l'élément, rejoindre un autre salon par
+// son code. Le salon est créé automatiquement à l'ouverture du jeu ; « Jouer » (accueil)
+// lance seul ou avec les joueurs présents.
 //
 // À plusieurs, chacun ne pose QUE les lanternes (et objets) de son élément : un
 // élément par joueur. Un élément pris par un autre est grisé ; qui n'a rien choisi
 // reçoit d'office le premier élément libre (assignElements), affiché « attribué ».
+// Seul, on joue de toute façon les quatre éléments : le choix reste visible (il vaut
+// pour la prochaine partie à plusieurs).
 
 import { normalizeCode, MAX_PLAYERS } from '../net/lobby.js';
 import { assignElements } from '../core/game.js';
+import { elementBadge, elementInfo } from './elements.js';
+import { armConfirm, isArmed } from './press.js';
 
 const GLYPH = { triangle: '▲', drop: '●', diamond: '◆', square: '■' };
+// style de jeu en un mot (la carte d'élément n'a la place que d'un mot : jamais tronqué)
+const STYLE_WORD = { fire: 'Offensif', water: 'Contrôle', wind: 'Soutien', earth: 'Défense' };
 const ERRORS = {
   full: 'Ce salon est complet (4 joueurs).',
   inGame: 'Une partie est déjà en cours dans ce salon.',
@@ -95,26 +98,30 @@ export function elementGlyph(info) {
   return info ? GLYPH[info.shape] ?? '●' : '？';
 }
 
+const X_ICON = '<svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"/></svg>';
+
 export class LobbyUI {
   /**
    * @param {HTMLElement} root  conteneur (vidé et rempli par le salon)
    * @param {NetSession} session
-   * @param {object} opts { elements (data/elements.js), profile, toast(msg), sound(name),
-   *                        host() (recrée son propre salon), inviteUrl(code), onRender() }
+   * @param {object} opts { defs, elements (data/elements.js), profile, toast(msg), sound(name),
+   *                        host() (recrée son propre salon), inviteUrl(code), onRender(),
+   *                        close() (ferme la feuille) }
    */
   constructor(root, session, opts) {
     this.root = root;
     this.session = session;
-    this.elements = opts.elements;
+    this.defs = opts.defs || { elements: opts.elements, towers: {} };
+    this.elements = opts.elements || this.defs.elements;
     this.profile = opts.profile;
     this.toast = opts.toast || (() => {});
     this.sound = opts.sound || (() => {});
     this.hostFn = opts.host || (() => session.host({ element: this.profile.element }));
     this.inviteUrl = opts.inviteUrl || ((code) => `${location.origin}${location.pathname}?salon=${code}`);
     this.onRender = opts.onRender || (() => {});
+    this.close = opts.close || (() => {});
     this.joining = false;
-    this.joinOpen = false;
-    this.folded = null; // null : automatique (replié tant qu'on est seul)
+    this.renaming = false;
     this.error = '';
     this.build();
     session.on('status', () => this.render());
@@ -126,99 +133,130 @@ export class LobbyUI {
     const r = this.root;
     r.innerHTML = '';
     r.classList.add('lobby');
-    this.head = el('div', 'lobby-head');
+
+    // en-tête de la feuille : sceau, titre, état du salon, fermer
+    const head = el('div', 'sheet-head menu-head lobby-head');
+    const seal = el('span', 'menu-seal', '人');
+    seal.setAttribute('aria-hidden', 'true');
+    const titles = el('div', 'menu-titles');
+    const h2 = el('h2', 'menu-title', 'Jouer à plusieurs');
+    h2.id = 'lobby-title';
+    const line = el('p', 'lobby-statusline');
     this.status = el('span', 'lobby-status');
     this.status.setAttribute('role', 'status');
+    this.btnRetry = el('button', 'lobby-retry', 'Réessayer');
+    this.btnRetry.type = 'button';
+    this.btnRetry.addEventListener('click', () => this.retry());
+    line.append(this.status, this.btnRetry);
+    titles.append(h2, line);
+    const x = el('button', 'sheet-close menu-x');
+    x.type = 'button';
+    x.setAttribute('aria-label', 'Fermer');
+    x.innerHTML = X_ICON;
+    x.addEventListener('click', () => this.close());
+    head.append(seal, titles, x);
+
+    // code du salon et invitation
+    this.codeSec = el('section', 'lobby-sec lobby-code-sec');
+    this.codeTitle = el('h3', 'menu-sec', 'Votre salon');
+    const codeRow = el('div', 'lobby-code-row');
     this.codeBox = el('div', 'lobby-code');
     this.codeBox.setAttribute('role', 'img');
-    const share = el('div', 'lobby-share');
-    this.btnInvite = el('button', 'btn small primary lobby-invite', 'Inviter');
+    this.btnInvite = el('button', 'btn primary lobby-invite', 'Inviter');
+    this.btnInvite.type = 'button';
     this.btnInvite.addEventListener('click', () => this.invite());
-    this.btnRetry = el('button', 'btn small lobby-retry', 'Réessayer');
-    this.btnRetry.addEventListener('click', () => this.retry());
-    share.append(this.btnInvite, this.btnRetry);
-    const title = el('div', 'lobby-title');
-    title.append(el('span', 'lobby-label', 'Salon'), this.status);
-    this.head.append(title, this.codeBox, share);
+    codeRow.append(this.codeBox, this.btnInvite);
+    this.codeHint = el('p', 'lobby-hint');
+    this.codeSec.append(this.codeTitle, codeRow, this.codeHint);
 
+    // joueurs
+    const playersSec = el('section', 'lobby-sec');
+    this.playersTitle = el('h3', 'menu-sec', 'Joueurs');
     this.list = el('ul', 'lobby-players');
     this.list.setAttribute('aria-label', 'Joueurs du salon');
+    playersSec.append(this.playersTitle, this.list);
 
-    // « Votre élément » : titre de la section, et bouton qui la replie / déplie
-    this.foldBtn = el('button', 'lobby-sub lobby-fold');
-    this.foldBtn.type = 'button';
-    this.foldBtn.addEventListener('click', () => {
-      this.folded = !this.isFolded();
-      this.sound('select');
-      this.render();
-    });
+    // élément : toujours visible (un mot par carte, jamais tronqué)
+    const elSec = el('section', 'lobby-sec');
+    const elTitle = el('h3', 'menu-sec', 'Votre élément');
+    elTitle.id = 'lobby-el-title';
     this.picker = el('div', 'lobby-elements');
     this.picker.id = 'lobby-elements';
-    this.foldBtn.setAttribute('aria-controls', this.picker.id);
     this.picker.setAttribute('role', 'radiogroup');
-    this.picker.setAttribute('aria-label', 'Votre élément');
+    this.picker.setAttribute('aria-labelledby', elTitle.id);
     this.pickButtons = {};
     for (const [id, info] of Object.entries(this.elements)) {
+      const ei = elementInfo(id, this.defs);
       const b = el('button', `lobby-el el-${id}`);
       b.type = 'button';
       b.setAttribute('role', 'radio');
       b.style.setProperty('--el', info.color);
+      b.style.setProperty('--el-ui', ei.ink);
       b.dataset.el = id;
-      const glyph = el('span', 'lobby-el-glyph', elementGlyph(info));
-      glyph.setAttribute('aria-hidden', 'true');
-      b.append(glyph, el('span', 'lobby-el-kanji', info.kanji), el('span', 'lobby-el-name', info.name), el('small', 'lobby-el-style', info.style));
+      const badge = el('span', 'lobby-el-badge');
+      badge.innerHTML = elementBadge(id, this.defs, { size: 26 });
+      badge.setAttribute('aria-hidden', 'true');
+      b.append(badge, el('span', 'lobby-el-name', info.name), el('small', 'lobby-el-style', STYLE_WORD[id] || String(info.style || '').split(/\s+/)[0]));
       b.addEventListener('click', () => this.pick(id));
       this.picker.append(b);
       this.pickButtons[id] = b;
     }
     this.note = el('p', 'lobby-note');
+    elSec.append(elTitle, this.picker, this.note);
 
-    this.joinRow = el('div', 'lobby-join');
-    this.btnJoin = el('button', 'btn small lobby-join-btn', 'Rejoindre un salon');
-    this.btnJoin.addEventListener('click', () => this.openJoin());
-    this.joinForm = el('form', 'lobby-join-form hidden');
+    // rejoindre un autre salon : champ toujours présent (pas de formulaire caché)
+    this.joinSec = el('section', 'lobby-sec lobby-join');
+    const joinTitle = el('h3', 'menu-sec', 'Rejoindre un autre salon');
+    this.joinForm = el('form', 'lobby-join-form');
     this.joinInput = el('input', 'lobby-join-input');
-    Object.assign(this.joinInput, { maxLength: 4, placeholder: 'CODE', autocomplete: 'off', spellcheck: false, enterKeyHint: 'go' });
+    Object.assign(this.joinInput, { maxLength: 4, placeholder: '····', autocomplete: 'off', spellcheck: false, enterKeyHint: 'go' });
     this.joinInput.setAttribute('autocapitalize', 'characters');
-    this.joinInput.setAttribute('aria-label', 'Code du salon à rejoindre');
+    this.joinInput.setAttribute('autocorrect', 'off');
+    this.joinInput.setAttribute('inputmode', 'text');
+    this.joinInput.setAttribute('aria-label', 'Code du salon à rejoindre (4 lettres)');
     this.joinInput.addEventListener('input', () => {
       this.joinInput.value = this.joinInput.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 4);
+      this.btnJoin.disabled = this.joinInput.value.length < 4;
     });
-    const ok = el('button', 'btn small primary', 'Rejoindre');
-    ok.type = 'submit';
-    const cancel = el('button', 'btn small', 'Annuler');
-    cancel.type = 'button';
-    cancel.addEventListener('click', () => this.closeJoin());
-    this.joinForm.append(this.joinInput, ok, cancel);
+    this.btnJoin = el('button', 'btn secondary lobby-join-ok', 'Rejoindre');
+    this.btnJoin.type = 'submit';
+    this.btnJoin.disabled = true;
+    this.joinForm.append(this.joinInput, this.btnJoin);
     this.joinForm.addEventListener('submit', (ev) => {
       ev.preventDefault();
       this.join(this.joinInput.value);
     });
-    this.btnLeave = el('button', 'btn small lobby-leave', 'Quitter ce salon');
-    this.btnLeave.addEventListener('click', () => this.leave());
+    this.joinSec.append(joinTitle, this.joinForm);
+
     this.errorBox = el('p', 'lobby-error');
     this.errorBox.setAttribute('role', 'alert');
-    this.joinRow.append(this.btnJoin, this.joinForm, this.btnLeave);
+    // invité : quitter le salon de l'hôte (confirmé) ; pendant une recherche : l'annuler
+    this.btnLeave = el('button', 'btn quiet lobby-leave', 'Quitter le salon');
+    this.btnLeave.type = 'button';
+    this.btnLeave.addEventListener('click', () => {
+      if (this.joining) return this.leave();
+      armConfirm(this.btnLeave, { label: 'Quitter le salon ?', run: () => this.leave() });
+    });
 
-    r.append(this.head, this.list, this.foldBtn, this.picker, this.note, this.joinRow, this.errorBox);
+    const body = el('div', 'lobby-body');
+    body.append(this.codeSec, playersSec, elSec, this.joinSec, this.errorBox, this.btnLeave);
+    r.append(head, body);
   }
 
   get players() {
     return this.session.lobby?.players || [{ id: this.profile.id, name: this.profile.name, element: this.profile.element, online: true }];
   }
 
-  // Replié : choix explicite, sinon tant qu'on est seul.
-  isFolded() {
-    if (this.folded != null) return this.folded;
-    return this.players.length <= 1;
-  }
-
   render() {
     const s = this.session;
     const guest = s.role === 'guest';
     const state = this.joining ? 'connecting' : s.state;
+    const players = this.players;
+    const n = players.length;
     this.status.className = `lobby-status ${state}`;
-    this.status.textContent = { online: 'en ligne', connecting: 'connexion…', offline: 'hors ligne' }[state];
+    this.status.textContent = state === 'online' ? `En ligne · ${n} joueur${n > 1 ? 's' : ''} sur ${MAX_PLAYERS}` : state === 'connecting' ? 'Connexion…' : 'Hors ligne';
+    this.btnRetry.classList.toggle('hidden', state !== 'offline' || this.joining);
+
     // code en sceaux (lettre par lettre : lisible à voix haute)
     const code = s.code || '····';
     if (this.codeBox.dataset.code !== code) {
@@ -229,54 +267,63 @@ export class LobbyUI {
     this.codeBox.setAttribute('aria-label', s.code ? `Code du salon : ${[...s.code].join(' ')}` : 'Code du salon : aucun');
     this.codeBox.classList.toggle('dim', state !== 'online');
     this.btnInvite.classList.toggle('hidden', state !== 'online' || guest);
-    this.btnRetry.classList.toggle('hidden', state !== 'offline' || this.joining);
     if (s.code) this.btnInvite.dataset.link = this.inviteUrl(s.code);
+    const hostName = players.find((p) => p.id === (s.lobby?.host ?? players[0]?.id))?.name;
+    const de = hostName && /^[aeiouyàâéèêëîïôûüh]/i.test(hostName) ? 'd’' : 'de ';
+    this.codeTitle.textContent = guest ? (hostName ? `Salon ${de}${hostName}` : 'Salon rejoint') : 'Votre salon';
+    this.codeHint.textContent = guest
+      ? 'L’hôte choisit le niveau et lance la partie pour tous.'
+      : state === 'online'
+        ? 'Vos amis ouvrent le lien, ou saisissent ce code.'
+        : state === 'connecting'
+          ? 'Ouverture du salon…'
+          : 'Salon hors ligne : vous pouvez jouer seul. Réessayez pour inviter des amis.';
 
-    // joueurs : quatre places
-    this.list.innerHTML = '';
-    const players = this.players;
+    // joueurs : une ligne chacun, puis les places libres en une ligne
+    this.playersTitle.textContent = `Joueurs · ${n}/${MAX_PLAYERS}`;
     const hostId = s.lobby?.host ?? players[0]?.id;
-    // à plusieurs : l'élément de chacun (choisi, ou attribué d'office)
-    const multi = players.length > 1;
+    const multi = n > 1;
     const given = multi ? assignElements(players.map((p) => p.element ?? null)).map((l) => l[0]) : []; // (même règle que la partie)
-    for (let k = 0; k < MAX_PLAYERS; k++) {
-      const p = players[k];
-      const li = el('li', `lobby-player${p ? '' : ' empty'}`);
-      if (!p) {
-        li.append(el('span', 'lobby-seal empty', '空'), el('span', 'lobby-pname', state === 'online' && !guest ? 'Place libre' : '—'));
-        li.setAttribute('aria-label', 'Place libre');
+    if (!this.renaming) {
+      this.list.innerHTML = '';
+      players.forEach((p, k) => {
+        const li = el('li', 'lobby-player');
+        const auto = multi && !p.element ? given[k] : null;
+        const elId = p.element || auto;
+        const info = elId ? this.elements[elId] : null;
+        const seal = el('span', `lobby-seal${auto ? ' auto' : ''}${info ? '' : ' none'}`);
+        if (info) seal.innerHTML = elementBadge(elId, this.defs, { size: 26 });
+        else seal.textContent = (p.name || '?').trim().charAt(0).toUpperCase() || '?';
+        seal.setAttribute('aria-hidden', 'true');
+        const name = el('span', 'lobby-pname', p.name);
+        const tags = [];
+        if (p.id === this.profile.id) tags.push(['you', 'vous']);
+        if (p.id === hostId) tags.push(['host', 'hôte']);
+        if (auto) tags.push(['auto', 'attribué']);
+        if (p.online === false) tags.push(['off', 'absent']);
+        const tagBox = el('span', 'lobby-tags');
+        for (const [cls, txt] of tags) tagBox.append(el('i', `lobby-tag ${cls}`, txt));
+        const nameBox = el('span', 'lobby-pmain');
+        nameBox.append(name, tagBox);
+        li.append(seal, nameBox);
+        li.classList.toggle('off', p.online === false);
+        const said = tags.filter((t) => t[0] !== 'auto').map((t) => t[1]);
+        li.setAttribute('aria-label', `${p.name}${info ? `, ${info.name}${auto ? ' (attribué d’office)' : ''}` : ', sans élément'}${said.length ? `, ${said.join(', ')}` : ''}`);
+        if (p.id === this.profile.id) {
+          // sa propre ligne : « Renommer », bien visible
+          li.classList.add('me');
+          const ren = el('button', 'btn quiet lobby-rename', 'Renommer');
+          ren.type = 'button';
+          ren.addEventListener('click', () => this.rename(li, name));
+          li.append(ren);
+        } else if (info) li.append(el('span', 'lobby-pel', info.name));
         this.list.append(li);
-        continue;
-      }
-      const auto = multi && !p.element ? given[k] : null;
-      const info = p.element ? this.elements[p.element] : auto ? this.elements[auto] : null;
-      const seal = el('span', `lobby-seal${auto ? ' auto' : ''}`, elementGlyph(info));
-      if (info) seal.style.setProperty('--el', info.color);
-      seal.setAttribute('aria-hidden', 'true');
-      const name = el('span', 'lobby-pname', p.name);
-      const tags = [];
-      if (p.id === hostId) tags.push(['host', 'hôte']);
-      if (p.id === this.profile.id) tags.push(['you', 'vous']);
-      if (auto) tags.push(['auto', 'attribué']);
-      if (p.online === false) tags.push(['off', 'absent']);
-      const tagBox = el('span', 'lobby-tags');
-      for (const [cls, txt] of tags) tagBox.append(el('i', `lobby-tag ${cls}`, txt));
-      li.append(seal, name, tagBox);
-      li.classList.toggle('off', p.online === false);
-      li.setAttribute('aria-label', `${p.name}${info ? `, ${info.name}${auto ? ' (attribué d’office)' : ''}` : ', sans élément'}${tags.filter((t) => t[0] !== 'auto').length ? `, ${tags.filter((t) => t[0] !== 'auto').map((t) => t[1]).join(', ')}` : ''}`);
-      if (p.id === this.profile.id) {
-        // sa propre place : toucher pour changer de nom (toute la case : ≥ 44 pt)
-        li.classList.add('me');
-        li.setAttribute('role', 'button');
-        li.tabIndex = 0;
-        li.title = 'Changer de nom';
-        li.setAttribute('aria-label', `${li.getAttribute('aria-label')}. Toucher pour changer de nom`);
-        li.addEventListener('click', () => this.rename());
-      }
-      this.list.append(li);
+      });
+      const free = MAX_PLAYERS - n;
+      if (free > 0 && state === 'online') this.list.append(el('li', 'lobby-free', `${free} place${free > 1 ? 's' : ''} libre${free > 1 ? 's' : ''}`));
     }
 
-    // éléments (repliables)
+    // éléments
     const mine = players.find((p) => p.id === this.profile.id);
     // Choix envoyé à l'hôte : accordé, ou pris au même instant par un autre joueur
     // (l'hôte tranche) — on le dit, et le profil garde l'élément réellement obtenu.
@@ -294,15 +341,8 @@ export class LobbyUI {
         }
       }
     }
-    const folded = this.isFolded();
-    this.root.classList.toggle('folded', folded);
-    this.foldBtn.setAttribute('aria-expanded', String(!folded));
     const myIdx = players.indexOf(mine);
     const myAuto = multi && mine && !mine.element ? given[myIdx] : null;
-    const cur = mine?.element ? this.elements[mine.element] : myAuto ? this.elements[myAuto] : null;
-    this.foldBtn.innerHTML = folded
-      ? `<span>Votre élément :</span>${cur ? `<span class="lobby-fold-el" style="--el:${cur.color}"><i aria-hidden="true">${elementGlyph(cur)}</i>${cur.name}${myAuto ? ' <small>(attribué)</small>' : ''}</span>` : '<span class="lobby-fold-el none">au choix</span>'}<span class="lobby-chev" aria-hidden="true">▾</span>`
-      : `<span>Votre élément</span><span class="lobby-chev" aria-hidden="true">▴</span>`;
     for (const [id, b] of Object.entries(this.pickButtons)) {
       const taker = players.find((p) => p.element === id && p.id !== this.profile.id);
       const sel = mine?.element === id;
@@ -310,33 +350,29 @@ export class LobbyUI {
       const auto = !sel && myAuto === id;
       b.classList.toggle('selected', sel);
       b.classList.toggle('auto', auto);
+      b.classList.toggle('taken', !!taker);
       b.setAttribute('aria-checked', sel ? 'true' : 'false');
       b.disabled = !!taker || s.inGame;
       b.title = taker ? `Choisi par ${taker.name}` : '';
+      const word = STYLE_WORD[id] || String(this.elements[id].style || '').split(/\s+/)[0];
       b.setAttribute('aria-label', `${this.elements[id].name}${taker ? `, pris par ${taker.name}` : auto ? ', attribué d’office : touchez pour le garder' : `, ${this.elements[id].style}`}`);
-      b.querySelector('.lobby-el-style').textContent = taker ? taker.name : auto ? 'attribué' : this.elements[id].style;
+      b.querySelector('.lobby-el-style').textContent = taker ? `pris : ${taker.name}` : auto ? 'attribué' : word;
     }
-    const n = players.length;
     let note;
-    if (n <= 1) note = 'Seul, vous jouez les quatre éléments. À plusieurs (jusqu’à 4), chacun prend un élément.';
+    if (n <= 1) note = 'Seul, vous jouez les quatre éléments. À plusieurs, chacun prend le sien.';
     else {
-      note = 'Un élément par joueur : chacun ne pose que les lanternes de son élément. Sans choix, un élément libre est attribué d’office. Or personnel, vies communes.';
-      if (!guest) note += ' « Jouer » lance la partie pour tous.';
+      note = 'Chacun pose les lanternes de son élément (sans choix, un élément libre est attribué). Or personnel, vies communes.';
     }
     this.note.textContent = note;
 
     // rejoindre / quitter
-    this.btnJoin.classList.toggle('hidden', this.joinOpen || guest);
-    this.joinForm.classList.toggle('hidden', !this.joinOpen || guest);
-    this.btnLeave.classList.toggle('hidden', !guest);
+    this.joinSec.classList.toggle('hidden', guest || this.joining);
+    this.btnLeave.classList.toggle('hidden', !guest && !this.joining);
     // pendant la recherche, ce bouton l'annule (on retrouve son propre salon)
-    const leaveLabel = this.joining ? 'Annuler la recherche' : 'Quitter ce salon';
-    if (this.btnLeave.textContent !== leaveLabel) this.btnLeave.textContent = leaveLabel;
-    // hors ligne : le jeu seul marche ; « Réessayer » rouvre le salon
-    const offlineHint = state === 'offline' && !this.error && !guest ? 'Salon hors ligne : vous pouvez jouer seul. Réessayez pour inviter des amis.' : '';
-    this.errorBox.textContent = this.joining ? 'Recherche du salon…' : this.error || offlineHint;
+    const leaveLabel = this.joining ? 'Annuler la recherche' : 'Quitter le salon';
+    if (!isArmed(this.btnLeave) && this.btnLeave.textContent !== leaveLabel) this.btnLeave.textContent = leaveLabel;
+    this.errorBox.textContent = this.joining ? 'Recherche du salon…' : this.error;
     this.errorBox.classList.toggle('busy', this.joining);
-    this.errorBox.classList.toggle('info', !this.joining && !this.error && !!offlineHint);
     this.onRender();
   }
 
@@ -357,13 +393,42 @@ export class LobbyUI {
     this.render();
   }
 
-  rename() {
-    const name = window.prompt('Votre nom (16 lettres au plus)', this.profile.name);
-    if (name == null) return;
-    this.profile.name = name.trim().slice(0, 16) || this.profile.name;
-    saveProfile(this.profile);
-    this.session.setName(this.profile.name);
-    this.render();
+  // Renommer sur place : la ligne devient un champ (16 lettres), validé par OK ou Entrée.
+  rename(li, nameEl) {
+    if (this.renaming) return;
+    this.renaming = true;
+    const form = el('form', 'lobby-rename-form');
+    const input = el('input', 'lobby-rename-input');
+    Object.assign(input, { value: this.profile.name, maxLength: 16, autocomplete: 'off', spellcheck: false, enterKeyHint: 'done' });
+    input.setAttribute('aria-label', 'Votre nom (16 lettres au plus)');
+    const ok = el('button', 'btn secondary lobby-rename-ok', 'OK');
+    ok.type = 'submit';
+    form.append(input, ok);
+    let done = false;
+    const commit = (keep) => {
+      if (done) return;
+      done = true;
+      const v = input.value.trim().slice(0, 16);
+      if (keep && v && v !== this.profile.name) {
+        this.profile.name = v;
+        saveProfile(this.profile);
+        this.session.setName(v);
+        this.sound('select');
+      }
+      this.renaming = false;
+      this.render();
+    };
+    form.addEventListener('submit', (ev) => {
+      ev.preventDefault();
+      commit(true);
+    });
+    input.addEventListener('blur', () => setTimeout(() => commit(true), 120));
+    input.addEventListener('keydown', (ev) => ev.key === 'Escape' && commit(false));
+    li.querySelector('.lobby-pmain')?.replaceWith(form);
+    li.querySelector('.lobby-rename')?.remove();
+    void nameEl;
+    input.focus();
+    input.select();
   }
 
   async invite() {
@@ -388,20 +453,6 @@ export class LobbyUI {
     }
   }
 
-  openJoin() {
-    this.joinOpen = true;
-    this.error = '';
-    this.render();
-    this.joinInput.value = '';
-    this.joinInput.focus();
-  }
-
-  closeJoin() {
-    this.joinOpen = false;
-    this.error = '';
-    this.render();
-  }
-
   async join(text) {
     const code = normalizeCode(text);
     if (!code) {
@@ -419,13 +470,14 @@ export class LobbyUI {
     this.render();
     try {
       await this.session.join(code);
-      this.joinOpen = false;
+      this.joinInput.value = '';
+      this.btnJoin.disabled = true;
       if (this.profile.element) this.session.pickElement(this.profile.element);
       this.sound('combo');
       this.toast(`Vous avez rejoint le salon ${code}`);
       return true;
     } catch (e) {
-      // recherche annulée (« Quitter ce salon », autre salon) : le joueur a déjà choisi la suite
+      // recherche annulée (« Annuler la recherche », autre salon) : le joueur a déjà choisi la suite
       if (e.cancelled) return false;
       this.error = ERRORS[e.message] || `Connexion impossible (${e.message}).`;
       // on retrouve son propre salon

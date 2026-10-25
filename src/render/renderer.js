@@ -244,10 +244,15 @@ export class Renderer {
           drawTower(ctx, t.x * ts, t.y * ts, ts, game.defs.towers[t.type], t.level, time, { echo: 1, alpha: ak * ak });
           continue;
         }
+        // allumage (fin de la construction, fusion) : 1 → 1,08 → 1 en 260 ms, halo
+        const age = game.time - (t.bornAt ?? -9);
+        const lit = age >= 0 && age < 0.26 && !this.sober ? Math.sin((age / 0.26) * Math.PI) : 0;
+        if (lit > 0) wash(ctx, t.x * ts, (t.y - 0.25) * ts, ts * 0.75, game.defs.towers[t.type].glow || PALETTE.goldLight, 0.45 * lit);
         drawTower(ctx, t.x * ts, t.y * ts, ts, game.defs.towers[t.type], t.level, time, {
           shot: t.shotT > 0,
           stunned: t.stunT > 0,
           tower: t,
+          scale: lit > 0 ? 1 + 0.08 * lit : 1,
         });
       } else if (it.k === 3) {
         const t = it.o;
@@ -298,6 +303,7 @@ export class Renderer {
       this.drawPressGhost(ctx, ui.press, time);
       this.drawPressCombos(ctx, ui.press, time);
     }
+    if (this.drops?.length) this.drawDrops(ctx, time);
     if (ui.flash) this.drawFlash(ctx, ui);
   }
 
@@ -1195,6 +1201,26 @@ export class Renderer {
         drawEnso(ctx, t.x * ts, t.y * ts + ts * 0.3, ts * 0.5, PALETTE.gold, 0.9, time * 0.6, 0.45);
       }
     }
+    // Socle d'abord : le socle choisi porte un anneau or pulsé.
+    if (ui.selectedSlot) {
+      const { c, r } = ui.selectedSlot;
+      const p = 0.65 + Math.sin(time * 6) * 0.3;
+      wash(ctx, (c + 0.5) * ts, (r + 0.5) * ts, ts * 0.62, PALETTE.goldLight, 0.4 * p);
+      drawEnso(ctx, (c + 0.5) * ts, (r + 0.5) * ts, ts * 0.5, PALETTE.gold, 0.95, time * 1.2, 0.55);
+    }
+    // Fusion guidée : les jumelles de la lanterne choisie s'allument (anneau or pulsé).
+    if (ui.fuseFrom != null) {
+      const src = game.towerById(ui.fuseFrom);
+      if (src) {
+        wash(ctx, src.x * ts, src.y * ts - ts * 0.1, ts * 0.7, PALETTE.goldLight, 0.35);
+        for (const t of game.towers) {
+          if (t.id === src.id || !game.canFuse?.(t.id, src.id).ok) continue;
+          const p = 0.6 + Math.sin(time * 8) * 0.3;
+          wash(ctx, t.x * ts, t.y * ts - ts * 0.1, ts * 0.6, PALETTE.goldLight, 0.35 * p);
+          drawEnso(ctx, t.x * ts, t.y * ts, ts * 0.52, PALETTE.gold, p, time * 2.5);
+        }
+      }
+    }
     // Yokai visé (appui long, fiche ouverte) : ensō doré à ses pieds.
     if (ui.focusEnemy != null) {
       const e = game.enemies.find((x) => x.id === ui.focusEnemy);
@@ -1448,18 +1474,110 @@ export class Renderer {
     drawTower(ctx, sx + (tx - sx) * e, sy + (ty - sy) * e, ts, this.game.defs.towers[t.type], t.level, time, { alpha: 0.85, scale: 1.1 - 0.1 * e });
   }
 
-  // Message éphémère près du geste (« annulé », raison d'un refus).
+  // Message près du geste. Refus : bulle vermillon (texte crème 14/700) au-dessus de la
+  // case visée (dessous sur la première rangée), queue vers elle, secousse de 300 ms,
+  // le temps d'être lue (input.flash). Sinon (« Annulé ») : étiquette discrète qui monte.
   drawFlash(ctx, ui) {
     const f = ui.flash;
-    const k = (performance.now() - f.t0) / 1100;
+    const ms = f.ms || 1100;
+    const age = performance.now() - f.t0;
+    const k = age / ms;
     if (k >= 1) {
       ui.flash = null;
       return;
     }
     ctx.save();
-    ctx.globalAlpha = k < 0.75 ? 1 : 1 - (k - 0.75) / 0.25;
-    this.drawTag(ctx, f.text, f.x, f.y - this.ts * 0.6 - k * 14, { tone: f.bad ? 'bad' : 'muted', align: 'center', bounds: [0, this.w] });
+    ctx.globalAlpha = k < 0.85 ? 1 : 1 - (k - 0.85) / 0.15;
+    if (!f.bad) {
+      this.drawTag(ctx, f.text, f.x, f.y - this.ts * 0.6 - k * 14, { tone: 'muted', align: 'center', bounds: [0, this.w] });
+      ctx.restore();
+      return;
+    }
+    const ts = this.ts;
+    const size = 14;
+    ctx.font = `700 ${size}px ${UI_FONT}`;
+    const w = Math.min(this.w - 8, ctx.measureText(f.text).width + 20);
+    const h = size + 14;
+    let ax = f.x;
+    let ay = f.y;
+    let below = false;
+    if (f.tile) {
+      ax = this.ox + (f.tile.c + 0.5) * ts;
+      ay = this.oy + f.tile.r * ts - 4;
+      if (f.tile.r <= 0 || ay - h - 8 < 4) {
+        below = true;
+        ay = this.oy + (f.tile.r + 1) * ts + 4;
+      }
+    } else ay -= ts * 0.5;
+    const shake = age < 300 && !ui.reducedMotion ? Math.sin(age * 0.09) * 4 * (1 - age / 300) : 0;
+    const x0 = Math.max(4, Math.min(this.w - w - 4, ax - w / 2)) + shake;
+    const y0 = below ? ay + 7 : ay - 7 - h;
+    const tx = Math.max(x0 + 10, Math.min(x0 + w - 10, ax + shake));
+    // ombre d'encre nette, puis la bulle et sa queue
+    ctx.fillStyle = withAlpha(INK, 0.35);
+    roundRect(ctx, x0 + 1, y0 + 3, w, h, 10);
+    ctx.fill();
+    ctx.beginPath();
+    roundRect(ctx, x0, y0, w, h, 10);
+    ctx.moveTo(tx - 6, below ? y0 : y0 + h);
+    ctx.lineTo(tx, below ? y0 - 7 : y0 + h + 7);
+    ctx.lineTo(tx + 6, below ? y0 : y0 + h);
+    ctx.fillStyle = '#b0361f';
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = INK;
+    roundRect(ctx, x0, y0, w, h, 10);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(tx - 6, below ? y0 : y0 + h);
+    ctx.lineTo(tx, below ? y0 - 7 : y0 + h + 7);
+    ctx.lineTo(tx + 6, below ? y0 : y0 + h);
+    ctx.stroke();
+    ctx.fillStyle = '#b0361f';
+    ctx.fillRect(tx - 5, below ? y0 - 0.5 : y0 + h - 1.5, 10, 2);
+    ctx.fillStyle = PALETTE.cream;
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'center';
+    ctx.fillText(f.text, x0 + w / 2, y0 + h / 2 + 0.5, w - 12);
     ctx.restore();
+  }
+
+  // Pose (relâchement du doigt) : le fantôme tombe sur le socle (90 ms) puis s'écrase et
+  // revient (160 ms, ressort) ; un anneau d'encre s'ouvre (280 ms). Rien en mouvement réduit.
+  dropGhost(d) {
+    if (this.sober || !d || d.c == null || !this.game?.defs.towers[d.type]) return;
+    this.drops = (this.drops || []).filter((x) => performance.now() - x.t0 < 260);
+    this.drops.push({ type: d.type, c: d.c, r: d.r, t0: performance.now() });
+    this.fx.ring(d.c + 0.5, d.r + 0.8, 0.12, 0.62, INK, 0.45, 0.05, 0.28);
+  }
+
+  drawDrops(ctx, time) {
+    const now = performance.now();
+    const ts = this.ts;
+    this.drops = this.drops.filter((d) => now - d.t0 < 250);
+    for (const d of this.drops) {
+      const t = now - d.t0;
+      const def = this.game.defs.towers[d.type];
+      const x = this.ox + (d.c + 0.5) * ts;
+      const y = this.oy + (d.r + 0.5) * ts;
+      let dy = 0;
+      let sx = 1;
+      let sy = 1;
+      if (t < 90) {
+        const e = t / 90;
+        dy = -60 * (1 - e * e * e);
+      } else {
+        const e = (t - 90) / 160;
+        const b = Math.sin(Math.min(1, e) * Math.PI);
+        sx = 1 + 0.08 * b;
+        sy = 1 - 0.12 * b;
+      }
+      ctx.save();
+      ctx.translate(x, y + ts * 0.3 + dy);
+      ctx.scale(sx, sy);
+      drawTower(ctx, 0, -ts * 0.3, ts, def, 1, time, { alpha: t < 90 ? 0.8 : 0.8 * (1 - (t - 90) / 160) });
+      ctx.restore();
+    }
   }
 
   // Lanterne saisie : fil d'or vers son socle, ombre portée sous le doigt.

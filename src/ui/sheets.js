@@ -1,16 +1,22 @@
-// Fiches compactes : lanterne posée, type de lanterne (avant achat), yokai, pierre,
-// vague suivante. Elles prennent la place de la barre du bas (le plateau reste
-// visible) et se ferment d'un toucher sur le plateau. Tout se lit dans les données.
-// Le module fournit aussi la table des combos (menu de pause).
-import { elementOf, elementInfo, elementBadge, elementTag, elementList } from './elements.js';
+// Fiches (feuilles du bas non modales) : lanterne posée, type de lanterne (avant achat),
+// yokai, pierre, vague suivante, élément, Rembobinage. Le plateau reste visible et
+// touchable ; un toucher sur le plateau les ferme. Tout se lit dans les données.
+// Le module fournit aussi la liste des combos (menu de pause).
+import { elementOf, elementInfo, elementBadge, elementTag } from './elements.js';
 import { enemyPortrait, towerPortrait } from './portraits.js';
 import { priorityInfo, aims } from './towerbar.js';
 import { earlyCharge } from './wavepreview.js';
 import { commands } from './commands.js';
+import { PRIORITIES } from '../core/game.js';
+import { attachSheet } from './sheet.js';
+import { CONFIRM_MS } from './press.js';
 
 const nf = new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 2 });
 const fmt = (n) => nf.format(Math.round(n * 100) / 100);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+// Textes des données (force, faiblesse, description) : espace insécable avant « ; : ! ? »
+// (une ligne ne commence jamais par « ; »)
+const escFr = (s) => esc(s).replace(/ ([;:!?»])/g, '\u00a0$1').replace(/« /g, '«\u00a0');
 
 // ───────────────────────── calculs d'affichage ─────────────────────────
 
@@ -197,7 +203,7 @@ function combosOf(el, defs) {
 // Contre quoi un combo est utile : `def.counters` s'il existe, sinon les yokai dont
 // la fiche le cite comme contre, sinon une indication tirée de son effet.
 export function comboCounters(def, defs) {
-  if (def.counters) return Array.isArray(def.counters) ? def.counters.join(', ') : def.counters;
+  if (def.counters) return Array.isArray(def.counters) ? def.counters.filter((id) => !String(id).endsWith('_ko')).map((id) => defs.enemies?.[id]?.name || id).join(', ') : def.counters;
   const norm = (s) => String(s || '').toLowerCase();
   const names = [];
   for (const [id, e] of Object.entries(defs.enemies || {})) {
@@ -218,14 +224,23 @@ export function comboCounters(def, defs) {
 }
 
 // ───────────────────────── gestionnaire des fiches ─────────────────────────
+//
+// Modèle commun (docs/UI-UX.md §6.9) : 1) en-tête (image 48, nom, élément et rôle, sceau
+// de niveau 壱/弐/参, ✕) ; 2) Force / Faiblesse (et Contres pour un yokai) ; 3) quatre
+// chiffres ; 4) action principale (Fusionner, « Choisir · ◉ 50 », barre de PV d'un yokai
+// suivi) ; 5) action secondaire ; 6) « Détails ⌃ » → grande hauteur (évolution, cibles,
+// armure, vente, description). Feuille non modale : le plateau reste touchable ; poignée
+// et en-tête se glissent (vers le bas : fermer ; vers le haut : grande hauteur).
+
+const LEVEL_SEAL = ['壱', '弐', '参'];
 
 export class Sheets {
   /**
    * @param {HTMLElement} el  #info
    * @param {object} h  game(), input, anchor(kind, data) → ordonnée page du sujet | null,
-   *                    onOpen(kind), onClose(), onSell(t), onPriority(t),
+   *                    onOpen(kind), onClose(), onSell(t), onPriority(t, value),
    *                    onSelectTool(type), onRemoveStone(c, r), onCallWave(), onEnemy(type, absorb),
-   *                    onRally(t)
+   *                    onRally(t), onFuse(t), onCombo(id), largeTop() → ordonnée de la grande hauteur
    */
   constructor(el, h) {
     this.el = el;
@@ -233,17 +248,30 @@ export class Sheets {
     this.cur = null;
     this.sig = null;
     this.confirm = false;
+    this.prioOpen = false;
     el.addEventListener('click', (e) => this.onClick(e));
     // Le doigt qui a ouvert la fiche (appui long sur la palette) se relève parfois
     // au-dessus d'elle : son clic ne doit pas toucher un bouton (« Choisir »…).
     el.addEventListener('pointerdown', () => (this.armed = true), true);
     // le bas de la fiche s'estompe tant qu'il reste du contenu à faire défiler
     el.addEventListener('scroll', () => this.markMore(), true);
+    this.drag = attachSheet(el, {
+      enabled: () => !el.classList.contains('top'),
+      largeTop: () => this.h.largeTop?.() ?? 0,
+      onClose: () => this.close(),
+      onSize: () => this.markMore(),
+    });
   }
 
   markMore() {
     const b = this.el.querySelector('.sheet-body');
     if (b) b.classList.toggle('more', b.scrollHeight - b.scrollTop - b.clientHeight > 4);
+    const m = this.el.querySelector('.sheet-more');
+    if (m) {
+      const big = this.el.classList.contains('sheet-large');
+      m.textContent = big ? 'Moins de détails ⌄' : m.dataset.label;
+      m.setAttribute('aria-expanded', String(big));
+    }
   }
 
   get isOpen() {
@@ -254,14 +282,23 @@ export class Sheets {
     return this.h.game();
   }
 
+  // Grande hauteur (« Détails ⌃ ») ; `false` : retour à la hauteur moyenne.
+  grow(on = true) {
+    this.el.classList.toggle('sheet-large', on);
+    requestAnimationFrame(() => this.markMore());
+  }
+
   // kind : 'tower' (id) | 'type' (type) | 'enemy' ({ type, enemy, absorb }) | 'stone' ({ c, r }) | 'wave'
-  //        | 'element' (élément) | 'rewind' (règle du Rembobinage)
+  //        | 'element' (élément) | 'rewind' (règle du Rembobinage) | 'stoneTool'
   open(kind, data) {
     this.cur = { kind, data };
     this.sig = null;
     this.confirm = false;
+    this.prioOpen = false;
     this.armed = false;
+    this.stamp = false;
     this.openedAt = performance.now();
+    this.drag.reset();
     this.render(true);
     if (!this.cur) return; // la cible a disparu
     this.el.classList.remove('hidden', 'top');
@@ -286,12 +323,13 @@ export class Sheets {
     this.cur = null;
     this.sig = null;
     this.el.classList.add('hidden');
+    this.el.classList.remove('sheet-large');
     this.el.parentElement?.classList.remove('sheet-open', 'sheet-top');
     this.el.innerHTML = '';
     this.h.onClose?.();
   }
 
-  // Hauteur de la fiche, pour placer les toasts au-dessus.
+  // Hauteur de la fiche (calques qui s'y calent).
   syncHeight() {
     const root = this.el.parentElement;
     if (root && this.cur) root.style.setProperty('--sheet-h', `${this.el.offsetHeight}px`);
@@ -303,11 +341,13 @@ export class Sheets {
     this.render(false);
   }
 
-  // La lanterne affichée a fusionné : la fiche suit sa nouvelle identité.
+  // La lanterne affichée a fusionné : la fiche suit sa nouvelle identité (le sceau
+  // de niveau se tamponne).
   onEvent(ev) {
     if (!this.cur || this.cur.kind !== 'tower') return;
     if (ev.type === 'fuse' && (this.cur.data === ev.oldId || this.cur.data === ev.srcId)) {
       this.cur.data = ev.tower.id;
+      this.stamp = true;
       this.sig = null;
     }
   }
@@ -336,12 +376,19 @@ export class Sheets {
     this.sig = out.sig;
     const body = this.el.querySelector('.sheet-body');
     const scroll = body ? body.scrollTop : 0;
+    const more = out.details ? `<button class="sheet-more" data-act="more" data-label="${esc(out.moreLabel || 'Détails ⌃')}" aria-expanded="false">${esc(out.moreLabel || 'Détails ⌃')}</button>` : '';
     this.el.innerHTML =
-      `<div class="sheet-head">${out.pic || ''}<div class="sheet-title"><h3>${out.title}</h3>${out.tags ? `<div class="sheet-tags">${out.tags}</div>` : ''}</div>${out.level ? `<span class="h3-level">${out.level}</span>` : ''}<button class="sheet-close" data-act="close" aria-label="Fermer la fiche">✕</button></div>` +
-      `<div class="sheet-body scroll">${out.body}</div>` +
-      (out.actions ? `<div class="sheet-actions">${out.actions}</div>` : '');
+      `<span class="sheet-grabber" aria-hidden="true"></span>` +
+      `<div class="sheet-head">${out.pic || ''}<div class="sheet-title"><h3>${out.title}</h3>${out.tags ? `<div class="sheet-tags">${out.tags}</div>` : ''}</div>${out.level || ''}<button class="sheet-close" data-act="close" aria-label="Fermer la fiche">✕</button></div>` +
+      `<div class="sheet-body scroll">${out.body}${out.details ? `<div class="sheet-details">${out.details}</div>` : ''}</div>` +
+      // action principale (Fusionner) au pied, avec les actions : toujours visible, le corps défile au-dessus
+      (out.main || out.actions || more ? `<div class="sheet-actions">${out.main || ''}${out.actions ? `<div class="sa-row">${out.actions}</div>` : ''}${more}</div>` : '');
     const nb = this.el.querySelector('.sheet-body');
     if (nb && !force) nb.scrollTop = scroll;
+    if (this.stamp) {
+      this.stamp = false;
+      this.el.querySelector('.lvl-seal')?.classList.add('stamp');
+    }
     out.live?.(this.el);
     if (force) requestAnimationFrame(() => this.syncHeight());
     requestAnimationFrame(() => this.markMore());
@@ -355,14 +402,31 @@ export class Sheets {
     const { kind, data } = this.cur;
     const act = b.dataset.act;
     if (act === 'close') return this.close();
+    if (act === 'more') {
+      this.grow(!this.el.classList.contains('sheet-large'));
+      return;
+    }
     if (act === 'prio' && kind === 'tower') {
+      // « Cible : Premier ▾ » : les quatre choix s'ouvrent dans la fiche
+      this.prioOpen = !this.prioOpen;
+    } else if (act === 'setprio' && kind === 'tower') {
       const t = g.towerById(data);
-      if (t) this.h.onPriority?.(t);
+      this.prioOpen = false;
+      if (t) this.h.onPriority?.(t, b.dataset.p);
     } else if (act === 'rally' && kind === 'tower') {
       const t = g.towerById(data);
       if (!t) return;
       this.close();
       this.h.onRally?.(t);
+      return;
+    } else if (act === 'fuse' && kind === 'tower') {
+      const t = g.towerById(data);
+      if (!t) return;
+      this.close();
+      this.h.onFuse?.(t);
+      return;
+    } else if (act === 'combo') {
+      this.h.onCombo?.(b.dataset.combo);
       return;
     } else if (act === 'type') {
       this.open('type', b.dataset.type);
@@ -377,7 +441,7 @@ export class Sheets {
         this.confirmTimer = setTimeout(() => {
           this.confirm = false;
           this.sig = null;
-        }, 2600);
+        }, CONFIRM_MS);
       } else {
         this.h.onSell?.(t);
         this.close();
@@ -400,6 +464,7 @@ export class Sheets {
       this.h.onEnemy?.(b.dataset.enemy, b.dataset.absorb || null);
       return;
     }
+    this.sig = null;
     this.render(false);
   }
 
@@ -419,55 +484,55 @@ export class Sheets {
     const zones = g.zones.filter((z) => z.a === t.id || z.b === t.id);
     const sell = g.sellValue(t);
     // priorité demandée (commande en attente comprise)
-    const p = priorityInfo(commands.priorityOf(t) ?? t.priority);
+    const pk = commands.priorityOf(t) ?? t.priority;
+    const p = priorityInfo(pk);
     const rateMult = t.rateMult || 1;
     const cleanse = t.cleanse || 0;
     const bar = atk === 'barrier' ? (g.barriers || []).find((b) => b.towerId === t.id) : null;
-    // Fusion : une lanterne identique (même type, même niveau) glissée dessus.
-    const twinCost = def.cost * Math.pow(2, t.level - 1);
-    const twin = next ? g.towers.find((o) => o.id !== t.id && g.canFuse(o.id, t.id).ok) : null;
-    const sig = `${t.id}|${t.level}|${p.label}|${sell}|${zones.map((z) => z.key ?? z.def.id).join(',')}|${!!twin}|${this.confirm}|${rateMult.toFixed(2)}|${cleanse.toFixed(2)}|${bar ? `${bar.id}:${bar.alive}` : ''}`;
-    const dps = dpsOf(st, def, rateMult);
-    const fx = effectsOf(st);
-    const rows = [];
     // en coopération, la lanterne d'un autre joueur se consulte seulement
     const mine = !(g.players?.length > 1) || t.owner === g.localPlayer;
+    // Fusion : une lanterne identique (même type, même niveau).
+    const twinCost = def.cost * Math.pow(2, t.level - 1);
+    // (en pause, on étudie : pas de « Fusionner », la fusion n'y est pas possible)
+    const twin = next && mine && !this.h.input?.inspect ? g.towers.find((o) => o.id !== t.id && commands.check('fuse', o.id, t.id).ok) : null;
+    const sig = `${t.id}|${t.level}|${pk}|${sell}|${zones.map((z) => z.key ?? z.def.id).join(',')}|${!!twin}|${this.confirm}|${this.prioOpen}|${rateMult.toFixed(2)}|${cleanse.toFixed(2)}|${bar ? `${bar.id}:${bar.alive}` : ''}`;
+    const dps = dpsOf(st, def, rateMult);
+    const fx = effectsOf(st);
+    // 2) force / faiblesse ; 3) chiffres
+    const top = [fw(def.strength, def.weakness), statsRow(def, st, rateMult)];
+    // Mur du Gardien : PV en direct (voir `live`).
+    if (atk === 'barrier') {
+      if (bar) top.push(`<div class="hpbar wall${bar.alive ? '' : ' dead'}" aria-label="PV du mur"><i style="width:${bar.alive ? Math.max(0, (bar.hp / bar.maxHp) * 100).toFixed(1) : 0}%"></i><span>${wallText(bar)}</span></div>`);
+      else top.push(`<div class="hpbar wall dead"><i style="width:0"></i><span>Aucune case de chemin à portée</span></div>`);
+    }
+    // combos de la lanterne : puces (toucher : le combo dans la liste)
+    if (zones.length) {
+      const seen = new Set();
+      const chips = [];
+      for (const z of zones) {
+        if (seen.has(z.def.id)) continue;
+        seen.add(z.def.id);
+        const pid = z.a === t.id ? z.b : z.a;
+        const other = g.towerById(pid) || g.echoes?.find((e) => e.id === pid);
+        const pel = other ? elementOf(other.type, defs) : null;
+        chips.push(`<button class="combo-chip" data-act="combo" data-combo="${esc(z.def.id)}">${pel ? elementBadge(pel, defs, { size: 16, kanji: false }) : ''}<b>${esc(z.def.kanji || '')}</b> ${esc(z.def.name)}</button>`);
+      }
+      top.push(`<div class="combo-chips"><span class="cc-label">Combos</span>${chips.join('')}</div>`);
+    }
+    // 4) action principale : fusionner avec la jumelle posée (gain chiffré)
+    let main = '';
+    if (twin) {
+      const nd = dpsOf(next, def, rateMult);
+      const gain = atk === 'barrier' ? `mur ${fmt(st.barrierHp ?? 0)} → ${fmt(next.barrierHp ?? 0)} PV` : atk === 'support' ? effectsOf(next).slice(0, 1).join('') : `DPS ${Math.round(dps)} → ${Math.round(nd)}${(next.range ?? 0) !== (st.range ?? 0) ? ` · portée ${fmt(next.range)}` : ''}`;
+      main = (`<button class="sheet-main fuse" data-act="fuse"><span class="seal seal-gold seal-32" aria-hidden="true">合</span><span><b>Fusionner avec sa jumelle</b><small>${LEVEL_SEAL[t.level] || ''} : ${esc(gain)}</small></span><span class="sm-more" aria-hidden="true">›</span></button>`);
+    }
+    // 6) détails (grande hauteur)
+    const rows = [];
     if (g.players?.length > 1) {
       const o = this.h.owner?.(t.owner);
       const name = o?.name ?? g.players[t.owner]?.name ?? '?';
       const seal = o?.element ? elementBadge(o.element, defs, { size: 18 }) : `<span class="seal-any" style="--s:18px" aria-hidden="true">${esc(o?.initial ?? '?')}</span>`;
       rows.push(row('Joueur', `<span class="sheet-owner">${seal}<b>${esc(name)}</b>${mine ? ' <small>(vous)</small>' : ' <small>— ni vente ni fusion</small>'}</span>`));
-    }
-    rows.push(statsRow(def, st, rateMult));
-    // Mur du Gardien : PV en direct (voir `live`).
-    if (atk === 'barrier') {
-      if (bar) rows.push(`<div class="hpbar wall${bar.alive ? '' : ' dead'}" aria-label="PV du mur"><i style="width:${bar.alive ? Math.max(0, (bar.hp / bar.maxHp) * 100).toFixed(1) : 0}%"></i><span>${wallText(bar)}</span></div>`);
-      else rows.push(`<div class="hpbar wall dead"><i style="width:0"></i><span>Aucune case de chemin à portée</span></div>`);
-    }
-    if (fx.length) rows.push(row('Effets', fx.join(' · ')));
-    // Soutien reçu : Carillon (cadence) et Source sacrée (purification).
-    const support = [];
-    if (rateMult > 1.001) support.push(`<b>Carillon</b> : cadence +${Math.round((rateMult - 1) * 100)} %`);
-    if (cleanse > 0.001) support.push(`<b>Source</b> : étourdissements −${Math.round(cleanse * 100)} %`);
-    if (support.length) rows.push(row('Soutien', support.join(' · ')));
-    // ce qui change en jeu d'abord (combos, niveau suivant), puis le réglage et les rappels
-    if (zones.length) {
-      rows.push(
-        row(
-          'Combos',
-          zones
-            .map((z) => {
-              const pid = z.a === t.id ? z.b : z.a;
-              const other = g.towerById(pid) || g.echoes?.find((e) => e.id === pid);
-              const pel = other ? elementOf(other.type, defs) : null;
-              return `<span class="combo-line">${pel ? elementBadge(pel, defs, { size: 18 }) : ''}<span><b>${esc(z.def.kanji || '')} ${esc(z.def.name)}</b> — ${esc(z.def.desc)}</span></span>`;
-            })
-            .join(''),
-        ),
-      );
-    } else {
-      const poss = combosOf(el, defs).filter((c) => g.availableTowers.some((a) => elementOf(a, defs) === c.partner));
-      if (poss.length) rows.push(row('Combos', `<span class="muted">Aucun. À côté d’une autre lanterne :</span> ${poss.map((c) => `<span class="combo-mini">${elementBadge(c.partner, defs, { size: 16, kanji: false })}${esc(c.def.name)}</span>`).join(' ')}`));
     }
     if (next) {
       const gains = [];
@@ -484,29 +549,45 @@ export class Sheets {
       const newFx = effectsOf(next).filter((f) => !fx.some((o) => o.split(' ')[0] === f.split(' ')[0]));
       if (newFx.length) gains.push(`+ ${newFx.join(', ')}`);
       rows.push(row(`Niveau ${t.level + 1}`, gains.join(' · ')));
-      rows.push(row('Fusion', `+ une lanterne identique N${t.level} (≈ ${twinCost} or)${twin ? ' · <b>une jumelle est posée</b> : glissez-la dessus' : ''}`));
+      rows.push(row('Fusion', `+ une lanterne identique de niveau ${t.level} (≈&nbsp;${twinCost}&nbsp;or)${twin ? ' · <b>une jumelle est posée</b>' : ''}`));
     } else {
       rows.push(row('Niveau', 'Maximum atteint'));
     }
+    if (fx.length) rows.push(row('Effets', fx.join(' · ')));
+    // Soutien reçu : Carillon (cadence) et Source sacrée (purification).
+    const support = [];
+    if (rateMult > 1.001) support.push(`<b>Carillon</b> : cadence +${Math.round((rateMult - 1) * 100)} %`);
+    if (cleanse > 0.001) support.push(`<b>Source</b> : étourdissements −${Math.round(cleanse * 100)} %`);
+    if (support.length) rows.push(row('Soutien', support.join(' · ')));
     if (aims(def)) rows.push(row('Priorité', `<b>${p.label}</b> <small>— vise ${esc(p.desc)}</small>`));
     rows.push(row('Élément', `${elementTag(el, defs)}${info.style ? ` <small>— ${esc(info.style)}</small>` : ''}`));
     rows.push(row('Cibles', targetsOf(def)));
     const armor = armorOf(def, st);
     if (armor) rows.push(row('Armure', armor));
     rows.push(row('Vente', `${sell} or <small>(investi ${t.invested})</small>`));
-    rows.push(fw(def.strength, def.weakness));
-    rows.push(`<p class="sheet-desc">${esc(def.desc)}</p>`);
+    rows.push(`<p class="sheet-desc">${escFr(def.desc)}</p>`);
+    // 5) actions : cible (les 4 choix s'ouvrent ici), vendre (second toucher)
     let first = '';
-    if (atk === 'barrier') first = `<button class="btn rally" data-act="rally"${bar ? '' : ' disabled'}><span class="tb-ico">壁</span>Déplacer le mur</button>`;
-    else if (aims(def)) first = `<button class="btn prio" data-act="prio" aria-label="Priorité de ciblage : ${p.label}. Toucher pour changer"><span class="tb-ico">${p.kanji}</span>${p.label}</button>`;
+    if (atk === 'barrier') first = `<button class="btn S rally" data-act="rally"${bar ? '' : ' disabled'}><span class="tb-ico">壁</span>Déplacer le mur</button>`;
+    else if (aims(def)) first = `<button class="btn S prio" data-act="prio" aria-expanded="${this.prioOpen}" aria-label="Priorité de ciblage : ${p.label}. Toucher pour choisir"><span class="tb-ico">${p.kanji}</span><span class="prio-k">Cible&nbsp;:&nbsp;</span>${p.short}&nbsp;▾</button>`;
+    const picks = this.prioOpen && aims(def) && mine
+      ? `<div class="seg light prio-seg" role="group" aria-label="Priorité de ciblage">${PRIORITIES.map((k) => {
+          const i = priorityInfo(k);
+          return `<button data-act="setprio" data-p="${k}" aria-pressed="${k === pk}"><b class="seg-k">${i.kanji}</b> ${i.short}</button>`;
+        }).join('')}</div>`
+      : '';
+    if (picks) top.push(picks);
     return {
       sig,
       pic: `<span class="sheet-pic"><img alt="" src="${towerPortrait(def, t.level, 44)}"></span>`,
       title: esc(def.name),
-      tags: `${elementBadge(el, defs, { size: 18 })}<span>${esc(info.label)}</span><span class="dot">·</span><span>${esc(def.role || '')}</span>`,
-      level: `N${t.level}`,
-      body: rows.join(''),
-      actions: mine ? `${first}<button class="btn sell${this.confirm ? ' confirm' : ''}" data-act="sell">${this.confirm ? 'Confirmer' : 'Vendre'} +${sell}</button>` : '',
+      tags: `${elementBadge(el, defs, { size: 18 })}<span>${esc(info.label)}</span><span class="dot">·</span><span>${esc(def.role || '')}</span><span class="dot">·</span><span>niveau ${t.level}</span>`,
+      level: `<span class="lvl-seal" role="img" aria-label="Niveau ${t.level}">${LEVEL_SEAL[t.level - 1] || t.level}</span>`,
+      body: top.join(''),
+      main,
+      details: rows.join(''),
+      moreLabel: 'Détails : évolution, cibles, armure ⌃',
+      actions: mine ? `${first}<button class="btn S sell quiet${this.confirm ? ' confirm armed' : ''}" data-act="sell">${this.confirm ? 'Confirmer' : 'Vendre'} <span class="coin" aria-hidden="true"></span> +${sell}${this.confirm ? `<i class="arm-ring" style="--arm-ms:${CONFIRM_MS}ms" aria-hidden="true"></i>` : ''}</button>` : '',
       // PV du mur en direct, sans reconstruire la fiche
       live: bar
         ? (root) => {
@@ -540,10 +621,9 @@ export class Sheets {
     // coopération : une lanterne d'un autre élément se consulte, ne se choisit pas
     const mine = g.availableTowers.includes(type);
     const sig = `${type}|${poor}|${mine}`;
+    const top = [fw(def.strength, def.weakness), statsRow(def, st)];
     const rows = [];
-    rows.push(`<p class="sheet-desc">${esc(def.desc)}</p>`);
-    rows.push(statsRow(def, st));
-    rows.push(fw(def.strength, def.weakness));
+    rows.push(`<p class="sheet-desc">${escFr(def.desc)}</p>`);
     const fx = effectsOf(st);
     if (fx.length) rows.push(row('Effets', fx.join(' · ')));
     rows.push(row('Cibles', targetsOf(def)));
@@ -554,21 +634,14 @@ export class Sheets {
     for (let l = 2; l <= max; l++) {
       const s = def.levels[l - 1];
       if (!s) continue;
-      if (atk === 'barrier') evo.push(`N${l} : mur ${fmt(s.barrierHp ?? 0)} PV`);
-      else if (atk === 'support') evo.push(`N${l} : ${effectsOf(s).slice(0, 2).join(', ')}`);
-      else evo.push(`N${l} : DPS ${Math.round(dpsOf(s, def))}, portée ${fmt(s.range ?? 0)}`);
+      if (atk === 'barrier') evo.push(`niveau ${l} : mur ${fmt(s.barrierHp ?? 0)} PV`);
+      else if (atk === 'support') evo.push(`niveau ${l} : ${effectsOf(s).slice(0, 2).join(', ')}`);
+      else evo.push(`niveau ${l} : DPS ${Math.round(dpsOf(s, def))}, portée ${fmt(s.range ?? 0)}`);
     }
     if (evo.length) rows.push(row('Fusion', `Deux lanternes identiques → niveau supérieur. ${evo.join(' · ')}`));
     const poss = combosOf(el, defs);
     if (poss.length) {
-      rows.push(
-        row(
-          'Combos',
-          poss
-            .map((c) => `<span class="combo-line">${elementBadge(c.partner, defs, { size: 18 })}<span><b>${esc(c.def.kanji || '')} ${esc(c.def.name)}</b> — ${esc(c.def.desc)}</span></span>`)
-            .join(''),
-        ),
-      );
+      rows.push(row('Combos', poss.map((c) => `<span class="combo-line">${elementBadge(c.partner, defs, { size: 18 })}<span><b>${esc(c.def.kanji || '')} ${esc(c.def.name)}</b> — ${esc(c.def.desc)}</span></span>`).join('')));
     }
     const forbid = g.challengeRule?.forbidTowers?.includes(type);
     return {
@@ -576,13 +649,15 @@ export class Sheets {
       pic: `<span class="sheet-pic"><img alt="" src="${towerPortrait(def, 1, 44)}"></span>`,
       title: esc(def.name),
       tags: `${elementBadge(el, defs, { size: 18 })}<span>${esc(info.label)}</span><span class="dot">·</span><span>${esc(def.role || '')}</span>`,
-      level: `${def.cost} or`,
-      body: rows.join(''),
+      level: `<span class="sheet-cost"><span class="coin" aria-hidden="true"></span>${def.cost} or</span>`,
+      body: top.join(''),
+      details: rows.join(''),
+      moreLabel: 'Détails : effets, combos, fusion ⌃',
       actions: forbid
-        ? '<button class="btn disabled" aria-disabled="true">Interdit par le défi</button>'
+        ? '<button class="btn S disabled" aria-disabled="true">Interdit par le défi</button>'
         : !mine
-          ? `<button class="btn disabled" aria-disabled="true">Élément d’un autre joueur</button>`
-          : `<button class="btn${poor ? ' disabled' : ' primary'}" data-act="choose"${poor ? ' aria-disabled="true"' : ''}>${poor ? `Il manque ${commands.missing(type)} or` : `Choisir · ${def.cost} or`}</button>`,
+          ? `<button class="btn S disabled" aria-disabled="true">Élément d’un autre joueur</button>`
+          : `<button class="btn S${poor ? ' disabled' : ' primary'}" data-act="choose"${poor ? ' aria-disabled="true"' : ''}>${poor ? `Il manque ${commands.missing(type)} or` : `Choisir · ${def.cost} or`}</button>`,
     };
   }
 
@@ -600,7 +675,7 @@ export class Sheets {
       })
       .join('');
     const rows = [];
-    if (info.desc) rows.push(`<p class="sheet-desc">${esc(info.desc)}</p>`);
+    if (info.desc) rows.push(`<p class="sheet-desc">${escFr(info.desc)}</p>`);
     rows.push(`<div class="wave-list">${lines}</div>`);
     rows.push(slotsRow(g, el));
     if (el === 'earth' && g.stoneConf?.()) rows.push(row('Pierres', 'La Terre façonne le chemin : en coopération, seul le joueur de la Terre pose des pierres.'));
@@ -624,7 +699,6 @@ export class Sheets {
       title: 'Rembobinage',
       tags: `<span>Jauge ${pct} %</span>${g.canRewind?.() ? '<span class="dot">·</span><span>prête</span>' : ''}`,
       body: rewindRules(g),
-      actions: '',
       live: (root) => {
         const t = root.querySelector('.sheet-tags span');
         const txt = `Jauge ${Math.round((g.rewindRatio ? g.rewindRatio() : 0) * 100)} %`;
@@ -650,17 +724,21 @@ export class Sheets {
     if (ab.flying) tags.push('<span class="tag">Volant</span>');
     if (ab.timeless) tags.push('<span class="tag">Hors du temps</span>');
     if (absorb) tags.push(`${elementBadge(absorb, defs, { size: 18 })}<span>absorbe ${esc(elementInfo(absorb, defs).label)}</span>`);
-    const rows = [];
-    if (e) rows.push(`<div class="hpbar" aria-label="Points de vie"><i style="width:${Math.max(0, (e.hp / e.maxHp) * 100).toFixed(1)}%"></i><span>${Math.ceil(e.hp)} / ${Math.ceil(e.maxHp)} PV</span></div>`);
-    else if (gone) rows.push(`<div class="hpbar dead"><i style="width:0"></i><span>${inst.hp <= 0 ? 'Apaisé' : 'Parvenu au sanctuaire'}</span></div>`);
-    if (e) rows.push(`<p class="enemy-state" aria-live="polite">${enemyState(g, e)}</p>`);
+    const top = [];
+    // barre de PV d'un yokai suivi (en direct)
+    if (e) top.push(`<div class="hpbar" aria-label="Points de vie"><i style="width:${Math.max(0, (e.hp / e.maxHp) * 100).toFixed(1)}%"></i><span>${Math.ceil(e.hp)} / ${Math.ceil(e.maxHp)} PV</span></div>`);
+    else if (gone) top.push(`<div class="hpbar dead"><i style="width:0"></i><span>${inst.hp <= 0 ? 'Apaisé' : 'Parvenu au sanctuaire'}</span></div>`);
+    if (e) top.push(`<p class="enemy-state" aria-live="polite">${enemyState(g, e)}</p>`);
+    top.push(fw(def.strength, def.weakness));
+    if (def.counters) top.push(`<p class="counters"><i>Contres</i> ${escFr(def.counters)}</p>`);
     const armor = def.armor ?? 0;
     const cells = [`<span><i>PV</i><b>${Math.ceil(e ? e.maxHp : def.hp * scale)}</b></span>`, `<span><i>Vitesse</i><b>${fmt(def.speed)}</b></span>`];
     // quatre chiffres clés au plus (une rangée) : l'armure prend la place de la prime
     if (armor) cells.push(`<span><i>Armure</i><b>${fmt(armor)}</b></span>`);
     cells.push(`<span><i>Sanctuaire</i><b>−${def.damage ?? 1}</b></span>`);
     if (!armor) cells.push(`<span><i>Prime</i><b>${def.reward ?? 0}</b></span>`);
-    rows.push(`<div class="stats">${cells.join('')}</div>`);
+    top.push(`<div class="stats">${cells.join('')}</div>`);
+    const rows = [];
     rows.push(row('Allure', `${fmt(def.speed)} case/s, ${speedWord(def.speed)}${scale !== 1 ? ` · PV ×${fmt(scale)} dans ce niveau` : ''} · −${def.damage ?? 1} vie${(def.damage ?? 1) > 1 ? 's' : ''} s’il passe${armor ? ` · prime ${def.reward ?? 0} or` : ''}`));
     if (armor) {
       const min = Math.round((g.rules.armorMinDamage ?? 0.2) * 100);
@@ -671,16 +749,16 @@ export class Sheets {
     rows.push(row('Murs', wallLine(def)));
     const abl = abilitiesOf(def, defs, absorb);
     if (abl.length) rows.push(row('Capacités', abl.join('<br>')));
-    rows.push(fw(def.strength, def.weakness));
-    if (def.counters) rows.push(row('Contres', esc(def.counters)));
-    rows.push(`<p class="sheet-desc">${esc(def.desc)}</p>`);
+    rows.push(`<p class="sheet-desc">${escFr(def.desc)}</p>`);
     const sig = `${data.type}|${absorb}|${!!e}|${gone}`;
     return {
       sig,
       pic: `<span class="sheet-pic enemy"><img alt="" src="${enemyPortrait(defs, data.type, absorb, 44)}"></span>`,
       title: esc(def.name),
       tags: tags.join(''),
-      body: rows.join(''),
+      body: top.join(''),
+      details: rows.join(''),
+      moreLabel: 'Détails : résistances, capacités ⌃',
       // PV et état en direct, sans reconstruire la fiche
       live: e
         ? (root) => {
@@ -721,10 +799,10 @@ export class Sheets {
       title: 'Pierre',
       tags: `<span>${left}${conf ? `/${conf.max}` : ''} restante${left > 1 ? 's' : ''}</span>`,
       body: `<p class="sheet-desc">Elle détourne les yokai terrestres et allonge leur chemin. Les volants l’ignorent.</p>${
-        canRemove ? row('Retirer', `rend ${refund} or et une pierre`) : !canStone ? row('Retirer', 'réservé au joueur de la Terre') : row('Retirer', `réservé à ${esc(ownerName || 'celui qui l’a posée')}`)
+        canRemove ? row('Retirer', `rend ${refund} or ; la pierre ne revient pas`) : !canStone ? row('Retirer', 'réservé au joueur de la Terre') : row('Retirer', `réservé à ${esc(ownerName || 'celui qui l’a posée')}`)
       }`,
       // en coopération, seul le joueur de la Terre façonne le chemin
-      actions: canRemove ? `<button class="btn" data-act="unstone">Retirer +${refund}</button>` : '',
+      actions: canRemove ? `<button class="btn S" data-act="unstone">Retirer +${refund}</button>` : '',
     };
   }
 
@@ -745,10 +823,10 @@ export class Sheets {
       body:
         `<p class="sheet-desc">Posée sur le gravier ouvert, elle détourne les yokai terrestres et allonge leur chemin. Glissez-la : le nouveau tracé s’affiche avant de relâcher.</p>` +
         row('Règle', 'Le chemin ne peut jamais être coupé. Les volants l’ignorent.') +
-        row('Retirer', `toucher une pierre posée : +${refund} or, la pierre revient`),
+        row('Retirer', `toucher une pierre posée : +${refund} or (la pierre ne revient pas)`),
       actions: !canStone
-        ? '<button class="btn disabled" aria-disabled="true">Réservé à la Terre</button>'
-        : `<button class="btn${poor || left <= 0 ? ' disabled' : ' primary'}" data-act="choose"${poor || left <= 0 ? ' aria-disabled="true"' : ''}>${left <= 0 ? 'Plus de pierres' : poor ? `Il manque ${commands.missing('stone')} or` : `Choisir · ${g.stoneCost()} or`}</button>`,
+        ? '<button class="btn S disabled" aria-disabled="true">Réservé à la Terre</button>'
+        : `<button class="btn S${poor || left <= 0 ? ' disabled' : ' primary'}" data-act="choose"${poor || left <= 0 ? ' aria-disabled="true"' : ''}>${left <= 0 ? 'Plus de pierres' : poor ? `Il manque ${commands.missing('stone')} or` : `Choisir · ${g.stoneCost()} or`}</button>`,
     };
   }
 
@@ -778,7 +856,7 @@ export class Sheets {
       title: `${pv.name ? esc(pv.name) : `Vague ${pv.index + 1}`}`,
       tags: `${pv.climax ? '<span class="tag boss">嵐 Climax</span>' : ''}<span>vague ${pv.index + 1}/${g.totalWaves}</span>${cd ? `<span class="dot">·</span><span>arrive dans ${cd}</span>` : ''}`,
       body: `<div class="wave-list">${list}</div>${!first && gains ? row('Appel', `l’appeler maintenant rapporte ${gains}`) : ''}`,
-      actions: canCall ? `<button class="btn primary" data-act="call">${first ? 'Commencer' : 'Appeler maintenant'}${!first && gains ? ` · ${gains}` : ''}</button>` : '',
+      actions: canCall ? `<button class="btn S primary" data-act="call">${first ? 'Lancer la vague 1' : 'Appeler maintenant'}${!first && gains ? ` · ${gains}` : ''}</button>` : '',
     };
   }
 }
@@ -836,10 +914,10 @@ export function rewindRules(g, short = false) {
   const lc = r.lastChanceSeconds ?? 4;
   return (
     (short ? '' : row('Jauge', 'Elle se remplit quand vous apaisez des yokai et quand vous appelez une vague en avance.')) +
-    (short ? '' : row('Pleine', `Glissez la jauge ◀◀ pendant une vague : le temps recule de ${sec} s (vies, or, yokai).`)) +
+    (short ? '' : row('Pleine', `Pendant une vague, touchez-la deux fois (ou glissez-la ◀◀) : le temps recule de ${sec} s (vies, or, yokai).`)) +
     row('Échos', `Les lanternes posées pendant ces ${sec} s sont remboursées à 100 % et laissent un écho qui tire à ${pow} % pendant ${echo} s.`) +
     row('Hors du temps', 'Les yokai hors du temps (Tokihami) ne reculent pas ; les vies qu’ils prennent ne reviennent pas.') +
-    row('Dernière chance', `Si le sanctuaire tombe avec la jauge pleine, la partie se fige ${lc} s : rembobinez !`)
+    row('Dernière chance', `Si le sanctuaire tombe avec la jauge pleine, la partie se fige ${lc} s : touchez la jauge !`)
   );
 }
 
@@ -849,36 +927,32 @@ function row(label, html) {
 
 function fw(strength, weakness) {
   if (!strength && !weakness) return '';
-  return `<div class="fw">${strength ? `<span class="fw-plus"><i>Force</i>${esc(strength)}</span>` : ''}${weakness ? `<span class="fw-minus"><i>Faiblesse</i>${esc(weakness)}</span>` : ''}</div>`;
+  return `<div class="fw">${strength ? `<span class="fw-plus"><i>Force</i>${escFr(strength)}</span>` : ''}${weakness ? `<span class="fw-minus"><i>Faiblesse</i>${escFr(weakness)}</span>` : ''}</div>`;
 }
 
-// ───────────────────────── table des combos (pause) ─────────────────────────
+// ───────────────────────── liste des combos (pause) ─────────────────────────
 
-// Matrice des éléments : chaque case donne le combo de la paire (kanji + nom) ;
-// la case touchée détaille son effet et contre quoi il sert.
-export function comboTable(defs, available) {
-  const els = elementList(defs, available).filter((e) => (defs.combos || []).some((c) => c.elements?.includes(e)));
-  const find = (a, b) => (defs.combos || []).find((c) => c.elements?.includes(a) && c.elements?.includes(b) && (a !== b || c.elements[0] === c.elements[1]));
+// Les six paires d'éléments (§6.11) : badges des deux éléments, kanji et nom, effet,
+// contre quoi. Actif sur le plateau : fond or et « actif ×N » ; élément absent du niveau :
+// ligne estompée, « absent du niveau ». Renvoie { html, active, total }.
+export function comboList(defs, available, zones = []) {
   const avail = new Set((available || []).map((t) => elementOf(t, defs)));
-  let html = `<div class="combo-table" style="--n:${els.length}" role="grid"><span class="ct-corner"></span>`;
-  for (const e of els) html += `<span class="ct-head${avail.size && !avail.has(e) ? ' off' : ''}">${elementBadge(e, defs, { size: 22 })}<small>${esc(elementInfo(e, defs).label)}</small></span>`;
-  for (const a of els) {
-    html += `<span class="ct-head row${avail.size && !avail.has(a) ? ' off' : ''}">${elementBadge(a, defs, { size: 22 })}<small>${esc(elementInfo(a, defs).label)}</small></span>`;
-    for (const b of els) {
-      const c = a === b ? null : find(a, b);
-      if (!c) html += '<span class="ct-cell empty">—</span>';
-      else html += `<button class="ct-cell" data-combo="${esc(c.id)}" style="--c:${c.color || '#c99a2e'}" aria-label="${esc(c.name)}"><b>${esc(c.kanji || '')}</b><small>${esc(c.name)}</small></button>`;
-    }
+  const count = new Map();
+  for (const z of zones) if (z.def?.id) count.set(z.def.id, (count.get(z.def.id) || 0) + 1);
+  const combos = defs.combos || [];
+  let html = '<ul class="combo-list">';
+  for (const c of combos) {
+    const [a, b] = c.elements || [];
+    const off = avail.size && !(avail.has(a) && avail.has(b));
+    const n = count.get(c.id) || 0;
+    html += `<li class="combo-row${n ? ' on' : ''}${off ? ' off' : ''}" data-combo="${esc(c.id)}" style="--c:${esc(c.color || '#c99a2e')}">
+      <span class="cr-pair">${a ? elementBadge(a, defs, { size: 24 }) : ''}<b aria-hidden="true">+</b>${b ? elementBadge(b, defs, { size: 24 }) : ''}</span>
+      <div class="cr-text"><b class="cr-name"><span class="cr-k">${esc(c.kanji || '')}</span> ${esc(c.name)}</b><p>${escFr(c.desc)}</p><p class="cr-counter"><i>Contre</i> ${esc(comboCounters(c, defs))}</p></div>
+      ${n ? `<span class="cr-tag">actif ×${n}</span>` : off ? '<span class="cr-tag off">absent du niveau</span>' : ''}
+    </li>`;
   }
-  html += '</div><div class="ct-detail" aria-live="polite"></div>';
-  return html;
-}
-
-export function comboDetail(defs, id) {
-  const c = (defs.combos || []).find((x) => x.id === id);
-  if (!c) return '';
-  const [a, b] = c.elements || [];
-  return `<div class="ct-name"><b>${esc(c.kanji || '')} ${esc(c.name)}</b> ${a ? elementTag(a, defs) : ''} + ${b ? elementTag(b, defs) : ''}</div><p>${esc(c.desc)}</p><p><i>Contre</i> ${esc(comboCounters(c, defs))}</p>`;
+  html += '</ul>';
+  return { html, active: count.size, total: combos.length };
 }
 
 export { fmt, esc };

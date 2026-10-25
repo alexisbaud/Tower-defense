@@ -22,18 +22,27 @@ import { Hud } from './ui/hud.js';
 import { RewindGauge } from './ui/rewind.js';
 import { Tutorial } from './ui/tutorial.js';
 import { TitleScreen, MapScreen } from './ui/screens.js';
-import { Sheets, comboTable, comboDetail } from './ui/sheets.js';
+import { Sheets, comboList } from './ui/sheets.js';
 import { TowerBar, cyclePriority, priorityInfo, ofName } from './ui/towerbar.js';
 import { enemyPortrait } from './ui/portraits.js';
 import { elementBadge, elementOf, elementInfo } from './ui/elements.js';
 import { BoardOverlay } from './ui/overlay.js';
 import { DebugPanel } from './ui/debug.js';
 import { LobbyUI, loadProfile } from './ui/lobby.js';
+import { initSettings, openSettings } from './ui/settings.js';
+import { digitsHTML as digitsOf } from './ui/fmt.js';
+import { enemyPortrait as portraitOf } from './ui/portraits.js';
+import { elementBadge as badgeOf, elementOf as elementOfTower } from './ui/elements.js';
 import { BROKERS, connectAny } from './net/mqtt.js';
 import { NetSession, normalizeCode } from './net/lobby.js';
 import { Coop } from './net/coop.js';
 import { COMMAND_DELAY } from './net/lockstep.js';
 import { commands, tileOfCommand } from './ui/commands.js';
+import { installPress, armConfirm } from './ui/press.js';
+import { attachSheet } from './ui/sheet.js';
+import { digitsHTML } from './ui/fmt.js';
+import { earlyCharge } from './ui/wavepreview.js';
+import { flyCoins, soberFx } from './ui/coins.js';
 import { sound } from './audio/sound.js';
 import { save } from './save.js';
 
@@ -152,39 +161,58 @@ setMuted(save.data.muted);
 // ───────────────────────── Écrans ─────────────────────────
 
 const title = new TitleScreen($('screen-title'));
-const map = new MapScreen($('screen-map'), (entry, unlocked) => openLevelCard(entry, unlocked));
+const map = new MapScreen($('screen-map'), (entry, unlocked) => openLevelCard(entry, unlocked), { sound: (name, data) => sound.play(name, data) });
 
-// Données de tous les niveaux (leçon, défi, mode Difficile) pour la carte.
+// Données de tous les niveaux (nom, leçon, défi, mode Difficile) : carte, accueil.
 let levelsLoaded = null;
+let levelData = {};
 function loadAllLevels() {
   if (!levelsLoaded) {
-    levelsLoaded = Promise.all(order.map((o) => loadLevel(o.id).then((l) => [o.id, l]).catch(() => [o.id, null]))).then((list) => Object.fromEntries(list.filter((x) => x[1])));
+    levelsLoaded = Promise.all(order.map((o) => loadLevel(o.id).then((l) => [o.id, l]).catch(() => [o.id, null]))).then((list) => (levelData = Object.fromEntries(list.filter((x) => x[1]))));
   }
   return levelsLoaded;
 }
 
-function showScreen(name) {
+// Une fenêtre appartient à son écran : les feuilles des menus (salon, réglages, fiche de
+// niveau) se ferment à chaque changement d'écran, les autres quand l'écran change
+// vraiment (ex. menu de pause d'un invité qui quitte le salon). Fermeture sans rappel :
+// l'écran suivant décide de la suite.
+function closeSheetsFor(prev, next) {
+  if (modal.classList.contains('hidden')) return;
+  if (modal.firstElementChild.classList.contains('menu-sheet') || prev !== next) closeModal('screen', true);
+}
+
+function showScreen(name, opts = {}) {
   const leaving = state.screen === 'game' && name !== 'game';
+  closeSheetsFor(state.screen, name);
   state.screen = name;
   title.hide();
   map.hide();
   screenGame.classList.toggle('active', name === 'game');
+  // écran « Tournez votre téléphone » : en partie, il dit ce que devient la partie
+  $('rotate-sub').textContent = name === 'game' ? (state.coopRole === 'guest' ? 'La partie continue chez l’hôte' : 'La partie est en pause') : '';
   if (leaving) leaveCoopGame();
   if (name === 'title') {
     title.show();
     ensureSalon();
+    updateHome();
   }
   if (name === 'map') {
-    map.show(order, worlds, save);
-    $('map-stars').textContent = `${save.totalStars(order)}/${order.length * 3}`;
+    map.show(order, worlds, save, { justCleared: opts.justCleared });
+    const got = save.totalStars(order);
+    $('map-stars').innerHTML = `${digitsOf(got)}<span class="map-stars-of">/${digitsOf(order.length * 3)}</span>`;
+    $('map-stars').parentElement.setAttribute('aria-label', `${got} étoiles sur ${order.length * 3}`);
     loadAllLevels().then((levels) => state.screen === 'map' && map.setLevels(levels));
   }
+  // un message hors partie (« Vous avez rejoint le salon… ») ne suit pas dans la partie :
+  // il restait sur la rangée d'action, à côté du message du couloir (deux à la fois)
+  if (name === 'game') $('app-toast')?.classList.remove('show');
   if (name !== 'game') {
     state.game = null;
     musicHold = null;
     sound.intensity = 0;
-    $('coop-roster').classList.add('hidden');
-    $('coop-wait').classList.add('hidden');
+    $('coop-roster')?.classList.add('hidden');
+    $('coop-wait')?.classList.add('hidden');
   }
 }
 
@@ -203,16 +231,38 @@ function leaveCoopGame() {
   }
 }
 
-$('btn-play').addEventListener('click', () => {
-  if (session.role === 'guest') return; // l'hôte choisit le niveau
-  showScreen('map');
-});
+// Accueil : le héros joue (Continuer / Jouer), « Niveaux » ouvre la carte, « À plusieurs »
+// le salon ; son et réglages en haut à droite.
+$('btn-play').addEventListener('click', () => heroAction());
+$('btn-levels').addEventListener('click', () => showScreen('map'));
+$('btn-multi').addEventListener('click', () => openSalon());
 // Cinq touchers rapides sur le titre : panneau de débogage (caché).
 // (pointerdown : les touchers rapprochés ne sont pas avalés par l'anti double-tap d'iOS)
 document.querySelector('#screen-title .title-wrap')?.addEventListener('pointerdown', () => debug.tap());
-$('btn-title-sound').addEventListener('click', () => setMuted(!save.data.muted));
+$('btn-title-sound').addEventListener('click', () => {
+  setMuted(!save.data.muted);
+  syncSoundButton();
+});
+$('btn-title-settings').addEventListener('click', () => openSettings());
 $('btn-map-back').addEventListener('click', () => showScreen('title'));
-if (window.navigator.standalone) $('title-foot').textContent = 'Version hors ligne prête';
+function syncSoundButton() {
+  const b = $('btn-title-sound');
+  b.setAttribute('aria-pressed', String(!save.data.muted));
+  b.classList.toggle('off', !!save.data.muted);
+}
+
+// En-tête d'une feuille des menus : sceau (ou image), titre h2, sur-titre, ✕.
+const X_ICON = '<svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"/></svg>';
+function menuHead(seal, heading, { kicker = '', sealCls = '' } = {}) {
+  return `<div class="sheet-head menu-head"><span class="menu-seal ${sealCls}" aria-hidden="true">${seal}</span><div class="menu-titles">${kicker ? `<small class="menu-kicker">${kicker}</small>` : ''}<h2 class="menu-title">${heading}</h2></div><button type="button" class="sheet-close menu-x" data-act="close" aria-label="Fermer">${X_ICON}</button></div>`;
+}
+// (le ✕ d'une feuille des menus : la carte de la fenêtre est partagée, un `onclick` par vue)
+function closeOnX(card, extra = null) {
+  card.onclick = (e) => {
+    if (e.target.closest('[data-act="close"]')) return closeModal('close');
+    extra?.(e);
+  };
+}
 
 // Charge un niveau ; s'il est introuvable (hors ligne et jamais mis en cache),
 // le dit au joueur au lieu d'ignorer le toucher.
@@ -220,24 +270,39 @@ async function fetchLevel(id) {
   try {
     return await loadLevel(id);
   } catch {
-    showModal(
-      `<div class="modal-kanji">封</div><h2>Niveau indisponible</h2><p>Ce niveau n’est pas encore enregistré pour le jeu hors ligne. Ouvrez le jeu une fois connecté pour le télécharger.</p>`,
-      [{ label: 'Carte du jardin', run: () => showScreen('map') }],
+    const card = showModal(
+      `${menuHead('封', 'Niveau indisponible', { sealCls: 'ink' })}<p class="menu-p">Ce niveau n’est pas encore enregistré pour le jeu hors ligne. Ouvrez le jeu une fois connecté pour le télécharger.</p>`,
+      [{ label: 'Niveaux', cls: 'secondary', run: () => showScreen('map') }],
+      { sheet: true, veil: true, cls: 'menu-sheet' },
     );
+    closeOnX(card);
     return null;
   }
 }
 
+// Règles du niveau : puces qui s'expliquent d'un toucher.
+const RULES = {
+  stones: ['石', 'Pierres', 'Posez des pierres sur le gravier : le chemin des yokai s’allonge.'],
+  rewind: ['巻', 'Rembobinage', 'Jauge pleine : glissez-la (ou touchez-la deux fois) pour remonter le temps de 6 s.'],
+  slots: ['刻', 'Socles réservés', 'Un socle gravé d’un élément n’accepte que les lanternes de cet élément.'],
+};
+
+// Fiche de niveau : feuille moyenne, modale (§6.18). Divulgation progressive : les
+// variantes (Difficile, défi) n'apparaissent qu'après une première victoire.
 async function openLevelCard(entry, unlocked) {
   if (!unlocked) {
-    showModal(
-      `<div class="modal-kanji">封</div><h2>Niveau scellé</h2><p>Terminez le niveau précédent pour briser le sceau.</p>`,
-      [{ label: 'Fermer' }],
+    const prev = order[entry.index - 1];
+    const prevName = prev && levelData[prev.id]?.name;
+    const card = showModal(
+      `${menuHead('封', 'Niveau scellé', { kicker: `Niveau ${entry.index + 1}`, sealCls: 'ink' })}<p class="menu-p">Gagnez ${prev ? `<b>${prev.id}${prevName ? ` · ${esc(prevName)}` : ''}</b>` : 'le niveau précédent'} pour briser le sceau.</p>`,
+      [{ label: 'Fermer', cls: 'secondary' }],
+      { sheet: true, veil: true, cls: 'menu-sheet level-sealed' },
     );
+    closeOnX(card);
     return;
   }
   const level = await fetchLevel(entry.id);
-  if (!level) return;
+  if (!level || state.screen !== 'map') return;
   const world = worldById(level.world);
   const rec = save.level(entry.id);
   const stars = rec.stars;
@@ -245,49 +310,74 @@ async function openLevelCard(entry, unlocked) {
   const counts = new Map();
   for (const t of level.towers || Object.keys(defs.towers)) {
     if (!defs.towers[t]) continue;
-    const el = elementOf(t, defs);
+    const el = elementOfTower(t, defs);
     counts.set(el, (counts.get(el) || 0) + 1);
   }
-  const towers = [...counts].map(([el, n]) => `<span class="lv-el">${elementBadge(el, defs, { size: 20, label: true })}${n > 1 ? `<small>×${n}</small>` : ''}</span>`).join('');
-  const news = (level.introduce || []).map((e) => defs.enemies[e]?.name).filter(Boolean);
-  const feats = [level.stones ? '石 Pierres' : null, level.rewind ? '巻 Rembobinage' : null, typedSlots(level) ? '刻 Socles gravés' : null].filter(Boolean);
+  const towers = [...counts].map(([el, n]) => `<span class="lv-el">${badgeOf(el, defs, { size: 20, label: true })}${n > 1 ? `<small>×${n}</small>` : ''}</span>`).join('');
+  const news = (level.introduce || []).filter((e) => defs.enemies[e]);
+  const rules = [level.stones ? 'stones' : null, level.rewind ? 'rewind' : null, typedSlots(level) ? 'slots' : null].filter(Boolean);
   const opts = { hard: false, challenge: false };
+  const variants = stars > 0; // première victoire : Difficile et défi se dévoilent
+  // tout premier niveau, jamais rien gagné : en-tête, leçon, yokai, Jouer (§6.18) ; ni
+  // « Lanternes » ni « Socles réservés » (le tutoriel les présente en jouant)
+  const firstEver = entry.index === 0 && !Object.keys(save.data.stars || {}).length;
   const hardOk = !!level.hard && save.hardUnlocked(entry.id);
   const ch = level.challenge;
-  const sw = (on) => `<span class="lv-switch${on ? ' on' : ''}" aria-hidden="true"></span>`;
+  const sw = '<span class="switch lv-switch" aria-hidden="true"></span>';
   const hardText = level.hard ? hardSummary(level.hard) : '';
+  const recordStars = `<div class="lv-record" role="img" aria-label="Record : ${stars} étoile${stars > 1 ? 's' : ''} sur 3">${[0, 1, 2].map((k) => `<i class="${k < stars ? 'on' : ''}"></i>`).join('')}</div>`;
+  const options = [
+    level.hard
+      ? hardOk
+        ? `<button type="button" class="lv-opt hard" data-opt="hard" aria-pressed="false"><span class="lv-seal hard" aria-hidden="true">難</span><span class="lv-opt-text"><b>Difficile${rec.hard ? ` <em>· gagné ${'★'.repeat(rec.hard)}</em>` : ''}</b><small>${hardText}</small></span>${sw}</button>`
+        : `<div class="lv-opt locked"><span class="lv-seal hard" aria-hidden="true">難</span><span class="lv-opt-text"><b>Difficile</b><small>S’ouvre après 3 ★ dans ce niveau</small></span><span class="lv-lock" aria-hidden="true"><svg viewBox="0 0 16 16" width="16" height="16"><rect x="3" y="7" width="10" height="7.5" rx="1.6" fill="currentColor"/><path d="M5.2 7V5.2a2.8 2.8 0 0 1 5.6 0V7" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></span></div>`
+      : '',
+    ch ? `<button type="button" class="lv-opt challenge" data-opt="challenge" aria-pressed="false"><span class="lv-seal ch${rec.challenge ? ' done' : ''}" aria-hidden="true">挑</span><span class="lv-opt-text"><b>Défi : ${ch.name}${rec.challenge ? ' <em>· réussi</em>' : ''}</b><small>${ch.desc || ''}</small></span>${sw}</button>` : '',
+  ].join('');
   const card = showModal(
-    `<div class="modal-kanji">${world.kanji}</div>
-     <h2>${entry.index + 1}. ${level.name}</h2>
-     <p class="lv-sub">${level.subtitle || ''}</p>
-     ${level.concept ? `<div class="lv-concept"><span class="lv-concept-k" aria-hidden="true">学</span><span><small>Leçon</small><b>${level.concept}</b></span></div>` : ''}
-     <div class="result-stars small">${[0, 1, 2].map((k) => `<i class="show ${k < stars ? 'on' : ''}">★</i>`).join('')}</div>
-     <div class="lv-els">${towers}</div>
-     ${news.length ? `<p class="lv-line"><b>Nouveau :</b> ${news.join(', ')}</p>` : ''}
-     ${feats.length ? `<p class="lv-line">${feats.join(' · ')}</p>` : ''}
-     ${coopReady() ? teamLine() : ''}
-     <div class="lv-options">
+    `${menuHead(world.kanji.charAt(0), esc(level.name), { kicker: `Niveau ${entry.index + 1} · ${esc(world.name)}`, sealCls: 'lv-world' })}
+     <div class="lv-body">
+       <div class="lv-subrow"><p class="lv-sub">${esc(level.subtitle || '')}</p>${recordStars}</div>
+       ${level.concept ? `<div class="lv-concept"><span class="lv-concept-k" aria-hidden="true">学</span><span><small>Leçon</small><b>${esc(level.concept)}</b></span></div>` : ''}
        ${
-         level.hard
-           ? hardOk
-             ? `<button class="lv-opt hard" data-opt="hard" aria-pressed="false"><span class="lv-seal hard" aria-hidden="true">難</span><span class="lv-opt-text"><b>Difficile${rec.hard ? ` <em>· gagné ${'★'.repeat(rec.hard)}</em>` : ''}</b><small>${hardText}</small></span>${sw(false)}</button>`
-             : `<div class="lv-opt locked"><span class="lv-seal hard" aria-hidden="true">難</span><span class="lv-opt-text"><b>Difficile</b><small>S’ouvre après 3 ★ dans ce niveau</small></span><span class="lv-lock" aria-hidden="true">封</span></div>`
+         news.length
+           ? `<section class="lv-sec"><h3 class="menu-sec">Nouveaux yokai</h3><div class="lv-yokai">${news
+               .map((e) => `<button type="button" class="lv-yk" data-enemy="${e}" aria-expanded="false"><img alt="" src="${portraitOf(defs, e, null, 48)}"><span>${esc(defs.enemies[e].name)}</span></button>`)
+               .join('')}</div><p class="lv-info lv-yk-info hidden" role="status"></p></section>`
            : ''
        }
-       ${
-         ch
-           ? `<button class="lv-opt challenge" data-opt="challenge" aria-pressed="false"><span class="lv-seal ch${rec.challenge ? ' done' : ''}" aria-hidden="true">挑</span><span class="lv-opt-text"><b>Défi : ${ch.name}${rec.challenge ? ' <em>· réussi</em>' : ''}</b><small>${ch.desc || ''}</small></span>${sw(false)}</button>`
-           : ''
-       }
+       ${firstEver ? '' : `<section class="lv-sec lv-inline"><h3 class="menu-sec">Lanternes</h3><div class="lv-els">${towers}</div></section>`}
+       ${rules.length && !firstEver ? `<section class="lv-sec lv-inline"><h3 class="menu-sec">Règles</h3><div class="lv-rules">${rules.map((r) => `<button type="button" class="lv-rule" data-rule="${r}" aria-expanded="false"><b aria-hidden="true">${RULES[r][0]}</b>${RULES[r][1]}</button>`).join('')}</div><p class="lv-info lv-rule-info hidden" role="status"></p></section>` : ''}
+       ${variants && options ? `<section class="lv-sec"><h3 class="menu-sec">Variantes</h3><div class="lv-options">${options}</div></section>` : ''}
+       ${coopReady() ? teamLine() : ''}
      </div>`,
-    [
-      { label: 'Retour' },
-      { label: 'Jouer', cls: 'primary', run: () => startLevel(entry.id, { ...opts }) },
-    ],
-    { cls: 'level-card' },
+    [{ label: 'Jouer', cls: 'primary L lv-play', run: () => startLevel(entry.id, { ...opts }) }],
+    { sheet: true, veil: true, cls: 'menu-sheet level-card', actionsCls: 'lv-actions' },
   );
   const play = card.querySelector('.actions .btn.primary');
-  card.onclick = (e) => {
+  const info = (box, key, text) => {
+    const same = box.dataset.key === key && !box.classList.contains('hidden');
+    box.dataset.key = key;
+    box.textContent = text;
+    box.classList.toggle('hidden', same);
+    return !same;
+  };
+  closeOnX(card, (e) => {
+    const yk = e.target.closest('.lv-yk');
+    if (yk) {
+      const d = defs.enemies[yk.dataset.enemy];
+      const open = info(card.querySelector('.lv-yk-info'), yk.dataset.enemy, `${d.name} — force : ${d.strength || d.desc}. Faiblesse : ${d.weakness || '—'}.`);
+      for (const b of card.querySelectorAll('.lv-yk')) b.setAttribute('aria-expanded', String(open && b === yk));
+      sound.play('select');
+      return;
+    }
+    const rule = e.target.closest('.lv-rule');
+    if (rule) {
+      const open = info(card.querySelector('.lv-rule-info'), rule.dataset.rule, RULES[rule.dataset.rule][2]);
+      for (const b of card.querySelectorAll('.lv-rule')) b.setAttribute('aria-expanded', String(open && b === rule));
+      sound.play('select');
+      return;
+    }
     const b = e.target.closest('.lv-opt[data-opt]');
     if (!b) return;
     const k = b.dataset.opt;
@@ -295,11 +385,11 @@ async function openLevelCard(entry, unlocked) {
     b.setAttribute('aria-pressed', String(opts[k]));
     b.classList.toggle('on', opts[k]);
     b.querySelector('.lv-switch')?.classList.toggle('on', opts[k]);
-    const modes = [opts.hard ? 'Difficile' : '', opts.challenge ? 'défi' : ''].filter(Boolean).join(' + ');
+    const modes = [opts.hard ? 'Difficile' : '', opts.challenge ? 'Défi' : ''].filter(Boolean).join(' · ');
     play.innerHTML = modes ? `Jouer<small class="btn-sub">${modes}</small>` : 'Jouer';
     play.setAttribute('aria-label', modes ? `Jouer : ${modes}` : 'Jouer');
     sound.play('select');
-  };
+  });
 }
 
 // Salon hébergé, en ligne, avec au moins un invité : « Jouer » lance pour tous.
@@ -315,10 +405,10 @@ function teamLine() {
     .map((p) => {
       const el = p.element || p.elements?.[0];
       const auto = !p.element && el ? ' <small>(attribué)</small>' : '';
-      return `<span class="lv-mate">${el ? elementBadge(el, defs, { size: 18 }) : ''}${esc(p.name)}${auto}</span>`;
+      return `<span class="lv-mate">${el ? badgeOf(el, defs, { size: 18 }) : ''}${esc(p.name)}${auto}</span>`;
     })
     .join('');
-  return `<p class="lv-line lv-team"><b>Partie à ${list.length} :</b> ${chips}</p><p class="lv-line">Chacun ne pose que les lanternes de son élément.</p>`;
+  return `<section class="lv-sec"><h3 class="menu-sec">Partent avec vous · ${list.length}</h3><p class="lv-line lv-team">${chips}</p><p class="lv-line lv-team-note">Chacun ne pose que les lanternes de son élément.</p></section>`;
 }
 
 function esc(s) {
@@ -343,32 +433,71 @@ function hardSummary(h) {
 // ───────────────────────── Fenêtre modale ─────────────────────────
 
 const modal = $('modal');
-// opts.sheet : feuille du bas sans voile (pause) — le plateau reste visible et touchable.
+// showModal(html, buttons, opts) — contrat entre lots (docs/UI-UX.md §9.4) :
+//   opts.sheet : true | 'medium' | 'large' → feuille du bas (true = moyenne) ; sinon carte centrée.
+//   opts.veil : voile (toucher = fermer), pour les feuilles hors partie ; en partie, sans voile,
+//               le plateau reste visible et touchable (pause, combos).
+//   opts.grabber : poignée (vrai par défaut pour une feuille) ; glisser vers le bas ferme.
+//   opts.onClose(raison) : feuille fermée par le voile, la poignée ou closeModal().
+//   opts.cls, opts.actionsCls, opts.column : classes de la carte et de la rangée d'actions.
+// Bouton : { label, html (libellé en HTML), cls, aria, keep (ne ferme pas), run(el),
+//            confirm: 'Confirmer…' (second toucher exigé, armConfirm) }.
+let modalOnClose = null;
+const modalCard = modal.firstElementChild;
+const modalSheet = attachSheet(modalCard, {
+  enabled: () => modal.classList.contains('as-sheet'),
+  largeTop: () => (state.screen === 'game' ? $('hud-top').getBoundingClientRect().bottom + 8 : modal.getBoundingClientRect().top + parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sat') || 0) + 56),
+  onClose: () => closeModal('drag'),
+});
 function showModal(html, buttons, opts = {}) {
-  const card = modal.firstElementChild;
-  modal.classList.toggle('as-sheet', !!opts.sheet);
+  const card = modalCard;
+  const sheet = opts.sheet ? (opts.sheet === 'large' ? 'large' : 'medium') : null;
+  modal.classList.toggle('as-sheet', !!sheet);
+  modal.classList.toggle('veil', !!(sheet && opts.veil));
   modal.classList.remove('peek');
+  // classe propre à la fenêtre (résultat : voile léger, plateau visible)
+  if (modal.dataset.cls) modal.classList.remove(...modal.dataset.cls.split(' '));
+  modal.dataset.cls = opts.modalCls || '';
+  if (opts.modalCls) modal.classList.add(...opts.modalCls.split(' '));
+  modalOnClose = opts.onClose || null;
+  modalSheet.reset();
   // « scroll » : la carte défile au doigt si elle dépasse l'écran (B28).
-  card.className = `modal-card scroll${opts.cls ? ' ' + opts.cls : ''}`;
+  card.className = `modal-card scroll${sheet ? ` sheet-card${sheet === 'large' ? ' sheet-large' : ''}` : ''}${opts.cls ? ' ' + opts.cls : ''}`;
   card.onclick = null; // gestionnaire propre à une vue (table des combos)
-  card.innerHTML = html + `<div class="actions${opts.column ? ' col' : ''}${opts.actionsCls ? ' ' + opts.actionsCls : ''}"></div>`;
+  const grab = sheet && opts.grabber !== false ? '<span class="sheet-grabber" aria-hidden="true"></span>' : '';
+  card.innerHTML = grab + html + `<div class="actions${opts.column ? ' col' : ''}${opts.actionsCls ? ' ' + opts.actionsCls : ''}"></div>`;
   const box = card.querySelector('.actions');
   for (const b of buttons) {
     const el = document.createElement('button');
     el.className = 'btn ' + (b.cls || '');
-    el.textContent = b.label;
+    if (b.html) el.innerHTML = b.label;
+    else el.textContent = b.label;
     if (b.aria) el.setAttribute('aria-label', b.aria);
-    el.addEventListener('click', () => {
-      if (b.keep !== true) modal.classList.add('hidden');
+    const go = () => {
+      if (b.keep !== true) closeModal('button', true);
       b.run?.(el);
-    });
+    };
+    el.addEventListener('click', () => (b.confirm ? armConfirm(el, { label: b.confirm, run: go }) : go()));
     box.appendChild(el);
   }
   modal.classList.remove('hidden');
+  card.scrollTop = 0;
   return card;
 }
+// Ferme la fenêtre. `silent` : sans rappel onClose (un bouton a sa propre action).
+function closeModal(reason = 'close', silent = false) {
+  if (modal.classList.contains('hidden')) return;
+  modal.classList.add('hidden');
+  const f = modalOnClose;
+  modalOnClose = null;
+  if (!silent) f?.(reason);
+}
+// Toucher le voile (feuille modale hors partie) : fermer.
+modal.addEventListener('click', (e) => {
+  if (e.target === modal && modal.classList.contains('veil')) closeModal('veil');
+});
 const modalOpen = () => !modal.classList.contains('hidden');
-const pauseSheetOpen = () => modalOpen() && modal.classList.contains('as-sheet');
+const pauseSheetOpen = () => modalOpen() && modal.classList.contains('as-sheet') && state.screen === 'game';
 
 // Panneau de débogage (caché : cinq touchers sur le titre).
 const debug = new DebugPanel({
@@ -400,14 +529,18 @@ window.__debug = debug;
 
 const input = new Input(canvas, renderer, {
   game: () => state.game,
+  barClosed: (id) => towerBar.isClosedFor(id),
+  reopenBar: (id) => towerBar.reopen(id),
   onInfo: (target) => showInfo(target),
   onFeedback: (kind, data) => feedback(kind, data),
   onAction: (kind, data) => {
     if (kind === 'selectTower' || kind === 'dragStart') sound.play('select');
     if (kind === 'placed') {
-      // en construction 2 s : « Annuler » pendant la construction, puis 3 s
+      // la pose répond au relâchement du doigt (son « build », < 100 ms) ; en
+      // construction 2 s : « Annuler » pendant la construction, puis 3 s
+      sound.play('build', { x: data.c + 0.5 });
+      renderer.dropGhost?.(data);
       hud.showUndo(data.ticket, 'tower');
-      placeUndo();
       hud.popTool(data.type);
       // Défi « N lanternes au plus » : le compte des poses (constructions comprises), sous les yeux
       const rule = state.game?.challengeRule;
@@ -417,19 +550,21 @@ const input = new Input(canvas, renderer, {
       }
     }
     if (kind === 'stone') {
+      sound.play('build', { x: data.c + 0.5 });
       hud.popTool('stone');
       hud.showUndo(data.ticket, 'stone');
-      placeUndo();
     }
     if (kind === 'rally') {
       // le mur se dessine sur la case touchée et s'y dresse après la construction
-      sound.play('select');
+      sound.play('build', { x: data.c + 0.5 });
+      hud.lane.clear('rally');
       hud.showUndo(data.ticket, 'rally');
-      placeUndo();
       const p = renderer.toScreen(data.c + 0.5, data.r - 0.1);
       input.flash('Le mur se déplace…', p.x, p.y);
     }
-    if (kind === 'placed' || kind === 'toolCleared' || kind === 'selectTower' || kind === 'stone') hud.refreshTools();
+    if (kind === 'fused' || kind === 'fuseCancel') endFuseMode();
+    if (kind === 'slot') slotFirst(data);
+    if (kind === 'placed' || kind === 'toolCleared' || kind === 'selectTower' || kind === 'stone' || kind === 'slot') hud.refreshTools();
   },
   onHold: (st, p, ms) => holdRing(st, p, ms),
   // Un toucher sur le plateau ferme la fiche ouverte.
@@ -440,13 +575,17 @@ const input = new Input(canvas, renderer, {
 // « Annulé » discret, son de refus.
 function feedback(kind, data = {}) {
   if (kind === 'reject') {
+    // le refus s'écrit près du geste, au-dessus du socle visé (jamais dans un message global)
     const short = data.reason === 'gold' && data.missing ? `Il manque ${data.missing} or` : data.reason === 'challenge' ? challengeShort() : hud.shortReason(data.reason, data);
-    if (data.x != null && short) input.flash(short, data.x, data.y, true);
-    else if (hud.reason(data.reason, data)) hud.toast(hud.reason(data.reason, data), true);
-    // Premier refus sur un socle gravé : la règle, une fois, en clair.
+    const text = short || hud.reason(data.reason, data);
+    if (text && data.c != null && state.game?.grid.inBounds(data.c, data.r)) {
+      const p = renderer.toScreen(data.c + 0.5, data.r + 0.5);
+      input.flash(text, p.x, p.y, true, { c: data.c, r: data.r });
+    } else if (text && data.x != null) input.flash(text, data.x, data.y, true);
+    // Premier refus sur un socle réservé : la règle, une fois, en clair (couloir).
     if (data.reason === 'slotElement' && !state.slotRefuseShown) {
       state.slotRefuseShown = true;
-      hud.toast(hud.reason('slotElement', data), false, 2600);
+      hud.say({ key: 'slot-rule', text: hud.reason('slotElement', data), prio: 1 });
     }
     sound.play('reject');
   } else if (kind === 'rallyFar') {
@@ -465,12 +604,15 @@ function feedback(kind, data = {}) {
   } else if (kind === 'hint') {
     const msg = hud.reason(data.reason);
     if (msg) hud.toast(msg);
+  } else if (kind === 'fuseCancel') {
+    if (data.x != null) input.flash('Fusion annulée', data.x, data.y);
+    sound.play('tap');
   }
 }
 
 // Libellé écrit à côté du fantôme de pose (raison du refus, gain de chemin).
 renderer.pressLabel = (press) => {
-  if (press.c == null) return null;
+  if (!press || press.c == null) return null;
   if (press.kind === 'tower') {
     if (press.valid) return null;
     if (press.reason === 'gold') return { text: `Il manque ${press.missing} or`, tone: 'bad' };
@@ -524,7 +666,7 @@ const hud = new Hud(screenGame, {
   onPause: () => (pauseSheetOpen() && state.paused && !state.resultShown ? resumeFromPause() : openPauseMenu()),
   onSpeed: () => {
     if (state.coopRole === 'guest') {
-      hud.toast('La vitesse est réglée par l’hôte');
+      hud.tipAt($('btn-speed'), 'La vitesse est réglée par l’hôte');
       return;
     }
     setSpeed(state.speed === 1 ? 2 : 1);
@@ -532,16 +674,16 @@ const hud = new Hud(screenGame, {
   },
   onTool: (tool) => {
     sound.play('select');
-    // Premier choix d'une lanterne dans un niveau à socles gravés : la règle, une fois.
+    // Premier choix d'une lanterne dans un niveau à socles réservés : la règle, une fois
+    // (le tutoriel la dit déjà dans sa bulle de pose).
     const g = state.game;
-    if (tool && tool !== 'stone' && g && !state.slotHintShown && g.grid.slotElement?.some(Boolean)) {
+    if (tool && tool !== 'stone' && g && !state.slotHintShown && g.grid.slotElement?.some(Boolean) && !g.level.tutorial?.includes('place')) {
       state.slotHintShown = true;
-      hud.toast('刻 Socles gravés ▲ ● ◆ ■ : chacun n’accepte que son élément', false, 2800);
+      hud.say({ key: 'slot-rule', text: '刻 Socles réservés ▲ ● ◆ ■ : chacun n’accepte que son élément', prio: 1 });
     }
-    // La carte « Nouveau yokai » cachait des socles : un toucher pour poser ouvrait
-    // la fiche du yokai. On pose : elle s'efface (la fiche reste dans l'aperçu de vague).
-    if (tool && g && introCoversSlot(g)) introEl.classList.add('hidden');
   },
+  // socle d'abord : une carte touchée pose aussitôt sur le socle choisi
+  onToolPick: (id) => pickTool(id),
   onToolInfo: (id) => (id === 'stone' ? sheets.open('stoneTool') : sheets.open('type', id)),
   onUndo: (id) => undoPlace(id),
   onHold: (st, p, ms) => holdRing(st, p, ms),
@@ -552,7 +694,70 @@ const hud = new Hud(screenGame, {
     sheets.open('element', el);
   },
   onTab: () => sound.play('select'),
+  // un yokai que le niveau présente et qui n'est pas encore apparu : « nouveau »
+  isNew: (type) => !!state.game && (state.game.level.introduce || []).includes(type) && !state.introduced.has(type),
+  // couloir de messages : ni portails, ni sanctuaire, ni barre d'actions, ni bulle du tutoriel
+  laneAvoid: () => laneAvoid(),
+  laneTop: () => (bossbar.classList.contains('hidden') ? 10 : bossbar.offsetTop + bossbar.offsetHeight + 6),
+  laneHold: () => tutorial.showing || state.lastChance || state.resultShown,
+  onLaneAct: (a) => laneAct(a),
+  // message sans action touché : il s'efface et le geste continue sur le plateau dessous
+  onLanePass: (e) => input.onDown(e),
+  // … de même pour un message à action posé sur une lanterne ou une construction
+  laneOverBoard: (e) => {
+    const g = state.game;
+    if (!g) return false;
+    const r = canvas.getBoundingClientRect();
+    const p = { x: e.clientX - r.left, y: e.clientY - r.top };
+    const t = renderer.toTile(p.x, p.y);
+    return !!input.towerNear(p) || (g.grid.inBounds(t.c, t.r) && !!commands.buildAt(t.c, t.r));
+  },
 });
+
+// Zones du plateau (repère de #stage) que le couloir de messages ne couvre jamais.
+let laneAvoidCache = { key: '', rects: [] };
+function laneAvoid() {
+  const g = state.game;
+  if (!g) return [];
+  const key = `${renderer.ts}|${renderer.ox}|${renderer.oy}|${g.grid.cols}`;
+  if (laneAvoidCache.key !== key) {
+    const rects = [];
+    const ts = renderer.ts;
+    for (const i of [...g.grid.spawns, ...g.grid.goals]) {
+      const p = renderer.toScreen(g.grid.col(i), g.grid.row(i));
+      rects.push({ l: p.x - 6, t: p.y - 6, r: p.x + ts + 6, b: p.y + ts + 6 });
+    }
+    laneAvoidCache = { key, rects };
+  }
+  const out = [...laneAvoidCache.rects];
+  const st = stage.getBoundingClientRect();
+  const rel = (r) => ({ l: r.left - st.left, t: r.top - st.top, r: r.right - st.left, b: r.bottom - st.top });
+  const bar = $('tower-bar');
+  if (!bar.classList.contains('hidden')) out.push(rel(bar.getBoundingClientRect()));
+  const bubble = $('hint').querySelector('.bubble');
+  if (bubble && !$('hint').classList.contains('hidden')) out.push(rel(bubble.getBoundingClientRect()));
+  // Lanternes, constructions et échos : à éviter aussi, mais après S, G, la barre et la
+  // bulle (poids faible : départage les places qui ne couvrent rien de tout cela). Un
+  // message en haut du plateau cachait (et prenait le doigt de) la lanterne dessous.
+  const ts = renderer.ts;
+  const cell = (c, r) => {
+    const p = renderer.toScreen(c, r - 0.4);
+    return { l: p.x + 2, t: p.y, r: p.x + ts - 2, b: p.y + ts * 1.4 - 2, w: 0.01 };
+  };
+  for (const t of g.towers) out.push(cell(t.c, t.r));
+  for (const e of g.echoes || []) out.push(cell(e.c, e.r));
+  for (const b of commands.builds()) if (b.op === 'placeTower') out.push(cell(b.c, b.r));
+  return out;
+}
+
+// Toucher un message du couloir : son action liée.
+function laneAct(a) {
+  if (!a || !state.game) return;
+  if (a.kind === 'enemy') {
+    const e = state.game.enemies.find((x) => x.type === a.type && x.alive);
+    sheets.open('enemy', { type: a.type, enemy: e || null, absorb: e?.absorb ?? a.absorb ?? null });
+  } else if (a.kind === 'combos') openComboTable(a.id, true);
+}
 
 // Bouton de vague : lancer la première, puis appeler la suivante en avance (à
 // tout moment, même pendant une vague : bonus d'or et charge de Rembobinage).
@@ -580,34 +785,59 @@ function challengeShort() {
   return 'Interdit par le défi';
 }
 
-// « Annuler » : en bas à gauche du plateau, ou à droite s'il y cacherait un socle
-// libre ou le sanctuaire (petits écrans : le plateau descend jusqu'à la palette).
-function placeUndo() {
-  const el = $('btn-undo');
+// ── Socle d'abord (docs/UI-UX.md §6.7) : toucher un socle libre sans outil le choisit
+// (anneau or) ; réservé, la palette montre son élément et grise les cartes interdites ;
+// toucher une carte pose aussitôt sur ce socle ; toucher ailleurs annule.
+function slotFirst(slot) {
+  hud.setSlotFilter(slot || null);
+  if (slot) hud.say({ key: 'slot-first', text: '建 Choisissez une lanterne', detail: slot.element ? `Socle réservé ${toElementName(slot.element)}` : 'pour ce socle', prio: 3 });
+  else hud.lane.clear('slot-first');
+}
+
+function toElementName(el) {
+  const info = elementInfo(el, defs);
+  return `${info.glyph} ${info.label}`;
+}
+
+// Une carte de la palette touchée : outil choisi, ou pose immédiate sur le socle choisi.
+// Renvoie l'outil (comme input.setTool) ou false si la pose est partie.
+function pickTool(id) {
+  const slot = input.ui.selectedSlot;
+  if (!slot || id === 'stone') {
+    if (slot) clearSlot();
+    return input.setTool(id);
+  }
   const g = state.game;
-  el.classList.remove('right');
-  if (!g || el.classList.contains('hidden')) return;
-  const cv = canvas.getBoundingClientRect();
-  const ts = renderer.ts;
-  const cost = () => {
-    const u = el.getBoundingClientRect();
-    let n = 0;
-    for (let i = 0; i < g.grid.size; i++) {
-      const ty = g.grid.type(i);
-      const c = g.grid.col(i);
-      const r = g.grid.row(i);
-      if (ty !== T.GOAL && !(ty === T.SLOT && !g.towerAt(c, r))) continue;
-      const p = renderer.toScreen(c, r);
-      const ix = Math.min(u.right, cv.left + p.x + ts) - Math.max(u.left, cv.left + p.x);
-      const iy = Math.min(u.bottom, cv.top + p.y + ts) - Math.max(u.top, cv.top + p.y);
-      if (ix > 0 && iy > 0) n += ix * iy;
-    }
-    return n;
-  };
-  const left = cost();
-  if (left <= 0) return;
-  el.classList.add('right');
-  if (cost() >= left) el.classList.remove('right');
+  const res = commands.check('placeTower', id, slot.c, slot.r);
+  if (!res.ok) {
+    feedback('reject', { reason: res.reason, element: res.element, owner: res.owner, c: slot.c, r: slot.r, missing: res.reason === 'gold' ? commands.missing(id) : 0 });
+    if (g) g.emit('reject', { c: slot.c, r: slot.r, reason: res.reason });
+    return false;
+  }
+  const ticket = commands.issue('placeTower', id, slot.c, slot.r);
+  clearSlot();
+  if (ticket) input.h.onAction?.('placed', { type: id, c: slot.c, r: slot.r, ticket });
+  return false;
+}
+
+function clearSlot() {
+  if (!input.ui.selectedSlot) return;
+  input.ui.selectedSlot = null;
+  slotFirst(null);
+}
+
+// ── Fusion guidée (§6.8) : « Fusionner » allume les jumelles ; toucher une jumelle
+// l'absorbe dans la lanterne choisie ; toucher ailleurs annule.
+function startFuseMode(t) {
+  if (input.inspect) return; // pause : ni pose ni fusion (la consigne serait impossible à suivre)
+  sound.play('select');
+  input.setFuse(t.id);
+  hud.say({ key: 'fuse', text: '合 Touchez la jumelle à absorber', detail: 'ailleurs : annuler', prio: 3 });
+}
+
+function endFuseMode() {
+  if (input.ui.fuseFrom != null) input.setFuse(null);
+  hud.lane.clear('fuse');
 }
 
 // « Annuler » : commande 'cancel' de la pose (en construction : rien n'est payé ;
@@ -618,12 +848,16 @@ function undoPlace(ticket) {
   const entry = commands.entryOf(ticket);
   const towerId = entry?.done ? entry.result : null;
   const res = commands.cancel(ticket);
-  hud.hideUndo();
   // (exécutée aussitôt en solo ; en coopération, après le délai des commandes)
   if (res && !(res.done && !res.ok)) {
+    hud.hideUndo();
+    sound.play('undo');
     hud.refreshTools();
     if (towerId != null && input.ui.selectedTower === towerId) input.ui.selectedTower = null;
-  } else hud.toast('Trop tard pour annuler');
+  } else {
+    hud.tipAt($('btn-undo'), 'Trop tard pour annuler', { bad: true });
+    hud.hideUndo();
+  }
 }
 
 // Construction touchée, puis « Annuler » (barre « En construction »).
@@ -631,8 +865,13 @@ function cancelBuild(build) {
   if (!build?.mine) return;
   const res = commands.cancel(build.ticket);
   if (hud.undo?.ticket && (hud.undo.ticket === build.ticket || commands.entryOf(hud.undo.ticket) === build.entry)) hud.hideUndo();
-  if (res && !(res.done && !res.ok)) hud.refreshTools();
-  else hud.toast('Trop tard pour annuler');
+  if (res && !(res.done && !res.ok)) {
+    sound.play('undo');
+    hud.refreshTools();
+  } else {
+    const p = renderer.toScreen(build.c + 0.5, build.r + 0.5);
+    input.flash('Trop tard pour annuler', p.x, p.y, true, { c: build.c, r: build.r });
+  }
 }
 
 // Barre d'actions de la lanterne sélectionnée.
@@ -641,13 +880,14 @@ const towerBar = new TowerBar($('tower-bar'), {
   input,
   renderer,
   sheetOpen: () => sheets.isOpen,
-  onPriority: (t) => changePriority(t),
+  onPriority: (t, p) => changePriority(t, p),
   onRally: (t) => toggleRally(t),
   onSheet: (t) => {
     sound.play('select');
     sheets.open('tower', t.id);
   },
   onSell: (t) => sellTower(t),
+  onFuse: (t) => startFuseMode(t),
   onCancelBuild: (b) => cancelBuild(b),
   owner: (pid) => playerInfo(pid),
 });
@@ -660,12 +900,13 @@ function toggleRally(t) {
     return;
   }
   input.setRally(t.id);
-  hud.toast('壁 Touchez une case allumée du chemin · ailleurs : annuler', false, 3200);
+  hud.say({ key: 'rally', text: '壁 Touchez une case allumée du chemin', detail: 'ailleurs : annuler', prio: 3 });
 }
 
-function changePriority(t) {
+// Priorité de ciblage : la valeur choisie dans la barre d'actions, sinon la suivante.
+function changePriority(t, value = null) {
   const g = state.game;
-  const p = cyclePriority(g, t);
+  const p = value ? (commands.issue('setPriority', t.id, value) ? value : null) : cyclePriority(g, t);
   if (!p) return;
   sound.play('select');
   renderer.fx.ring(t.x, t.y + 0.3, 0.1, 0.62, PALETTE.gold, 0.45, 0.06, 0.45);
@@ -705,8 +946,12 @@ const sheets = new Sheets($('info'), {
     modal.classList.remove('peek');
   },
   onSell: (t) => sellTower(t),
-  onPriority: (t) => changePriority(t),
+  onPriority: (t, value) => changePriority(t, value),
   onRally: (t) => toggleRally(t),
+  onFuse: (t) => startFuseMode(t),
+  onCombo: (id) => openComboTable(id),
+  // grande hauteur : 8 px sous le HUD
+  largeTop: () => $('hud-top').getBoundingClientRect().bottom + 8,
   onSelectTool: (type) => {
     // (setTool refuse une lanterne qui n'est pas de l'élément du joueur)
     if (input.ui.tool !== type) input.setTool(type);
@@ -725,6 +970,7 @@ function setSpeed(s) {
   const b = $('btn-speed');
   b.firstElementChild.textContent = `×${s}`;
   b.classList.toggle('on', s > 1);
+  b.setAttribute('aria-label', `Vitesse ×${s}${state.coopRole === 'guest' ? ' (réglée par l’hôte)' : ''}`);
 }
 
 const gauge = new RewindGauge($('rewind'), {
@@ -734,21 +980,29 @@ const gauge = new RewindGauge($('rewind'), {
   // dit comment elle se remplit ; un appui long ouvre la règle.
   onRefuse: (why, pct) => {
     const msg = {
-      charge: `巻 Jauge ${pct} % : apaisez des yokai, appelez les vagues en avance (appui long : la règle)`,
-      wave: '巻 Jauge pleine : glissez ◀◀ pendant une vague',
-      short: '巻 Le passé s’accumule encore…',
+      charge: `${pct} % : se remplit en apaisant des yokai et en appelant les vagues en avance`,
+      wave: 'Pleine : utilisable pendant une vague',
+      short: 'Le passé s’accumule encore…',
       // (coopération) déjà demandé, il part après le délai des commandes
-      coming: '巻 Le temps va reculer…',
-      // jauge prête, simplement touchée : le geste attendu
-      drag: `巻 Glissez la poignée vers la gauche ◀◀ : le temps recule de ${state.game?.rules.rewindSeconds ?? 6} s`,
+      coming: 'Le temps va reculer…',
     }[why];
-    if (msg) hud.toast(msg, false, 2200);
+    // écrit près du doigt, au-dessus de la jauge (appui long : la règle)
+    if (msg) hud.tipAt($('rewind'), msg);
   },
   onInfo: () => {
     sound.play('select');
     sheets.open('rewind');
   },
   onHold: (st, p, ms) => holdRing(st, p, ms),
+  // arc fantôme : la charge qu'apporterait un appel anticipé maintenant
+  ghost: () => {
+    const g = state.game;
+    const pv = g?.nextWavePreview?.();
+    return g && g.waveIndex >= 0 && commands.check('startNextWave').ok ? earlyCharge(g, pv) : 0;
+  },
+  onArm: (on) => {
+    if (on) sound.play('select');
+  },
 });
 
 const tutorial = new Tutorial($('hint'), {
@@ -793,6 +1047,12 @@ function resumeFromPause() {
   modal.classList.add('hidden');
   sheets.close();
   setPaused(false);
+  applyHand(); // (les Réglages ouverts depuis la pause ont pu changer de main)
+}
+
+// « Bouton de vague à gauche » (réglage, gaucher) : rangée d'action inversée.
+function applyHand() {
+  screenGame.classList.toggle('left-handed', !!save.data.leftHanded);
 }
 
 // En pause, la musique retombe au calme (plus de tambours de vague), puis
@@ -811,66 +1071,113 @@ function holdMusic(p) {
   }
 }
 
-// Pause : feuille du bas compacte, sans voile ; le plateau reste visible et on peut
-// y toucher les lanternes et les yokai pour étudier la carte.
-// Coopération : la pause de l'hôte arrête la partie pour tous ; le menu d'un invité
-// ne l'arrête pas (« La partie continue »).
+// Pause (docs/UI-UX.md §6.10) : feuille du bas non modale (sans voile, le plateau reste
+// visible et touchable pour étudier la carte), hiérarchisée : « Reprendre » seul en
+// vermillon ; Combos ; réglages rapides (Son, Musique, Effets, Réglages) ; puis, sous un
+// trait de pinceau, « Recommencer » et « Quitter » discrets, confirmés par un second
+// toucher. Coopération : la pause de l'hôte arrête la partie pour tous ; le menu d'un
+// invité ne l'arrête pas (« La partie continue »).
+const ICONS = {
+  // son et musique : l'icône dit l'état (haut-parleur barré, croche barrée quand coupés)
+  sound: '<svg class="ico" viewBox="0 0 20 20" aria-hidden="true"><path d="M3 8h3l4-3.5v11L6 12H3z"/><path class="ico-on" d="M13.5 7.2a4 4 0 0 1 0 5.6M15.6 5a7 7 0 0 1 0 10"/><path class="ico-off" d="M13.2 7.6l4.8 4.8M18 7.6l-4.8 4.8"/></svg>',
+  music: '<svg class="ico" viewBox="0 0 20 20" aria-hidden="true"><path d="M8 15V4.5l8-1.8V13"/><ellipse cx="5.8" cy="15.2" rx="2.4" ry="1.9"/><ellipse cx="13.8" cy="13.4" rx="2.4" ry="1.9"/><path class="ico-off" d="M2.5 2.5l15 15"/></svg>',
+  fx: '<svg class="ico" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.5l1.6 4.6 4.6 1.6-4.6 1.6L10 15l-1.6-4.7-4.6-1.6 4.6-1.6z"/><path d="M15.5 13.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/></svg>',
+  settings: '<svg class="ico" viewBox="0 0 20 20" aria-hidden="true"><path d="M3 6h14M3 14h14"/><circle cx="7" cy="6" r="2.2" fill="currentColor"/><circle cx="13" cy="14" r="2.2" fill="currentColor"/></svg>',
+  restart: '<svg class="ico" viewBox="0 0 20 20" aria-hidden="true"><path d="M4.5 10a5.5 5.5 0 1 0 1.8-4.1"/><path d="M4 3.2v3.6h3.6"/></svg>',
+  quit: '<svg class="ico" viewBox="0 0 20 20" aria-hidden="true"><path d="M3.5 9.5L10 4l6.5 5.5"/><path d="M5.5 8v8h9V8"/></svg>',
+  play: '<svg class="ico" viewBox="0 0 20 20" aria-hidden="true"><path d="M6.5 4.5l9 5.5-9 5.5z" fill="currentColor"/></svg>',
+};
+
+// Effets complets / sobres (§7.4) : lu au démarrage, appliqué à toute l'interface.
+function applyEffects() {
+  const sober = save.data.effects === 'sober';
+  document.documentElement.classList.toggle('fx-sober', sober);
+  renderer.sober = sober || reduceMotion.matches;
+}
+applyEffects();
+reduceMotion.addEventListener?.('change', applyEffects);
+
+// Note du menu d'un invité : la partie continue, sauf si l'hôte l'a mise en pause.
+function guestPauseNote() {
+  return state.waitKind === 'pause' ? 'Partie en pause : l’hôte l’a arrêtée pour tous.' : 'La partie continue : seul l’hôte peut la mettre en pause.';
+}
+
 function openPauseMenu() {
   if (!state.game || state.resultShown) return;
   setPaused(true);
   sheets.close();
+  endFuseMode();
+  clearSlot();
   const g = state.game;
   const role = state.coopRole;
-  const musicLabel = () => `Musique : ${save.data.music ? 'oui' : 'non'}`;
-  const soundLabel = () => `Son : ${save.data.muted ? 'non' : 'oui'}`;
-  const head = role === 'guest' ? 'Menu' : 'Pause';
-  const note = role === 'guest' ? '<p class="pause-coop">La partie continue : seul l’hôte peut la mettre en pause.</p>' : role === 'host' ? '<p class="pause-coop">Partie en pause pour tous les joueurs.</p>' : '';
-  const sound2 = [
-    {
-      label: soundLabel(),
-      keep: true,
-      run: (el) => {
-        setMuted(!save.data.muted);
-        el.textContent = soundLabel();
-      },
-    },
-    {
-      label: musicLabel(),
-      keep: true,
-      run: (el) => {
-        save.set('music', !save.data.music);
-        sound.musicOn = save.data.music;
-        el.textContent = musicLabel();
-      },
-    },
-  ];
-  let buttons;
-  if (role === 'guest') {
-    buttons = [
-      { label: 'Reprendre', cls: 'primary', run: () => resumeFromPause() },
-      { label: 'Combos', keep: true, aria: 'Table des combos', run: () => openComboTable() },
-      ...sound2,
-      { label: 'Quitter le salon', cls: 'dark', run: () => quitGuestGame() },
-    ];
-  } else {
-    buttons = [
-      // débogage : seul (en coopération, chaque téléphone calcule la même partie : un
-      // tour de passe-passe local la ferait diverger)
-      ...(debug.enabled && !role ? [{ label: 'Débogage', keep: true, run: () => debug.open() }] : []),
-      { label: 'Reprendre', cls: 'primary', run: () => resumeFromPause() },
-      { label: 'Combos', keep: true, aria: 'Table des combos', run: () => openComboTable() },
-      { label: 'Carte', cls: 'dark', aria: role === 'host' ? 'Carte du jardin (fin de la partie pour tous)' : 'Carte du jardin', run: () => showScreen('map') },
-      ...sound2,
-      { label: 'Recommencer', aria: role === 'host' ? 'Recommencer pour tous' : 'Recommencer', run: () => startLevel(state.levelId, state.mode) },
-    ];
-  }
-  showModal(
-    `<div class="pause-head"><span class="modal-kanji">${role === 'guest' ? '間' : '休'}</span><div><h2>${head}</h2><p>${g.level.name} · vague ${Math.max(0, g.waveIndex + 1)}/${g.totalWaves}</p></div></div>
-     ${modeLine(g)}${note}
-     <p class="pause-hint">Touchez une lanterne, ou appuyez longuement sur un yokai, pour l’étudier.</p>`,
-    buttons,
-    { sheet: true, cls: 'pause-card', actionsCls: 'pause-grid' },
+  const guest = role === 'guest';
+  const host = role === 'host';
+  const zones = new Set((g.zones || []).map((z) => z.def?.id));
+  const totalCombos = (g.defs.combos || []).length;
+  const note = guest ? guestPauseNote() : host ? 'Partie en pause pour tous les joueurs.' : '';
+  const quick = (act, label, on) => `<button class="pq${on ? ' on' : ''}" data-act="${act}" aria-pressed="${on}">${ICONS[act]}<span>${label}</span></button>`;
+  const sober = save.data.effects === 'sober';
+  const card = showModal(
+    `<div class="pause-head"><span class="seal seal-indigo seal-32 tilt" aria-hidden="true">${guest ? '間' : '休'}</span><div class="ph-text"><h2>${guest ? 'Menu' : 'Pause'}</h2><p>${esc(g.level.name)} · vague ${digitsHTML(Math.max(0, g.waveIndex + 1))}/${digitsHTML(g.totalWaves)}</p></div>${modeLine(g)}</div>
+     ${note ? `<p class="pause-coop">${note}</p>` : ''}
+     <div class="pause-main">
+       <button class="btn primary L" data-act="resume">${ICONS.play}Reprendre</button>
+       <button class="btn M pause-combos" data-act="combos" aria-label="Combos : ${zones.size} actifs sur ${totalCombos}"><span class="seal seal-indigo seal-24" aria-hidden="true">合</span>Combos<small>${zones.size ? `${digitsHTML(zones.size)} actif${zones.size > 1 ? 's' : ''}` : 'aucun actif'}</small></button>
+     </div>
+     <div class="pause-quick" role="group" aria-label="Réglages rapides">
+       ${quick('sound', 'Son', !save.data.muted)}${quick('music', 'Musique', !!save.data.music)}${quick('fx', sober ? 'Sobres' : 'Effets', !sober)}<button class="pq" data-act="settings">${ICONS.settings}<span>Réglages</span></button>
+     </div>
+     <div class="pause-danger">
+       ${
+         guest
+           ? `<button class="btn quiet S" data-act="leave">${ICONS.quit}Quitter le salon</button>`
+           : // hôte : la conséquence en sous-ligne dessinée (le libellé long se cassait n'importe où)
+             `<button class="btn quiet S" data-act="restart"${host ? ' aria-label="Recommencer pour tous"' : ''}>${ICONS.restart}${host ? '<span class="pd-txt">Recommencer<small>pour tous</small></span>' : 'Recommencer'}</button><button class="btn quiet S" data-act="quit"${host ? ' aria-label="Quitter : fin de la partie pour tous"' : ''}>${ICONS.quit}${host ? '<span class="pd-txt">Quitter<small>fin pour tous</small></span>' : 'Quitter la partie'}</button>`
+       }
+     </div>
+     <p class="pause-note">Un second toucher confirme${guest ? '.' : ' : la partie sera perdue.'}</p>
+     ${debug.enabled && !role ? '<button class="btn text pause-debug" data-act="debug">Débogage</button>' : ''}`,
+    [],
+    { sheet: true, cls: 'pause-card', onClose: () => resumeFromPause() },
   );
+  card.onclick = (e) => {
+    const b = e.target.closest('[data-act]');
+    if (!b) return;
+    const act = b.dataset.act;
+    if (act === 'resume') resumeFromPause();
+    else if (act === 'combos') openComboTable();
+    else if (act === 'sound') {
+      setMuted(!save.data.muted);
+      b.classList.toggle('on', !save.data.muted);
+      b.setAttribute('aria-pressed', String(!save.data.muted));
+      sound.play('select');
+    } else if (act === 'music') {
+      save.set('music', !save.data.music);
+      sound.musicOn = save.data.music;
+      b.classList.toggle('on', save.data.music);
+      b.setAttribute('aria-pressed', String(save.data.music));
+      sound.play('select');
+    } else if (act === 'fx') {
+      save.set('effects', save.data.effects === 'sober' ? 'full' : 'sober');
+      applyEffects();
+      const full = save.data.effects !== 'sober';
+      b.classList.toggle('on', full);
+      b.setAttribute('aria-pressed', String(full));
+      b.querySelector('span').textContent = full ? 'Effets' : 'Sobres';
+      sound.play('select');
+    } else if (act === 'settings') openSettingsSheet();
+    else if (act === 'restart') armConfirm(b, { label: host ? 'Tous recommencent ?' : 'Recommencer ?', run: () => startLevel(state.levelId, state.mode) });
+    else if (act === 'quit') armConfirm(b, { label: host ? 'Fin pour tous ?' : 'Quitter ?', run: () => showScreen('map') });
+    else if (act === 'leave') armConfirm(b, { label: 'Quitter le salon ?', run: () => quitGuestGame() });
+    else if (act === 'debug') debug.open();
+  };
+}
+
+// Réglages (lot MENUS, src/ui/settings.js, contrat openSettings()) : chargé à la demande.
+function openSettingsSheet() {
+  import('./ui/settings.js')
+    .then((m) => m.openSettings?.({ from: 'pause', back: () => openPauseMenu() }))
+    .catch(() => hud.say({ text: 'Réglages indisponibles hors ligne', prio: 0 }));
 }
 
 // Invité : quitter la partie, c'est quitter le salon de l'hôte (ses lanternes restent).
@@ -884,7 +1191,7 @@ function quitGuestGame() {
 function modeLine(g) {
   const parts = [];
   if (g.hard) parts.push('<span class="mode-chip hard"><b>難</b>Difficile</span>');
-  if (g.challenge && g.level.challenge) parts.push(`<span class="mode-chip ch${state.challengeLost ? ' lost' : ''}"><b>挑</b>Défi : ${g.level.challenge.name}${state.challengeLost ? ' — manqué' : ''}</span>`);
+  if (g.challenge && g.level.challenge) parts.push(`<span class="mode-chip ch${state.challengeLost ? ' lost' : ''}"><b>挑</b>Défi : ${esc(g.level.challenge.name)}${state.challengeLost ? ' — manqué' : ''}</span>`);
   return parts.length ? `<p class="mode-line">${parts.join('')}</p>` : '';
 }
 
@@ -893,29 +1200,30 @@ function challengeBroken(g) {
   return !!g.challengeBroken?.();
 }
 
-// Table des combos : matrice des éléments (forme + kanji + libellé), nom de chaque
-// combo ; la case touchée détaille son effet et contre quoi il sert.
-function openComboTable() {
+// Combos (§6.11) : grande feuille, liste des 6 paires (badges, kanji et nom, effet,
+// contre quoi) ; actif sur le plateau : fond or ; élément absent du niveau : estompé.
+// « ‹ Pause » revient au menu, « Reprendre » reste collé en bas.
+function openComboTable(focus = null) {
   const g = state.game;
   if (!g) return;
+  if (!pauseSheetOpen()) openPauseMenu();
   const card = modal.firstElementChild;
-  card.className = 'modal-card scroll pause-card combos-card';
-  card.innerHTML = `<div class="pause-head"><span class="modal-kanji">合</span><div><h2>Combos</h2><p>Deux éléments différents côte à côte</p></div></div>${comboTable(g.defs, g.availableTowers)}<div class="actions"><button class="btn" data-act="back">Retour</button></div>`;
-  const detail = card.querySelector('.ct-detail');
-  const select = (id) => {
-    detail.innerHTML = comboDetail(g.defs, id);
-    for (const c of card.querySelectorAll('.ct-cell[data-combo]')) c.classList.toggle('on', c.dataset.combo === id);
-  };
+  const list = comboList(g.defs, g.availableTowers, g.zones || []);
+  card.className = 'modal-card scroll sheet-card sheet-large pause-card combos-card';
+  card.innerHTML = `<span class="sheet-grabber" aria-hidden="true"></span><div class="sheet-head combos-head"><button class="btn text ch-back" data-act="back" aria-label="Retour à la pause">‹ Pause</button><span class="seal seal-indigo seal-32 tilt" aria-hidden="true">合</span><div class="ph-text"><h2>Combos · ${digitsHTML(list.active)}/${digitsHTML(list.total)}</h2><p>Deux éléments différents côte à côte (diagonale comprise)</p></div></div>${list.html}<div class="actions combos-actions"><button class="btn primary L" data-act="resume">${ICONS.play}Reprendre</button></div>`;
+  card.scrollTop = 0;
   card.onclick = (e) => {
-    const cell = e.target.closest('.ct-cell[data-combo]');
-    if (cell) {
-      select(cell.dataset.combo);
-      sound.play('select');
-    }
-    if (e.target.closest('[data-act="back"]')) openPauseMenu();
+    const b = e.target.closest('[data-act]');
+    if (b?.dataset.act === 'back') openPauseMenu();
+    else if (b?.dataset.act === 'resume') resumeFromPause();
   };
-  const first = card.querySelector('.ct-cell[data-combo]');
-  if (first) select(first.dataset.combo);
+  if (focus) {
+    const row = card.querySelector(`.combo-row[data-combo="${CSS.escape(focus)}"]`);
+    if (row) {
+      row.classList.add('focus');
+      requestAnimationFrame(() => (card.scrollTop = Math.max(0, row.offsetTop - 90)));
+    }
+  }
 }
 
 function showInfo(target, silent = false) {
@@ -933,98 +1241,33 @@ function showInfo(target, silent = false) {
     const g = state.game;
     if (!e || !g) return;
     const pow = Math.round((g.rules.echoPower ?? 0.5) * 100);
-    hud.toast(`影 Écho : ${defs.towers[e.type]?.name ?? 'lanterne'} N${e.level} · ${pow} % · encore ${Math.max(1, Math.ceil(e.ttl))} s`, false, 2200);
+    hud.say({ key: 'echo', text: `影 Écho : ${defs.towers[e.type]?.name ?? 'lanterne'} N${e.level}`, detail: `tire à ${pow} % · encore ${Math.max(1, Math.ceil(e.ttl))} s`, prio: 0 });
   }
 }
 
-// Carte de présentation d'un yokai à sa première apparition : compacte, placée
-// loin des portails, du sanctuaire et de la barre de boss ; un toucher ouvre sa fiche.
-const introEl = $('intro');
-function showIntro(type) {
+// Première idée d'un texte de fiche (≤ 1 ligne du couloir) : « Vole : ignore le chemin… »
+// → « Vole » ; la fiche complète est à un toucher.
+function brief(text) {
+  let t = String(text || '').split(/\s*[:;]\s*/)[0];
+  if (t.length > 40) t = t.split(/\s*,\s*/)[0];
+  return t.replace(/\.$/, '');
+}
+
+// Nouveau yokai (§6.4) : la puce de l'aperçu porte « nouveau » ; à sa première
+// apparition, un message du couloir (portrait, force ; toucher = sa fiche).
+function introduce(type) {
   const def = defs.enemies[type];
+  if (!def) return;
   const absorb = def.abilities?.absorb ?? null;
-  introEl.dataset.enemy = type;
-  introEl.innerHTML = `<img alt="" src="${enemyPortrait(defs, type, absorb, 46)}"><div class="intro-text"><div class="intro-tag">${def.boss ? 'Boss' : 'Nouveau yokai'}${absorb ? ` ${elementBadge(absorb, defs, { size: 14, kanji: false })}` : ''}</div><h4>${def.name}</h4><p>${def.strength || def.desc}</p></div><span class="intro-more" aria-hidden="true">›</span>`;
-  introEl.classList.remove('hidden');
-  placeIntro();
-  clearTimeout(state.introTimer);
-  state.introTimer = setTimeout(() => introEl.classList.add('hidden'), 5500);
+  hud.say({
+    key: `new-${type}`,
+    text: `${def.boss ? 'Boss' : 'Nouveau'} : ${def.name}`,
+    detail: brief(def.strength || def.desc),
+    icon: `<img alt="" src="${enemyPortrait(defs, type, absorb, 28)}">`,
+    prio: 1,
+    action: { kind: 'enemy', type, absorb },
+  });
 }
-
-function placeIntro() {
-  const g = state.game;
-  if (!g) return;
-  const W = stage.clientWidth;
-  const sr = stage.getBoundingClientRect();
-  let H = stage.clientHeight;
-  // fiche ouverte : elle couvre le bas du plateau
-  if (sheets.isOpen) H = Math.min(H, $('info').getBoundingClientRect().top - sr.top);
-  const w = introEl.offsetWidth;
-  const h = introEl.offsetHeight;
-  const ts = renderer.ts;
-  const rel = (r) => ({ l: r.left - sr.left, t: r.top - sr.top, r: r.right - sr.left, b: r.bottom - sr.top });
-  // Interdit : portails, sanctuaire, barre de boss, « Annuler ».
-  const forbid = [{ l: W * 0.12, t: 0, r: W * 0.88, b: 34 }];
-  if (!$('btn-undo').classList.contains('hidden')) forbid.push(rel($('btn-undo').getBoundingClientRect()));
-  if (hud.bannerShown) forbid.push(rel($('banner').getBoundingClientRect())); // « Vague N », nom du niveau
-  // À éviter (pondéré) : socles et lanternes, chemin et gravier où passent les yokai,
-  // surtout à la sortie des portails (là où marche le yokai présenté).
-  const soft = [];
-  const grid = g.grid;
-  const nearSpawn = (c, r) => grid.spawns.some((sp) => Math.max(Math.abs(grid.col(sp) - c), Math.abs(grid.row(sp) - r)) <= 3);
-  for (let i = 0; i < grid.size; i++) {
-    const ty = grid.type(i);
-    const c = grid.col(i);
-    const rr = grid.row(i);
-    const p = renderer.toScreen(c, rr);
-    const r = { l: p.x, t: p.y, r: p.x + ts, b: p.y + ts };
-    if (ty === T.SPAWN || ty === T.GOAL) forbid.push({ l: r.l - 6, t: r.t - 6, r: r.r + 6, b: r.b + 6 });
-    else if (ty === T.SLOT) soft.push([r, 4]);
-    else if (ty === T.PATH || ty === T.OPEN) soft.push([r, nearSpawn(c, rr) ? 8 : 1]);
-  }
-  const area = (a, b) => Math.max(0, Math.min(a.r, b.r) - Math.max(a.l, b.l)) * Math.max(0, Math.min(a.b, b.b) - Math.max(a.t, b.t));
-  const m = 8;
-  const top = 40;
-  let best = null;
-  for (const x of [m, W - w - m, (W - w) / 2]) {
-    for (let y = H - h - m; y >= top; y -= Math.max(8, ts / 3)) {
-      const box = { l: x, t: y, r: x + w, b: y + h };
-      if (forbid.some((f) => area(f, box) > 0)) continue;
-      let score = 0;
-      for (const [r, k] of soft) score += (area(r, box) / (ts * ts)) * k;
-      score += (x === (W - w) / 2 ? 0.6 : 0) + (1 - y / H) * 0.3; // préfère les bords, puis le bas
-      if (!best || score < best.score) best = { x, y, score };
-    }
-  }
-  const pos = best || { x: m, y: H - h - m };
-  introEl.style.left = `${Math.round(pos.x)}px`;
-  introEl.style.top = `${Math.round(pos.y)}px`;
-}
-// La carte de présentation recouvre-t-elle un socle libre ?
-function introCoversSlot(g) {
-  if (introEl.classList.contains('hidden')) return false;
-  const r = introEl.getBoundingClientRect();
-  const cv = canvas.getBoundingClientRect();
-  const ts = renderer.ts;
-  const grid = g.grid;
-  for (let i = 0; i < grid.size; i++) {
-    if (grid.type(i) !== T.SLOT || g.towerAt(grid.col(i), grid.row(i))) continue;
-    const p = renderer.toScreen(grid.col(i), grid.row(i));
-    const x = cv.left + p.x;
-    const y = cv.top + p.y;
-    if (x < r.right && x + ts > r.left && y < r.bottom && y + ts > r.top) return true;
-  }
-  return false;
-}
-
-introEl.addEventListener('click', () => {
-  introEl.classList.add('hidden');
-  const type = introEl.dataset.enemy;
-  if (type && state.game) {
-    const e = state.game.enemies.find((x) => x.type === type && x.alive);
-    sheets.open('enemy', { type, enemy: e || null, absorb: e?.absorb });
-  }
-});
 
 const bossbar = $('bossbar');
 const bossFill = bossbar.querySelector('.boss-fill');
@@ -1118,6 +1361,7 @@ function beginGame(id, level, game, mode) {
   const world = worldById(level.world);
   modal.classList.add('hidden');
   showScreen('game');
+  applyHand();
   state.levelId = id;
   state.mode = mode;
   state.game = game;
@@ -1127,14 +1371,19 @@ function beginGame(id, level, game, mode) {
   state.resultPending = false;
   state.coopResult = null;
   state.guestBlocked = false;
+  state.bossSeen = new Set();
   // sceau de chaque joueur (son élément, choisi au salon ou attribué d'office) :
   // marques des lanternes et des constructions, coéquipiers
   state.coopInfo = state.coopRole ? game.players.map((p, i) => playerSeal(p, p.elements?.length === 1 ? p.elements[0] : state.coopPlayers?.[i]?.element)) : null;
+  sound.localPid = game.localPlayer ?? 0;
   branchSender(state.coopRole, game);
   setPaused(false);
   input.reset();
+  screenGame.classList.remove('result-on', 'lost');
   renderer.game = null; // resize() ne refait pas le fond de l'ancien niveau : setGame s'en charge
-  // la palette (rangée simple ou onglets) fixe la hauteur du bas : avant de mesurer le plateau
+  // la palette (rangée simple, onglets ou équipe) : avant de mesurer le plateau
+  state.introduced = new Set();
+  state.combosSeen = new Set();
   hud.setup(state.game, input);
   updateRoster(true);
   resize();
@@ -1151,10 +1400,7 @@ function beginGame(id, level, game, mode) {
   // l'appel « Rembobinez ! » d'une partie quittée pendant sa dernière chance disparaît
   // (forcé : l'état mémorisé peut déjà dire « éteint »)
   setLastChance(false, true);
-  state.introduced = new Set();
-  state.combosSeen = new Set();
   state.zones = null;
-  introEl.classList.add('hidden');
   bossbar.classList.add('hidden');
   bossShown = null;
   // tutoriels : en solo seulement (l'hôte seul en garde le bénéfice)
@@ -1164,6 +1410,7 @@ function beginGame(id, level, game, mode) {
   gauge.update();
   if (state.coopRole === 'guest') setSpeed(1); // la vitesse est celle de l'hôte (affichée chaque image)
   else if (debug.fast) setSpeed(4);
+  else setSpeed(1);
   if (!state.coopRole) debug.onStart(state.game);
   updateCoopWait(null);
   musicHold = null;
@@ -1177,6 +1424,10 @@ function beginGame(id, level, game, mode) {
   }
 }
 
+// Fin de partie (docs/UI-UX.md §6.12) : carte centrée, plateau visible, HUD et bas à 60 %.
+// Hiérarchie : « Suivant » seul en vermillon (« Réessayer » après une défaite), « Rejouer »
+// secondaire, « Carte » en texte. Boutons inactifs 700 ms (contre les touchers
+// involontaires) ; un toucher sur la carte saute à la fin des animations.
 // `record` : la victoire est déjà enregistrée à l'événement 'win' (voir handleEvents).
 // `challenge` : défi réussi (game.challengeMet() à la victoire).
 function showResult(won, record = false, challenge = false) {
@@ -1185,39 +1436,53 @@ function showResult(won, record = false, challenge = false) {
   state.resultPending = false;
   setPaused(true);
   sheets.close();
+  endFuseMode();
+  clearSlot();
+  hud.lane.reset(); // plus aucun message sur le plateau derrière la carte de fin
   input.ui.selectedTower = null;
   const idx = order.findIndex((o) => o.id === state.levelId);
   // Invité : les compteurs de la partie viennent de l'hôte ; la suite, c'est lui qui la choisit.
   const guest = state.coopRole === 'guest';
+  const host = state.coopRole === 'host';
   const res = guest ? state.coopResult || {} : {};
   const kills = res.kills ?? g.stats.kills;
   const built = res.towers ?? g.stats.towersBuilt;
+  const lives = res.lives ?? g.lives;
+  const maxLives = res.maxLives ?? g.maxLives;
+  const title = `${esc(state.levelId)} · ${esc(g.level.name)}`;
   const guestNote = '<p class="res-coop">L’hôte choisit la suite : elle vous rejoindra ici ou au salon.</p>';
-  const guestButtons = [{ label: 'Retour au salon', cls: 'primary', run: () => showScreen('title') }];
+  const guestButtons = [{ label: 'Retour au salon', cls: 'primary L', run: () => showScreen('title') }];
   // Hôte en coopération : le salon plutôt que la carte (on y change d'élément entre deux parties)
-  const back = state.coopRole === 'host' ? { label: 'Salon', cls: 'dark', aria: 'Retour au salon', run: () => showScreen('title') } : { label: 'Carte', cls: 'dark', run: () => showScreen('map') };
+  const back = host ? { label: 'Salon', cls: 'text', aria: 'Retour au salon', run: () => showScreen('title') } : { label: 'Carte', cls: 'text', aria: 'Carte des niveaux', run: () => showScreen('map', { justCleared: won ? state.levelId : null }) };
+  const count = (n, extra = '') => `<b class="num" data-count="${Math.max(0, Math.floor(Number(n) || 0))}">${digitsHTML(Math.max(0, Math.floor(Number(n) || 0)))}</b>${extra}`;
+  let card;
   if (won) {
     const stars = g.stars();
     const next = order[idx + 1];
-    const card = showModal(
-      `<div class="modal-kanji">勝</div><h2>Victoire !</h2>
-       <div class="result-stars">${[0, 1, 2].map((k) => `<i class="${k < stars ? 'on' : ''}">★</i>`).join('')}</div>
+    const nextLevel = next ? state.levelNames?.[next.id] : null;
+    const hardOpen = !guest && stars >= 3 && !g.hard && g.level.hard && (save.level(state.levelId).hard || 0) === 0;
+    card = showModal(
+      `<span class="seal seal-red seal-44 result-seal" aria-hidden="true">勝</span><h2>Victoire !</h2>
+       <p class="res-sub">${title}</p>
+       <div class="result-stars" role="img" aria-label="${stars} étoile${stars > 1 ? 's' : ''} sur 3">${[0, 1, 2].map((k) => `<i class="${k < stars ? 'on' : ''}">★</i>`).join('')}</div>
        <div class="result-stats">
-         <span>Vies : <b>${esc(g.lives)}/${esc(g.maxLives)}</b></span><span>Yokai apaisés : <b>${esc(kills)}</b></span>
-         <span>Lanternes : <b>${esc(built)}</b></span><span>${record ? '<b style="color:var(--vermillion)">Nouveau record</b>' : ''}</span>
+         <span><small>Vies</small>${count(lives, `<i>/${digitsHTML(maxLives)}</i>`)}</span><span><small>Yokai</small>${count(kills)}</span><span><small>Lanternes</small>${count(built)}</span>
        </div>
+       ${record ? '<p class="res-record">Nouveau record</p>' : ''}
        ${resultMarks(g, challenge)}
-       ${!next ? '<p>Le sanctuaire est sauvé. Les esprits retrouvent la paix.</p>' : ''}
-       ${!guest && stars >= 3 && !g.hard && g.level.hard && (save.level(state.levelId).hard || 0) === 0 ? '<p class="lv-line"><b>難 Difficile</b> est ouvert pour ce niveau.</p>' : ''}
+       ${hardOpen ? '<p class="res-chip"><span class="seal seal-ink seal-24" aria-hidden="true">難</span>Difficile s’ouvre pour ce niveau</p>' : ''}
+       ${!next && !guest ? '<p class="res-end">Le sanctuaire est sauvé. Les esprits retrouvent la paix.</p>' : ''}
        ${guest ? guestNote : ''}`,
       guest
         ? guestButtons
-        : [
-            back,
-            { label: 'Rejouer', run: () => startLevel(state.levelId, state.mode) },
-            ...(next ? [{ label: 'Suivant', cls: 'primary', run: () => startLevel(next.id) }] : []),
-          ],
-      { cls: 'result result-win' },
+        : next
+          ? [
+              { label: `<span class="bl">Suivant</span><small>${esc(next.id)}${nextLevel ? ` · ${esc(nextLevel)}` : ''} ›</small>`, html: true, cls: 'primary L res-next', aria: `Niveau suivant ${next.id}`, run: () => startLevel(next.id) },
+              { label: 'Rejouer', cls: 'M', run: () => startLevel(state.levelId, state.mode) },
+              back,
+            ]
+          : [{ label: host ? 'Salon' : 'Carte', cls: 'primary L', run: back.run }, { label: 'Rejouer', cls: 'M', run: () => startLevel(state.levelId, state.mode) }],
+      { cls: 'result result-win', actionsCls: 'result-actions', modalCls: 'result-modal' },
     );
     const is = card.querySelectorAll('.result-stars i');
     is.forEach((el, k) =>
@@ -1228,19 +1493,53 @@ function showResult(won, record = false, challenge = false) {
       }, 350 + k * 380),
     );
   } else {
-    showModal(
-      `<div class="modal-kanji">敗</div><h2>Le sanctuaire est tombé</h2>
-       <p>Vague ${g.waveIndex + 1}/${g.totalWaves}. Essayez d'autres combos, ou rembobinez au bon moment.</p>
+    card = showModal(
+      `<span class="seal seal-indigo seal-44 result-seal" aria-hidden="true">敗</span><h2>Le sanctuaire est tombé</h2>
+       <p class="res-sub">${title} · vague ${digitsHTML(Math.max(1, g.waveIndex + 1))}/${digitsHTML(g.totalWaves)}</p>
+       <p class="res-tip">Essayez d’autres combos, ou rembobinez au bon moment.</p>
        ${guest ? guestNote : ''}`,
-      guest
-        ? guestButtons
-        : [
-            back,
-            { label: 'Réessayer', cls: 'primary', run: () => startLevel(state.levelId, state.mode) },
-          ],
-      { cls: 'result result-lose' },
+      guest ? guestButtons : [{ label: 'Réessayer', cls: 'primary L', run: () => startLevel(state.levelId, state.mode) }, back],
+      { cls: 'result result-lose', actionsCls: 'result-actions', modalCls: 'result-modal' },
     );
   }
+  screenGame.classList.add('result-on');
+  // verrou de 700 ms ; les comptes montent en 600 ms
+  const actions = card.querySelector('.actions');
+  actions.classList.add('locked');
+  const unlock = () => actions.classList.remove('locked');
+  const lock = setTimeout(unlock, 700);
+  const counters = [...card.querySelectorAll('[data-count]')];
+  const finish = () => {
+    for (const el of counters) el.innerHTML = digitsHTML(el.dataset.count);
+    card.querySelectorAll('.result-stars i').forEach((el) => el.classList.add('show'));
+  };
+  if (!soberFx()) {
+    for (const el of counters) el.innerHTML = digitsHTML(0);
+    const t0 = performance.now() + 250;
+    let lastTick = 0;
+    const step = (now) => {
+      if (!state.resultShown || !card.isConnected) return;
+      const k = Math.max(0, Math.min(1, (now - t0) / 600));
+      for (const el of counters) el.innerHTML = digitsHTML(Math.round(Number(el.dataset.count) * k));
+      if (k > 0 && k < 1 && now - lastTick > 80) {
+        sound.play('tick');
+        lastTick = now;
+      }
+      if (k < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }
+  // un toucher sur la carte : tout s'affiche (et les boutons répondent)
+  card.addEventListener(
+    'pointerdown',
+    (e) => {
+      if (e.target.closest('.actions')) return;
+      finish();
+      clearTimeout(lock);
+      setTimeout(unlock, 120);
+    },
+    { once: true },
+  );
 }
 
 // Sceaux du résultat : mode Difficile, défi réussi ou manqué.
@@ -1248,7 +1547,7 @@ function resultMarks(g, challenge) {
   const out = [];
   if (g.hard) out.push('<span class="res-seal hard"><b>難</b>Victoire en Difficile</span>');
   if (g.challenge && g.level.challenge) {
-    out.push(challenge ? `<span class="res-seal ch"><b>挑</b>Défi réussi : ${g.level.challenge.name}</span>` : `<span class="res-seal ch lost"><b>挑</b>Défi manqué : ${g.level.challenge.name}</span>`);
+    out.push(challenge ? `<span class="res-seal ch"><b>挑</b>Défi réussi : ${esc(g.level.challenge.name)}</span>` : `<span class="res-seal ch lost"><b>挑</b>Défi manqué : ${esc(g.level.challenge.name)}</span>`);
   }
   return out.length ? `<div class="res-seals">${out.join('')}</div>` : '';
 }
@@ -1266,7 +1565,15 @@ function setLastChance(on, force = false) {
     input.ui.selectedTower = null;
     input.ui.tool = null;
     input.ui.rally = null;
+    endFuseMode();
+    clearSlot();
     sheets.close();
+    // Feuille ouverte (menu d'un invité, ses Réglages : sa partie continue) : elle
+    // couvrirait la poignée, seule issue. Elle se ferme sans rappel (pas de retour au menu).
+    if (modalOpen() && !state.resultShown) {
+      closeModal('lastChance', true);
+      if (state.paused && state.coopRole === 'guest') setPaused(false);
+    }
     towerBar.hide();
     hud.refreshTools();
     requestAnimationFrame(placeLastChanceArrow);
@@ -1282,6 +1589,37 @@ function placeLastChanceArrow() {
   arrow.style.left = `${Math.round(k.left + k.width / 2 - st.left)}px`;
 }
 
+// Or gagné par MON geste (appel anticipé, vente, fin de vague) : N pièces volent de la
+// source au sceau 金 ; le compteur monte à chaque arrivée (§7.2).
+function coinsTo(fromRect, gold) {
+  if (!(gold > 0) || !fromRect) return;
+  const n = Math.min(6, Math.max(1, Math.ceil(gold / 5)));
+  const seal = screenGame.querySelector('.stat-gold .seal');
+  const per = gold / n;
+  hud.deferGold(gold);
+  let paid = 0;
+  flyCoins({
+    root: screenGame,
+    from: fromRect,
+    to: seal.getBoundingClientRect(),
+    n,
+    onArrive: (i, last) => {
+      const v = last ? gold - paid : Math.round(per);
+      paid += v;
+      hud.payGold(v);
+      sound.play('coin');
+    },
+  });
+}
+
+// Rectangle (page) d'une case du plateau.
+function tileRect(x, y) {
+  const cv = canvas.getBoundingClientRect();
+  const p = renderer.toScreen(x, y);
+  const ts = renderer.ts;
+  return { left: cv.left + p.x - ts * 0.3, top: cv.top + p.y - ts * 0.6, width: ts * 0.6, height: ts * 0.6 };
+}
+
 // Gestion des événements moteur côté présentation.
 function handleEvents(game) {
   const all = game.events;
@@ -1291,6 +1629,7 @@ function handleEvents(game) {
   const evs = state.coopRole ? all.filter((ev) => !(ev.type === 'reject' && ev.pid != null && ev.pid !== me)) : all;
   renderer.onEvents(evs);
   const refused = new Map(); // refus de MES poses à leur exécution, par case (raison)
+  const mine = (ev) => !state.coopRole || ev.pid == null || ev.pid === me;
   for (const ev of evs) {
     // geste d'un coéquipier : on dit qui (appel de vague, rembobinage)
     const mate = state.coopRole && ev.pid != null && ev.pid !== me ? game.players[ev.pid]?.name : null;
@@ -1303,17 +1642,23 @@ function handleEvents(game) {
         const type = ev.enemy.type;
         if ((game.level.introduce || []).includes(type) && !state.introduced.has(type)) {
           state.introduced.add(type);
-          showIntro(type);
+          introduce(type);
+        }
+        // boss : moment fort (bannière au grand pinceau)
+        if (ev.enemy.boss && !state.bossSeen.has(type)) {
+          state.bossSeen.add(type);
+          hud.banner(defs.enemies[type]?.name || 'Boss', 'Boss', 'climax');
         }
         break;
       }
       case 'waveStart': {
-        // Vague climax : bannière nommée (« La Horde du seuil »).
+        // Vagues ordinaires : le chiffre roule dans le HUD et le son les annonce. Bannière
+        // seulement pour le climax (nommé) et la dernière vague.
         const last = ev.index === ev.total - 1;
         if (ev.climax) hud.banner(ev.name || 'Climax', `嵐 Climax · vague ${ev.index + 1}${last ? ' · dernière' : ''}`, 'climax');
-        else hud.banner(ev.name || `Vague ${ev.index + 1}`, last ? 'Dernière vague' : ev.name ? `Vague ${ev.index + 1}` : '');
+        else if (last) hud.banner(ev.name || `Vague ${ev.index + 1}`, 'Dernière vague');
         hud.popWave();
-        if (mate && ev.early) hud.toast(`${mate} appelle la vague ${ev.index + 1}`);
+        if (mate && ev.early) hud.say({ key: `call-${ev.index}`, text: `${mate} appelle la vague ${ev.index + 1}`, prio: 1 });
         break;
       }
       case 'lastChance':
@@ -1321,39 +1666,56 @@ function handleEvents(game) {
         break;
       case 'rewindStart':
         setLastChance(false);
-        if (mate) hud.toast(`巻 ${mate} remonte le temps`);
+        if (mate) hud.say({ text: `巻 ${mate} remonte le temps`, prio: 1 });
         break;
       case 'fuse':
         // La lanterne fusionnée change d'identité : la sélection la suit (la fiche aussi, cf. Sheets).
         if (input.ui.selectedTower === ev.oldId || input.ui.selectedTower === ev.srcId) input.ui.selectedTower = ev.tower.id;
         break;
+      case 'place':
+        if (mate) hud.pulseMate(ev.pid);
+        break;
       case 'sell':
       case 'rewindEnd':
       case 'undo':
         if (input.ui.selectedTower != null && !game.towerById(input.ui.selectedTower)) input.ui.selectedTower = null;
+        if (ev.type === 'sell' && ev.tower && mine(ev)) coinsTo(tileRect(ev.tower.x, ev.tower.y), ev.value);
         if (ev.type === 'undo' && ev.tower) {
-          // la lanterne retourne dans la palette : fumée d'encre et or rendu
+          // la lanterne retourne dans la palette : fumée d'encre et or rendu (il roule)
           const t = ev.tower;
           renderer.fx.burst(t.x, t.y - 0.2, 6, 'smoke', '#f4f7f8', 0.6, 0.8, 0.14, { g: -0.5, drag: 0.95 });
           renderer.fx.ring(t.x, t.y + 0.3, 0.6, 0.1, PALETTE.gold, 0.4, 0.05, 0.45);
           renderer.fx.goldText(t.x, t.y - 0.5, ev.value);
-          sound.play('sell', ev);
+          if (!mine(ev)) sound.play('undo');
         }
         break;
-      case 'earlyBonus': {
-        // charge réellement gagnée : jauge déjà pleine, ou vague déjà rechargée avant
-        // un rembobinage, l'appel n'en rapporte pas (le moteur annonce la valeur brute)
-        const before = gauge.last.charge;
-        const got = before != null ? Math.max(0, Math.round((game.rewindCharge ?? 0) - before)) : ev.charge;
-        const ch = Math.min(ev.charge || 0, got);
-        hud.toast(`Appel anticipé +${ev.gold} or${ch > 0 && game.rewindEnabled ? ` · +${ch} 巻` : ''}`);
+      case 'earlyBonus':
+        // appel anticipé : les pièces volent du bouton de vague au sceau 金, l'arc
+        // fantôme de la jauge se remplit (« +N 巻 » flotte) ; plus de message global
+        if (mine(ev)) coinsTo($('btn-wave').getBoundingClientRect(), ev.gold);
         break;
-      }
+      case 'waveEnd':
+        // vague repoussée : la prime vole du bloc « VAGUE » au sceau 金
+        if (ev.reward > 0 && !game.lastChanceT) coinsTo($('hud-wave').getBoundingClientRect(), ev.reward);
+        break;
       case 'combo':
-        // Premier combo de chaque sorte dans le niveau : son effet est expliqué (D5).
+        // Premier combo de chaque sorte dans le niveau : son effet, dans le couloir
+        // (toucher : la liste des combos).
         if (ev.def && !state.combosSeen.has(ev.def.id)) {
           state.combosSeen.add(ev.def.id);
-          hud.toast(`${ev.def.kanji || ''} ${ev.def.name} : ${ev.def.desc}`, false, 3200);
+          const seen = save.data.combosSeen || {};
+          const fresh = !seen[ev.def.id];
+          if (fresh) save.set('combosSeen', { ...seen, [ev.def.id]: true });
+          const known = Object.keys(save.data.combosSeen || {}).length;
+          hud.say({
+            key: `combo-${ev.def.id}`,
+            text: `${ev.def.kanji || '合'} ${fresh ? 'Nouveau combo' : 'Combo'} : ${ev.def.name}`,
+            // ≤ 2 lignes : l'effet complet est dans la liste des combos (toucher). Le carnet
+            // (« découverts n/6 ») est dit en clair : la pause affiche, elle, les combos ACTIFS.
+            detail: fresh ? `Découverts : ${known}/${(defs.combos || []).length} · voir l’effet` : 'Touchez pour voir son effet',
+            prio: 1,
+            action: { kind: 'combos', id: ev.def.id },
+          });
         }
         break;
       case 'executed': {
@@ -1371,8 +1733,8 @@ function handleEvents(game) {
         const why = refused.get(`${at.c},${at.r}`);
         const wall = game.groundEnemyOn?.(game.grid.idx(at.c, at.r)) ? 'Un yokai est là : mur non déplacé' : 'Mur non déplacé';
         const text = who ? `Pris par ${who}` : en.op === 'setRally' ? wall : hud.shortReason(why, {}) || 'Pose impossible';
-        const p = renderer.toScreen(at.c + 0.5, at.r);
-        input.flash(text, p.x, p.y, true);
+        const p = renderer.toScreen(at.c + 0.5, at.r + 0.5);
+        input.flash(text, p.x, p.y, true, { c: at.c, r: at.r });
         if (en.op === 'setRally') sound.play('reject');
         break;
       }
@@ -1383,8 +1745,8 @@ function handleEvents(game) {
         if (ev.fromHost && state.coopRole === 'guest' && ev.c != null && game.grid.inBounds(ev.c, ev.r)) {
           const other = game.towerAt(ev.c, ev.r);
           const who = other && other.owner !== me ? game.players[other.owner]?.name : null;
-          const p = renderer.toScreen(ev.c + 0.5, ev.r);
-          input.flash(who ? `Pris par ${who}` : hud.shortReason(ev.reason, ev) || 'Refusé par l’hôte', p.x, p.y, true);
+          const p = renderer.toScreen(ev.c + 0.5, ev.r + 0.5);
+          input.flash(who ? `Pris par ${who}` : hud.shortReason(ev.reason, ev) || 'Refusé par l’hôte', p.x, p.y, true, { c: ev.c, r: ev.r });
         }
         break;
       case 'rally':
@@ -1395,7 +1757,7 @@ function handleEvents(game) {
         renderer.fx.addShake(0.35);
         break;
       case 'enrage':
-        hud.toast(`${defs.enemies[ev.enemy.type].name} entre en rage !`, true);
+        hud.say({ key: `rage-${ev.enemy.type}`, text: `${defs.enemies[ev.enemy.type].name} entre en rage !`, prio: 2 });
         break;
       case 'win': {
         if (state.resultPending || state.resultShown) break; // fin déjà annoncée (coopération)
@@ -1409,6 +1771,9 @@ function handleEvents(game) {
         if (game.hard) save.record(state.levelId, ev.stars);
         state.resultPending = true;
         endCoopGame(game, { won: true, stars: ev.stars, challenge });
+        // nom du niveau suivant (« Suivant · 2-4 · Le Dernier Torii »)
+        const next = order[order.findIndex((o) => o.id === state.levelId) + 1];
+        if (next) loadLevel(next.id).then((l) => ((state.levelNames ||= {})[next.id] = l.name)).catch(() => {});
         setTimeout(() => state.game === game && showResult(true, record, challenge), 1400);
         break;
       }
@@ -1416,6 +1781,8 @@ function handleEvents(game) {
         if (state.resultPending || state.resultShown) break;
         setLastChance(false);
         hud.banner('Défaite', 'Le sanctuaire est tombé');
+        // le plateau se désature (900 ms)
+        screenGame.classList.add('lost');
         state.resultPending = true;
         endCoopGame(game, { won: false, stars: 0, challenge: false });
         setTimeout(() => state.game === game && showResult(false), 1400);
@@ -1502,7 +1869,9 @@ function frame(now) {
         console.error(e);
       }
     } else if (!state.paused && !reading) {
-      state.acc += dt * state.speed;
+      // « Ralentir pendant la visée » (réglage, seul) : ×0,5 tant qu'un doigt vise ou qu'une fiche est ouverte
+      const slow = save.data.slowAim && (input.ui.press || input.ui.drag || sheets.isOpen) ? 0.5 : 1;
+      state.acc += dt * state.speed * slow;
       let steps = 0;
       while (state.acc >= STEP && steps < 8) {
         g.update(STEP);
@@ -1531,9 +1900,10 @@ function frame(now) {
     }
     if (!state.challengeLost && g.challenge && challengeBroken(g)) {
       state.challengeLost = true;
-      hud.toast(`挑 Défi « ${g.level.challenge.name} » manqué`, true, 2600);
+      hud.say({ key: 'challenge', text: `挑 Défi « ${g.level.challenge.name} » manqué`, prio: 2 });
     }
     input.tick();
+    syncConsignes();
     hud.update();
     gauge.update();
     updateBossBar(g);
@@ -1541,6 +1911,13 @@ function frame(now) {
     sheets.update();
     tutorial.update(state.paused || modalOpen());
     updateRoster();
+    // geste en cours (outil choisi, glisser, socle choisi, fusion, mur) : le couloir de
+    // messages laisse passer les touchers vers le plateau (un socle sous le message reste posable)
+    const placing = !!(input.ui.tool || input.ui.drag || input.ui.press || input.ui.selectedSlot || input.ui.rally || input.ui.fuseFrom != null);
+    if (placing !== state.placingCls) {
+      state.placingCls = placing;
+      screenGame.classList.toggle('placing', placing);
+    }
     // Coopération : le plateau s'arrête quand la partie commune est arrêtée (pause de
     // l'hôte atteinte, attente de l'hôte) ; le menu d'un invité ne fige rien.
     const still = net ? coop.halted : state.paused;
@@ -1645,6 +2022,10 @@ function updateCoopGuest(g) {
 function updateCoopWait(kind) {
   if (kind === state.waitKind) return;
   state.waitKind = kind;
+  // menu de l'invité ouvert : sa note suit l'état réel (il disait « la partie continue »
+  // sous le bandeau « Pause par l'hôte »)
+  const pn = document.querySelector('#modal:not(.hidden) .pause-card p.pause-coop');
+  if (pn && state.coopRole === 'guest') pn.textContent = guestPauseNote();
   const el = $('coop-wait');
   el.classList.toggle('hidden', !kind);
   if (!kind) return;
@@ -1658,56 +2039,233 @@ function updateCoopWait(kind) {
 }
 
 // Rangée des coéquipiers sous le HUD : sceau d'élément, nom, or, absent.
+// Coopération : la rangée d'équipe prend la place des onglets (docs/UI-UX.md §6.6) :
+// « Vous » (soudée à la boîte des lanternes), puis chaque coéquipier : sceau de son
+// élément, nom, or (ou « hors ligne »), petit sceau 主 pour l'hôte.
 function updateRoster(force = false) {
-  const el = $('coop-roster');
   const g = state.game;
   const on = !!(g && state.coopRole && g.players.length > 1 && state.screen === 'game');
   if (!on) {
-    if (!el.classList.contains('hidden')) el.classList.add('hidden');
     state.rosterSig = null;
     return;
   }
   const lp = session.lobby?.players || [];
-  const mates = g.players.filter((p) => p.id !== g.localPlayer).map((p) => ({ p, info: playerInfo(p.id), off: lp[p.id]?.online === false }));
-  const sig = mates.map((m) => `${m.p.name}|${Math.floor(m.p.gold)}|${m.off}`).join(';');
+  const me = g.localPlayer;
+  const list = [g.players[me], ...g.players.filter((p) => p.id !== me)].filter(Boolean);
+  const mates = list.map((p) => ({ pid: p.id, name: p.name, seal: sealHtml(playerInfo(p.id), 18), gold: p.gold, off: p.id !== me && lp[p.id]?.online === false, host: p.id === 0, me: p.id === me }));
+  const sig = mates.map((m) => `${m.name}|${m.me ? '' : Math.floor(m.gold)}|${m.off}`).join(';');
   if (!force && sig === state.rosterSig) return;
   state.rosterSig = sig;
-  el.innerHTML = mates
-    .map(({ p, info, off }) => {
-      const gold = Math.floor(p.gold);
-      const seal = sealHtml(info, 18);
-      return `<span class="coop-mate${off ? ' off' : ''}" role="img" aria-label="${esc(p.name)}${info?.label ? `, ${info.label}` : ''} : ${gold} or${off ? ', absent' : ''}">${seal}<b>${esc(p.name)}</b><span class="cm-gold"><i aria-hidden="true">金</i>${gold}</span>${off ? '<em>absent</em>' : ''}</span>`;
-    })
-    .join('');
-  el.classList.remove('hidden');
+  hud.setTeam(mates);
 }
 
-// Message bref hors partie (accueil, carte) ; en partie, celui du HUD.
+// Consignes du couloir (priorité 3) : elles restent tant que l'action n'est pas faite,
+// et disparaissent avec le mode qu'elles accompagnent.
+function syncConsignes() {
+  const l = hud.lane;
+  if (!input.ui.rally && l.has('rally')) l.clear('rally');
+  if (input.ui.fuseFrom == null && l.has('fuse')) l.clear('fuse');
+  if (!input.ui.selectedSlot && l.has('slot-first')) {
+    l.clear('slot-first');
+    hud.setSlotFilter(null);
+  }
+}
+
+// Message bref hors partie (accueil, carte) ; en partie, celui de la partie (couloir).
+// Durée lisible : clamp(2500, 1200 + 60 × caractères, 6000) ms. Sur l'accueil, il
+// flotte 12 px au-dessus des boutons (ou de la feuille ouverte), jamais au ras du bas.
 let appToastTimer = 0;
-function appToast(msg, ms = 2200) {
+// Hauteur réelle de --sat en px (la propriété vaut « env(…) » non calculé : on la mesure).
+let satProbe = null;
+function satPx() {
+  if (!satProbe) {
+    satProbe = document.createElement('div');
+    satProbe.setAttribute('aria-hidden', 'true');
+    satProbe.style.cssText = 'position:fixed;top:0;left:0;width:0;height:var(--sat);visibility:hidden;pointer-events:none';
+    document.body.appendChild(satProbe);
+  }
+  return satProbe.offsetHeight;
+}
+
+function appToast(msg, ms = 0) {
   if (state.screen === 'game') {
-    hud.toast(msg, false, ms);
+    hud.toast(msg, false, ms || undefined);
     return;
   }
   const el = $('app-toast');
   el.textContent = msg;
+  let top = null;
+  let gap = 12; // §6.21 : 12 px au-dessus des boutons de l'accueil
+  const card = modal.firstElementChild;
+  // feuille ouverte : au-dessus de sa position de REPOS (offsetTop ignore la glissade
+  // d'entrée ; mesuré pendant l'animation, le message tombait sur l'en-tête de la feuille)
+  if (!modal.classList.contains('hidden') && card.classList.contains('menu-sheet')) {
+    top = card.offsetTop + (card.offsetParent?.getBoundingClientRect().top ?? 0);
+    gap = 8; // au-dessus d'une feuille grande, la place est comptée
+  }
+  else if (state.screen === 'title') top = document.querySelector('#screen-title .title-actions')?.getBoundingClientRect().top ?? null;
+  if (top != null) {
+    // jamais sous la zone sûre du haut : au pire, collé sous elle
+    const h = el.offsetHeight || 40;
+    el.style.bottom = `${Math.round(Math.min(innerHeight - top + gap, innerHeight - satPx() - 6 - h))}px`;
+  } else el.style.bottom = '';
   el.classList.remove('show');
   void el.offsetWidth;
   el.classList.add('show');
   clearTimeout(appToastTimer);
-  appToastTimer = setTimeout(() => el.classList.remove('show'), ms);
+  const dur = ms || Math.max(2500, Math.min(6000, 1200 + 60 * String(msg).length));
+  appToastTimer = setTimeout(() => el.classList.remove('show'), dur);
 }
 
-// Accueil : « Jouer » pour l'hôte ; un invité attend que l'hôte choisisse le niveau.
-function updateTitleActions() {
+// ───────────── Accueil : héros, rangée, zone d'annonce ─────────────
+
+function levelLabel(id) {
+  const n = levelData[id]?.name;
+  return n ? `${id} · ${n}` : id;
+}
+
+// Héros de l'accueil : premier lancement → « Jouer » (1-1) ; ensuite « Continuer » (premier
+// niveau ouvert non gagné), lancé d'un toucher en mode normal ; tout gagné → la carte.
+// Hôte avec des invités : « Jouer à N », qui ouvre la carte (le niveau se choisit à plusieurs).
+function heroState() {
+  if (session.role === 'guest') return { kind: 'guest' };
+  const n = session.lobby?.players.length ?? 1;
+  if (coopReady()) return { kind: 'map', label: `Jouer à ${n}`, sub: 'Choisir le niveau' };
+  const total = save.totalStars(order);
+  const next = order.find((o, i) => !save.stars(o.id) && save.isUnlocked(order, i));
+  if (!next) return { kind: 'map', label: 'Choisir un niveau', sub: `${total} ★ sur ${order.length * 3}`, done: true };
+  return { kind: 'play', id: next.id, label: total ? 'Continuer' : 'Jouer', sub: levelLabel(next.id) };
+}
+
+function heroAction() {
+  const h = heroState();
+  if (h.kind === 'guest') return; // l'hôte choisit le niveau
+  if (h.kind === 'map') return showScreen('map');
+  startLevel(h.id, { hard: false, challenge: false });
+}
+
+// Accueil à jour : héros, « Niveaux », « À plusieurs » (nombre de joueurs), équipe de
+// l'hôte, attente de l'invité, zone d'annonce.
+function updateHome() {
+  syncSoundButton();
   const guest = session.role === 'guest';
-  $('btn-play').classList.toggle('hidden', guest);
+  const h = heroState();
+  const hero = $('btn-play');
+  hero.classList.toggle('hidden', guest);
+  if (!guest) {
+    if ($('btn-play-label').textContent !== h.label) $('btn-play-label').textContent = h.label;
+    if ($('btn-play-sub').textContent !== h.sub) $('btn-play-sub').textContent = h.sub;
+    hero.setAttribute('aria-label', `${h.label} : ${h.sub}`);
+  }
+  $('btn-levels').classList.toggle('hidden', guest || !!h.done);
+  const players = session.lobby?.players || [];
+  const n = players.length;
+  $('btn-multi-label').textContent = guest ? 'Salon' : 'À plusieurs';
+  const count = $('btn-multi-count');
+  count.textContent = n > 1 ? String(n) : '';
+  count.classList.toggle('hidden', n <= 1);
+  $('btn-multi').setAttribute('aria-label', guest ? `Salon : ${n} joueurs` : n > 1 ? `À plusieurs : ${n} joueurs dans le salon` : 'À plusieurs');
+  // hôte avec des invités : qui jouera (sceau d'élément + nom)
+  const team = $('title-team');
+  const showTeam = !guest && coopReady();
+  team.classList.toggle('hidden', !showTeam);
+  if (showTeam) {
+    const html = coop
+      .playersFromLobby()
+      .map((p) => {
+        const el = p.element || p.elements?.[0];
+        return `<span class="tt-mate">${el ? badgeOf(el, defs, { size: 22 }) : ''}<span>${esc(p.name)}</span></span>`;
+      })
+      .join('');
+    if (team.innerHTML !== html) team.innerHTML = html;
+  }
+  // invité : la carte d'attente remplace le héros
   const wait = $('title-wait');
   wait.classList.toggle('hidden', !guest);
-  if (!guest) return;
-  const txt = session.lobby?.solo ? 'L’hôte finit une partie seul : vous jouerez à la suivante' : session.inGame ? 'Partie en cours…' : 'L’hôte choisit le niveau…';
-  if (wait.textContent !== txt) wait.textContent = txt;
+  if (guest) {
+    const txt = session.lobby?.solo ? 'L’hôte finit une partie seul : vous jouerez à la suivante' : session.inGame ? 'Partie en cours…' : 'L’hôte choisit le niveau…';
+    if (wait.textContent !== txt) wait.textContent = txt;
+  }
+  updateNotice();
 }
+
+// Zone d'annonce (une seule à la fois) : arrivée d'un ami (4,5 s), invitation à
+// réinstaller une ancienne app installée (haut flou), ligne Safari « Sur l'écran d'accueil ».
+let announce = null;
+function announceHome(text) {
+  announce = { text, until: performance.now() + 4500 };
+  updateNotice();
+  setTimeout(updateNotice, 4600);
+}
+// Encart haut réel (une sonde fixe ; --inset-top la remplace dans les tests).
+let insetProbe = null;
+function insetTop() {
+  if (!insetProbe) {
+    insetProbe = document.createElement('div');
+    insetProbe.setAttribute('aria-hidden', 'true');
+    insetProbe.style.cssText = 'position:fixed;left:0;top:0;width:1px;height:var(--inset-top, env(safe-area-inset-top, 0px));visibility:hidden;pointer-events:none';
+    document.body.appendChild(insetProbe);
+  }
+  return insetProbe.getBoundingClientRect().height;
+}
+const isIOS = () => /iP(hone|od|ad)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const installed = () => navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
+// Ancienne installation (balise black-translucent figée par iOS) : encart haut non nul.
+function reinstallHint() {
+  return document.documentElement.classList.contains('ios26-app') && insetTop() > 0 && matchMedia('(orientation: portrait)').matches && !save.data.reinstallHintSeen;
+}
+function updateNotice() {
+  const box = $('title-notice');
+  let kind = '';
+  if (announce && performance.now() < announce.until) kind = 'announce';
+  else if (reinstallHint()) kind = 'reinstall';
+  else if (isIOS() && !installed()) kind = 'safari';
+  if (box.dataset.kind === kind && kind !== 'announce') return;
+  box.dataset.kind = kind;
+  box.classList.toggle('hidden', !kind);
+  if (kind === 'announce') box.innerHTML = `<span class="notice-ico" aria-hidden="true">人</span><span class="notice-text"><b>${esc(announce.text)}</b></span>`;
+  else if (kind === 'reinstall')
+    box.innerHTML = `<button type="button" class="notice-main" data-act="fix"><span class="notice-ico" aria-hidden="true">!</span><span class="notice-text"><b>Haut de l’écran flou ?</b><small>Corrigez-le en 2 minutes, sans perdre votre progression.</small></span><span class="notice-chev" aria-hidden="true">›</span></button><button type="button" class="notice-later" data-act="later">Plus tard</button>`;
+  else if (kind === 'safari') box.innerHTML = `<span class="notice-text"><small>Partager ▸ « Sur l’écran d’accueil » pour jouer en plein écran</small></span>`;
+  else box.innerHTML = '';
+}
+$('title-notice').addEventListener('click', (e) => {
+  const t = e.target.closest('[data-act]');
+  if (!t) return;
+  if (t.dataset.act === 'fix') openSettings({ section: 'progress' });
+  else if (t.dataset.act === 'later') {
+    save.set('reinstallHintSeen', true);
+    updateNotice();
+  }
+});
+matchMedia('(orientation: portrait)').addEventListener?.('change', () => state.screen === 'title' && updateNotice());
+
+// Réglages (feuille des menus, aussi ouverte depuis la pause) : rappels de main.js.
+function applyTextScale(v) {
+  document.documentElement.style.setProperty('--fs-scale', String(v || 1));
+  // texte agrandi : les libellés les plus longs se raccourcissent (« Cible : Premier ▾ »
+  // se cassait sur deux lignes à 130 %)
+  document.documentElement.classList.toggle('text-big', (v || 1) > 1);
+}
+applyTextScale(save.data.textScale);
+initSettings({
+  showModal: (html, buttons, opts) => showModal(html, buttons, opts),
+  close: (o) => closeModal('close', !!o?.silent),
+  setMuted: (m) => {
+    setMuted(m);
+    syncSoundButton();
+  },
+  setMusic: (on) => {
+    save.set('music', on);
+    sound.musicOn = on;
+  },
+  onEffects: () => applyEffects(), // (partie : effets sobres, lu dans save.data.effects)
+  onTextScale: (v) => applyTextScale(v),
+  onImport: () => {
+    if (state.screen === 'title') updateHome();
+  },
+  sound: (name) => sound.play(name),
+});
 
 // Son propre salon (même code après un rechargement de l'onglet).
 function hostSalon() {
@@ -1717,20 +2275,44 @@ function hostSalon() {
 }
 
 // À l'accueil : le salon existe toujours. Lien ?salon=CODE (ou rechargement d'un
-// invité) : on rejoint ce salon ; sinon on héberge le sien.
+// invité) : on rejoint ce salon (le lien ouvre aussi la feuille) ; sinon on héberge le sien.
 function ensureSalon() {
   if (session.role || lobbyUI.joining) return;
   let code = normalizeCode(params.get('salon'));
+  const fromLink = !!code;
   if (params.has('salon')) {
     params.delete('salon');
     history.replaceState(null, '', `${location.pathname}${params.toString() ? `?${params}` : ''}${location.hash}`);
   }
   code ||= normalizeCode(recall(SALON_GUEST));
-  if (code && code !== normalizeCode(recall(SALON_HOST))) lobbyUI.join(code);
-  else hostSalon();
+  if (code && code !== normalizeCode(recall(SALON_HOST))) {
+    lobbyUI.join(code);
+    if (fromLink) openSalon();
+  } else hostSalon();
 }
 
-const lobbyUI = new LobbyUI($('title-lobby'), session, {
+// Salon : feuille grande, modale (« À plusieurs », ou « Salon » pour un invité). Le salon
+// (LobbyUI) vit dans #title-lobby, qu'on glisse dans la feuille ; fermée, ou remplacée
+// par une autre fenêtre, il retourne à sa place (cachée) : il reste à jour.
+const lobbyRoot = $('title-lobby');
+const lobbyPark = lobbyRoot.parentElement;
+function openSalon() {
+  const card = showModal('<div class="salon-slot"></div>', [], { sheet: 'large', veil: true, cls: 'menu-sheet salon-sheet' });
+  card.querySelector('.salon-slot')?.replaceWith(lobbyRoot);
+  lobbyUI.render();
+  sound.play('select');
+}
+let modalWasHidden = modal.classList.contains('hidden');
+new MutationObserver(() => {
+  if (lobbyRoot.parentElement !== lobbyPark && (modal.classList.contains('hidden') || !modal.contains(lobbyRoot))) lobbyPark.appendChild(lobbyRoot);
+  // une fenêtre s'ouvre ou se ferme : un message hors partie posé pour l'écran d'avant s'efface
+  const hidden = modal.classList.contains('hidden');
+  if (hidden !== modalWasHidden) $('app-toast').classList.remove('show');
+  modalWasHidden = hidden;
+}).observe(modal, { attributes: true, attributeFilter: ['class'], childList: true, subtree: true });
+
+const lobbyUI = new LobbyUI(lobbyRoot, session, {
+  defs,
   elements: defs.elements,
   profile,
   toast: (msg) => appToast(msg),
@@ -1743,22 +2325,36 @@ const lobbyUI = new LobbyUI($('title-lobby'), session, {
     q.set('salon', code);
     return `${location.origin}${location.pathname}?${q}`;
   },
-  onRender: () => updateTitleActions(),
+  onRender: () => updateHome(),
+  close: () => closeModal('close'),
 });
-// la scène de l'accueil se cale au-dessus du salon : elle suit sa hauteur
-new ResizeObserver(() => title.resize()).observe($('title-lobby'));
+window.__showScreen = showScreen; // (tests : retour d'une victoire sur la carte, justCleared)
+// la scène de l'accueil se cale au-dessus des boutons : elle suit leur hauteur
+new ResizeObserver(() => title.resize()).observe(document.querySelector('#screen-title .title-actions'));
+// noms des niveaux (sous-ligne du héros) : dès qu'ils sont chargés
+loadAllLevels().then(() => state.screen === 'title' && updateHome());
+// un ami arrive dans notre salon : on l'annonce sur l'accueil (sans ouvrir la feuille)
+const announced = new Map(); // (« hello » répétés, reconnexions : une annonce par ami et par minute)
+session.on('join', (p) => {
+  if (state.screen !== 'title' || !session.isHost || !p?.name) return;
+  if (!modal.classList.contains('hidden') && modal.firstElementChild.classList.contains('salon-sheet')) return; // il le voit déjà
+  const now = performance.now();
+  if (now - (announced.get(p.id) ?? -1e9) < 60000) return;
+  announced.set(p.id, now);
+  announceHome(`${p.name} a rejoint votre salon`);
+});
 
 session.on('status', ({ state: st, role, code, error }) => {
   if (role === 'host' && code) memo(SALON_HOST, code);
   if (role === 'guest' && st === 'online' && code) memo(SALON_GUEST, code);
-  updateTitleActions();
+  updateHome();
   // relais perdu en cours de route : l'hôte se reconnecte sans perdre son salon
   if (st === 'offline' && role === 'host' && error === 'connexion perdue') scheduleReconnect();
   if (st === 'online') reconnectTries = 0;
 });
 
 session.on('lobby', () => {
-  updateTitleActions();
+  updateHome();
   if (state.screen === 'game') updateRoster(true);
   guestGameOver();
 });
@@ -1884,8 +2480,9 @@ session.on('join', (p) => {
     if (state.screen === 'title') sound.play('select');
     return;
   }
-  if (state.coopRole === 'host') hud.toast(`${p.name} est de retour`);
-  else if (!state.coopRole) hud.toast(`${p.name} a rejoint votre salon : il jouera à la prochaine partie`, false, 2600);
+  // (état du salon : priorité 2, il passe devant les bulles du tutoriel)
+  if (state.coopRole === 'host') hud.say({ key: `join-${p.id}`, text: `${p.name} est de retour`, prio: 2 });
+  else if (!state.coopRole) hud.say({ key: `join-${p.id}`, text: `${p.name} a rejoint votre salon`, detail: 'il jouera à la prochaine partie', prio: 2 });
 });
 session.on('leave', (id) => {
   joinSeen.delete(id);
@@ -1930,6 +2527,8 @@ document.addEventListener(
   },
   { passive: false },
 );
+// État pressé commun (< 100 ms) sur tous les contrôles (src/ui/press.js).
+installPress(document);
 
 // Pause automatique en arrière-plan. Hôte : c'est la pause de tous ; un battement par
 // seconde rassure les invités (sinon ils l'attendraient comme un hôte disparu).

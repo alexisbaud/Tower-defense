@@ -88,6 +88,8 @@ class Player {
   }
 
   async tapSel(sel) {
+    // carte de résultat : boutons inactifs 700 ms (verrou contre les touchers involontaires)
+    await this.page.waitForFunction(() => !document.querySelector('#modal:not(.hidden) .actions.locked'), null, { timeout: 2000 }).catch(() => {});
     await this.tap(await this.center(sel));
   }
 
@@ -180,6 +182,15 @@ const freeSlot = (p, type, minRow = 0) =>
   );
 
 // Choisit une lanterne dans la palette (onglet de son élément d'abord) puis touche un socle.
+// Menu de pause (§6.10) : « Recommencer », « Quitter », « Quitter le salon » se confirment
+// par un second toucher (armConfirm)
+async function pauseAct(p, act) {
+  const b = p.page.locator(`#modal .pause-danger [data-act="${act}"]`);
+  await b.click();
+  await p.page.waitForTimeout(150);
+  await b.click();
+}
+
 async function placeBy(p, type, minRow = 2) {
   const el = await p.ev((t) => window.__state.game.defs.towers[t].element, type);
   if (await p.visible(`.ptab[data-el="${el}"]`)) await p.tapSel(`.ptab[data-el="${el}"]`);
@@ -270,15 +281,16 @@ try {
   const A = await new Player('A').open();
   check('salon créé tout seul, en ligne, avec un code de 4 lettres', await A.until(() => window.__session?.online && /^[A-Z]{4}$/.test(window.__session.code)), JSON.stringify(await lobby(A)));
   const code = (await lobby(A)).code;
+  await A.tapSel('#btn-multi'); // « À plusieurs » : feuille du salon
+  check('« À plusieurs » ouvre la feuille du salon', await A.until(() => !!document.querySelector('#modal:not(.hidden) #title-lobby')));
   const shown = await A.ev(() => [...document.querySelectorAll('#title-lobby .lobby-code-ch')].map((e) => e.textContent).join(''));
-  check('code affiché en sceaux sous le titre', shown === code, shown);
+  check('code affiché en sceaux dans la feuille du salon', shown === code, shown);
   check('« Inviter » et « Jouer » visibles', (await A.visible('.lobby-invite')) && (await A.visible('#btn-play')));
   const link = await A.ev(() => document.querySelector('.lobby-invite')?.dataset.link || '');
   check('lien d’invitation ?salon=CODE (relais conservé)', link.includes(`salon=${code}`) && link.includes('broker='), link);
   await A.tapSel('.lobby-invite');
   check('« Inviter » : lien partagé ou copié (message)', await A.until(() => document.querySelector('#app-toast')?.classList.contains('show')));
-  check('seul : choix de l’élément replié', await A.ev(() => document.querySelector('#title-lobby').classList.contains('folded')));
-  await A.tapSel('.lobby-fold');
+  check('seul : choix de l’élément visible (un mot par carte)', (await A.visible('.lobby-el[data-el="fire"]')) && (await A.ev(() => document.querySelector('.lobby-el[data-el="fire"] .lobby-el-style').textContent)) === 'Offensif');
   await A.tapSel('.lobby-el[data-el="fire"]');
   check('élément choisi (Feu)', (await lobby(A)).players[0]?.element === 'fire');
   await A.shot('salon-seul');
@@ -286,13 +298,13 @@ try {
   console.log('Rejoindre par le code');
   const B = await new Player('B').open();
   await B.until(() => window.__session?.online);
-  await B.tapSel('.lobby-join-btn');
+  await B.tapSel('#btn-multi');
   await B.page.fill('.lobby-join-input', code.toLowerCase());
-  await B.tapSel('.lobby-join-form .btn.primary');
+  await B.tapSel('.lobby-join-ok');
   check('B a rejoint le salon de A', await B.until((c) => window.__session.role === 'guest' && window.__session.online && window.__session.code === c, code, 10000), JSON.stringify(await lobby(B)));
   check('A voit deux joueurs', await A.until(() => window.__session.lobby.players.length === 2));
   check('B : « L’hôte choisit le niveau… », pas de bouton Jouer', (await B.visible('#title-wait')) && !(await B.visible('#btn-play')), await B.ev(() => document.querySelector('#title-wait').textContent));
-  check('à deux : choix de l’élément déplié', !(await A.ev(() => document.querySelector('#title-lobby').classList.contains('folded'))));
+  check('à deux : choix de l’élément visible', (await A.visible('.lobby-el[data-el="wind"]')) && (await A.ev(() => document.querySelectorAll('#title-lobby .lobby-player').length)) === 2);
   check('élément pris par un autre : désactivé', await B.ev(() => document.querySelector('.lobby-el[data-el="fire"]').disabled));
   await B.page.evaluate(() => window.__session.pickElement('fire')); // même en forçant
   await wait(400);
@@ -318,11 +330,13 @@ try {
     window.__save.record('1-1', 3);
     window.__save.record('1-2', 3);
   });
-  await A.tapSel('#btn-play');
+  await A.tapSel('#modal .menu-x'); // la feuille du salon se ferme…
+  check('accueil de l’hôte : « Jouer à 2 · Choisir le niveau »', await A.until(() => document.getElementById('btn-play-label').textContent === 'Jouer à 2'));
+  await A.tapSel('#btn-play'); // … et le héros ouvre la carte
   await A.until(() => window.__state.screen === 'map');
   await A.page.waitForTimeout(500);
   await A.tapSel(`.map-node >> nth=${LEVEL_INDEX}`);
-  check('fiche du niveau : « Partie à 2 », un élément chacun', await A.until(() => /Partie à 2/.test(document.querySelector('.modal-card')?.textContent || '') && /Chacun ne pose que les lanternes de son élément/.test(document.querySelector('.modal-card')?.textContent || '')));
+  check('fiche du niveau : « Partent avec vous · 2 », un élément chacun', await A.until(() => /Partent avec vous · 2/.test(document.querySelector('.modal-card')?.textContent || '') && /Chacun ne pose que les lanternes de son élément/.test(document.querySelector('.modal-card')?.textContent || '')));
   await A.tapSel('.modal-card .actions .btn.primary');
   check('A en partie (hôte)', await A.until(() => window.__state.screen === 'game' && window.__state.coopRole === 'host' && window.__coop.isHost));
   check('B entre dans la partie (invité, sa propre simulation)', await B.until(() => window.__state.screen === 'game' && window.__state.coopRole === 'guest' && window.__coop.isGuest && window.__state.game.frame > 30));
@@ -333,7 +347,9 @@ try {
   check('même niveau, B est le joueur 2', b.local === 1 && (await B.ev(() => window.__state.levelId)) === LEVEL);
   check('palette de B : seulement le Vent', JSON.stringify(await els(B)) === '["wind"]' && JSON.stringify(await paletteEls(B)) === '["wind"]', JSON.stringify([await els(B), await paletteEls(B)]));
   check('palette de A : seulement le Feu', JSON.stringify(await els(A)) === '["fire"]' && JSON.stringify(await paletteEls(A)) === '["fire"]', JSON.stringify([await els(A), await paletteEls(A)]));
-  check('rangée des coéquipiers (nom, or)', (await B.visible('#coop-roster .coop-mate')) && (await A.visible('#coop-roster .coop-mate')));
+  // les coéquipiers prennent la place des onglets (§6.6) : « Vous » soudé à la boîte, l'or des autres
+  const team = (p) => p.ev(() => [...document.querySelectorAll('#team-row:not(.hidden) .mate:not(.me)')].map((m) => m.getAttribute('aria-label')));
+  check('rangée des coéquipiers (nom, or)', (await B.visible('#team-row .mate.me')) && (await A.visible('#team-row .mate.me')) && /\d+ or/.test((await team(A)).join()) && /\d+ or/.test((await team(B)).join()), JSON.stringify([await team(A), await team(B)]));
   check('tutoriel désactivé en coopération', await B.ev(() => window.__tutorial.steps.length === 0));
   const lagB = await B.ev(() => window.__coop.net.lag);
   check('B suit la partie de A, un peu en retard (< 0,5 s)', lagB >= 0 && lagB < 30, `${lagB}`);
@@ -490,7 +506,7 @@ try {
   const w = (await gameOf(A)).wave;
   await B.tapSel('#btn-wave');
   check('B appelle la vague suivante en avance', await A.until((w) => window.__state.game.waveIndex === w + 1, w, 3000));
-  check('A est prévenu de l’appel de B', await A.until(() => /appelle la vague/.test(document.querySelector('#toast')?.textContent || '')));
+  check('A est prévenu de l’appel de B', await A.until(() => /appelle la vague/.test(document.querySelector('#lane')?.textContent || '')));
   await A.page.waitForTimeout(1600);
   const w2 = (await gameOf(A)).wave;
   const wq = await B.center('#btn-wave');
@@ -532,12 +548,37 @@ try {
   // (qa-coop) pendant le délai de la commande, la jauge disait « Le passé s'accumule… »
   // et se laissait glisser de nouveau : elle annonce le Rembobinage en route
   const coming = await B.ev(() => ({ text: document.querySelector('#rewind .rewind-label')?.textContent || '', again: window.__commands.check('rewind').ok, rw: window.__state.game.rewindsUsed }));
-  check('B : jauge « Le temps va reculer… » pendant le délai, pas de second Rembobinage', coming.rw === 1 || (/va reculer/.test(coming.text) && !coming.again), JSON.stringify(coming));
+  check('B : jauge « Le temps va reculer… » pendant le délai, pas de second Rembobinage', coming.rw === 1 || (/va reculer|Recule…/.test(coming.text) && !coming.again), JSON.stringify(coming));
   check('B rembobine : le temps recule chez A et chez B', (await A.until(() => window.__state.game.rewindsUsed === 1, null, 3000)) && (await B.until(() => window.__state.game.rewindsUsed === 1, null, 3000)));
-  check('A est prévenu du rembobinage de B', await A.until(() => /remonte le temps/.test(document.querySelector('#toast')?.textContent || '')));
+  check('A est prévenu du rembobinage de B', await A.until(() => /remonte le temps/.test(document.querySelector('#lane')?.textContent || '')));
   await A.page.waitForTimeout(1600);
   const h2 = await settle([A, B]);
   check('après le Rembobinage : même partie', h2[0] === h2[1], h2.join(' '));
+
+  // (qa refonte) l'invité a son menu ouvert (sa partie continue) quand le sanctuaire
+  // tombe : la feuille couvrait la poignée, seule issue, et la partie était perdue.
+  console.log('Dernière chance, menu de l’invité ouvert');
+  {
+    await A.page.waitForTimeout(2300); // du passé à rembobiner (≥ 2 s) depuis le Rembobinage
+    await B.tapSel('#btn-pause');
+    check('menu de B ouvert', await B.until(() => /La partie continue/.test(document.querySelector('#modal:not(.hidden) .modal-card')?.textContent || '')));
+    const used0 = (await gameOf(A)).rewinds;
+    await together([A, B], () => {
+      const g = window.__state.game;
+      g.rewindCharge = g.rules.rewindCost;
+      g.lives = 0;
+      g.lastChanceT = g.rules.lastChanceSeconds ?? 4;
+    });
+    check('dernière chance chez B : son menu se ferme', await B.until(() => window.__state.game.lastChanceT > 0 && document.getElementById('modal').classList.contains('hidden') && !window.__state.paused, null, 3000), JSON.stringify(await B.ev(() => ({ lc: window.__state.game.lastChanceT, modal: !document.getElementById('modal').classList.contains('hidden') }))));
+    const kn = await B.center('#rewind .rewind-knob');
+    check('… la poignée est sous le doigt (rien ne la couvre)', await B.ev(({ x, y }) => !!document.elementFromPoint(x, y)?.closest('#rewind'), kn));
+    await B.tap(kn);
+    check('… un toucher de B sauve la partie, chez A et chez B', (await A.until((u) => window.__state.game.rewindsUsed === u + 1 && window.__state.game.state === 'wave', used0, 4000)) && (await B.until((u) => window.__state.game.rewindsUsed === u + 1, used0, 4000)), JSON.stringify(await A.ev(() => ({ st: window.__state.game.state, rw: window.__state.game.rewindsUsed }))));
+    await A.page.waitForTimeout(1600);
+    check('… les vies reviennent (même partie)', (await A.until(() => window.__state.game.lives > 0, null, 3000)) && (await B.until(() => window.__state.game.lives > 0, null, 3000)));
+    const h2b = await settle([A, B]);
+    check('après la dernière chance : même partie', h2b[0] === h2b[1], h2b.join(' '));
+  }
 
   console.log('Pause');
   await A.tapSel('#btn-pause');
@@ -564,7 +605,7 @@ try {
   check('la partie est figée chez B', (await gameOf(B)).frame === pb.frame);
   await A.shot('partie-a-2-hote-pause');
   await B.shot('partie-a-2-invite-pause');
-  await A.tapSel('.modal-card .actions .btn.primary'); // Reprendre
+  await A.tapSel('.modal-card .pause-main .btn.primary'); // Reprendre
   check('reprise : le bandeau disparaît chez B', await B.until(() => document.querySelector('#coop-wait').classList.contains('hidden')));
   await B.tapSel('#btn-pause');
   check('menu de B : « La partie continue »', await B.until(() => /La partie continue/.test(document.querySelector('.modal-card')?.textContent || '')));
@@ -572,7 +613,7 @@ try {
   const fB = (await gameOf(B)).frame;
   await A.page.waitForTimeout(600);
   check('le menu d’un invité n’arrête pas la partie (ni chez A, ni chez B)', (await gameOf(A)).frame > fA + 20 && (await gameOf(B)).frame > fB + 20);
-  await B.tapSel('.modal-card .actions .btn.primary');
+  await B.tapSel('.modal-card .pause-main .btn.primary'); // Reprendre
   check('B reprend', !(await B.ev(() => window.__state.paused)));
   // l'hôte passe en arrière-plan : pause pour tous
   await A.ev(() => {
@@ -584,7 +625,7 @@ try {
     Object.defineProperty(document, 'hidden', { value: false, configurable: true });
     document.dispatchEvent(new Event('visibilitychange'));
   });
-  await A.tapSel('.modal-card .actions .btn.primary'); // Reprendre
+  await A.tapSel('.modal-card .pause-main .btn.primary'); // Reprendre
   check('retour de l’hôte : la partie reprend', await B.until(() => document.querySelector('#coop-wait').classList.contains('hidden')));
   // l'hôte ne donne plus de nouvelles (réseau coupé) : l'invité l'attend, sans le dépasser
   await A.ev(() => {
@@ -623,7 +664,7 @@ try {
   check('B revient dans la partie après rechargement', await B.until(() => window.__state.screen === 'game' && window.__state.coopRole === 'guest', null, 12000), JSON.stringify(await lobby(B)));
   check('B : état complet reçu (« Synchronisation… » puis la partie)', await B.until(() => window.__coop.net?.stats.imports === 1 && window.__coop.waitKind() === null && window.__state.game.frame > 600, null, 8000), JSON.stringify((await gameOf(B)).stats));
   check('B retrouve les lanternes et son or', await B.until(([n, g]) => window.__state.game.towers.length === n && Math.abs(Math.floor(window.__state.game.players[1].gold) - g) < 60, [before.towers.length, before.gold[1]]));
-  check('A voit B présent (pas « absent »)', await A.until(() => !document.querySelector('#coop-roster .coop-mate.off')));
+  check('A voit B présent (pas « absent »)', await A.until(() => !document.querySelector('#team-row .mate.off')));
   const h3 = await settle([A, B]);
   check('après le rechargement : même partie', h3[0] === h3[1], h3.join(' '));
 
@@ -652,7 +693,7 @@ try {
     window.__save.record('1-1', 3);
     window.__save.record('1-2', 3);
   });
-  await H.tapSel('.lobby-fold');
+  await H.tapSel('#btn-multi');
   await H.tapSel('.lobby-el[data-el="earth"]');
   // l'hôte joue d'abord seul : un ami qui arrive attendra la partie suivante
   await H.ev(() => window.__startLevel('1-1'));
@@ -660,9 +701,9 @@ try {
   const early = await new Player('P2').open(url(`&salon=${code4}`));
   check('arrivée pendant une partie seul : acceptée', await early.until(() => window.__session.role === 'guest' && window.__session.online, null, 10000));
   check('l’arrivant sait que l’hôte joue seul', await early.until(() => /seul/.test(document.querySelector('#title-wait').textContent)), await early.ev(() => document.querySelector('#title-wait').textContent));
-  check('l’hôte est prévenu en jeu', await H.until(() => /rejoint votre salon/.test(document.querySelector('#toast')?.textContent || '')));
+  check('l’hôte est prévenu en jeu', await H.until(() => /rejoint votre salon/.test(document.querySelector('#lane')?.textContent || '')));
   await H.tapSel('#btn-pause');
-  await H.page.locator('.modal-card .actions .btn', { hasText: 'Carte' }).click();
+  await pauseAct(H, 'quit');
   await H.until(() => window.__state.screen === 'map');
   await H.tapSel('#btn-map-back');
   check('hôte revenu au salon : l’arrivant attend le choix du niveau', await early.until(() => /choisit le niveau/.test(document.querySelector('#title-wait').textContent)));
@@ -691,7 +732,7 @@ try {
   await H.until(() => window.__state.screen === 'map');
   await H.page.waitForTimeout(400);
   await H.tapSel(`.map-node >> nth=${LEVEL_INDEX}`);
-  await H.until(() => /Partie à 4/.test(document.querySelector('.modal-card')?.textContent || ''));
+  await H.until(() => /Partent avec vous · 4/.test(document.querySelector('.modal-card')?.textContent || ''));
   await H.tapSel('.modal-card .actions .btn.primary');
   let all = true;
   for (const p of G) all = (await p.until(() => window.__state.screen === 'game' && window.__state.coopRole === 'guest')) && all;
@@ -702,7 +743,8 @@ try {
     const e = await els(P[i]);
     check(`${P[i].tag} : palette de son seul élément (${want[i]})`, JSON.stringify(e) === JSON.stringify([want[i]]) && JSON.stringify(await paletteEls(P[i])) === JSON.stringify([want[i]]), JSON.stringify(e));
   }
-  check('rangée des coéquipiers : 3 chez chacun', (await H.ev(() => document.querySelectorAll('#coop-roster .coop-mate').length)) === 3);
+  // « Vous » soudé à la boîte + les trois autres
+  check('rangée des coéquipiers : 3 chez chacun (plus « Vous »)', (await H.ev(() => [document.querySelectorAll('#team-row .mate:not(.me)').length, document.querySelectorAll('#team-row .mate.me').length].join())) === '3,1');
   for (const p of P) await hookExec(p);
   const placed = [];
   let building = true;
@@ -737,7 +779,8 @@ try {
     g.enemies = [];
   });
   check('victoire chez l’hôte', await H.until(() => /Victoire/.test(document.querySelector('.modal-card')?.textContent || ''), null, 8000));
-  check('hôte : « Salon », « Rejouer », « Suivant »', /Salon.*Rejouer.*Suivant/.test(await H.ev(() => document.querySelector('.modal-card .actions').textContent)));
+  // §6.12 : « Suivant » seul en vermillon, « Rejouer » secondaire, « Salon » en texte
+  check('hôte : « Suivant », « Rejouer », « Salon »', /Suivant.*Rejouer.*Salon/.test(await H.ev(() => document.querySelector('.modal-card .actions').textContent)) && (await H.ev(() => !!document.querySelector('.modal-card .actions .btn.text')?.textContent.includes('Salon'))));
   let wins = true;
   for (const p of G) wins = (await p.until(() => /Victoire/.test(document.querySelector('.modal-card')?.textContent || '') && !!document.querySelector('.modal-card .actions .btn.primary'), null, 8000)) && wins;
   check('chaque invité voit la victoire (calculée par sa propre partie)', wins);
@@ -749,7 +792,7 @@ try {
   await G[0].shot('victoire-invite');
   await G[0].tapSel('.modal-card .actions .btn.primary');
   check('retour au salon de l’hôte', await G[0].until(() => window.__state.screen === 'title' && window.__session.role === 'guest'));
-  await H.tapSel('.modal-card .actions .btn:not(.primary):not(.dark)'); // Rejouer
+  await H.tapSel('.modal-card .actions .btn:not(.primary):not(.text)'); // Rejouer
   all = true;
   for (const p of G) all = (await p.until(() => window.__state.screen === 'game' && window.__state.coopRole === 'guest' && !window.__state.resultShown, null, 8000)) && all;
   check('« Rejouer » de l’hôte : nouvelle partie pour tous', all);
@@ -764,7 +807,7 @@ try {
   for (const p of G) all = (await p.until(() => window.__state.screen === 'game' && !window.__state.resultShown && document.querySelector('#modal').classList.contains('hidden'), null, 8000)) && all;
   check('« Réessayer » de l’hôte : tous repartent', all);
   await H.tapSel('#btn-pause');
-  await H.page.locator('.modal-card .actions .btn', { hasText: 'Carte' }).click();
+  await pauseAct(H, 'quit');
   let ended = true;
   for (const p of G) ended = (await p.until(() => /mis fin à la partie/.test(document.querySelector('.modal-card')?.textContent || ''), null, 8000)) && ended;
   check('l’hôte quitte la partie : « L’hôte a mis fin à la partie »', ended);
@@ -776,7 +819,7 @@ try {
   const X = await new Player('X').open();
   await X.until(() => window.__session?.online);
   const codeX = (await lobby(X)).code;
-  await X.tapSel('.lobby-fold');
+  await X.tapSel('#btn-multi');
   await X.tapSel('.lobby-el[data-el="fire"]');
   const Y = await new Player('Y').open(url(`&salon=${codeX}`));
   const Z = await new Player('Z').open(url(`&salon=${codeX}`));
@@ -794,7 +837,7 @@ try {
 
   // Y quitte le salon en pleine partie ; « Recommencer pour tous » repart sans lui
   await Y.tapSel('#btn-pause');
-  await Y.page.locator('.modal-card .actions .btn', { hasText: 'Quitter le salon' }).click();
+  await pauseAct(Y, 'leave');
   check('X voit Y absent', await X.until(() => window.__session.lobby.players.find((p) => p.element === 'water')?.online === false, null, 6000));
   const gidX = await X.ev(() => window.__state.gid);
   await Z.ev(() => {
@@ -804,7 +847,7 @@ try {
     }).observe(document.querySelector('#modal'), { attributes: true, childList: true, subtree: true });
   });
   await X.tapSel('#btn-pause');
-  await X.page.locator('.modal-card .actions .btn', { hasText: 'Recommencer' }).click();
+  await pauseAct(X, 'restart');
   check('« Recommencer pour tous » : partie à 2, sans l’absent', await X.until((g0) => window.__state.game && window.__state.gid !== g0 && window.__state.game.players.length === 2 && window.__session.lobby.players.length === 2, gidX, 6000), JSON.stringify(await X.ev(() => [window.__state.game?.players.length, window.__session.lobby.players.map((p) => [p.element, p.online])])));
   check('… un élément chacun : Feu pour X (l’Eau de l’absent n’est à personne)', await X.ev(() => JSON.stringify(window.__state.game.players[0].elements) === '["fire"]' && window.__state.game.availableTowers.every((t) => window.__state.game.defs.towers[t].element === 'fire')));
   check('… Z entre dans la nouvelle partie (sans « Partie terminée »)', (await Z.until((g0) => window.__state.screen === 'game' && window.__coop.isGuest && window.__state.gid !== g0 && window.__state.game.players.length === 2, gidX, 8000)) && !(await Z.ev(() => window.__sawEnd)));
@@ -817,7 +860,7 @@ try {
     window.__unmute = () => (s.onGuestMessage = on);
   });
   await X.tapSel('#btn-pause');
-  await X.page.locator('.modal-card .actions .btn', { hasText: 'Carte' }).click();
+  await pauseAct(X, 'quit');
   check('invité sans le message de fin : « Partie terminée » (pas d’attente sans fin)', await Z.until(() => /Partie terminée/.test(document.querySelector('.modal-card')?.textContent || '') && !document.querySelector('#modal').classList.contains('hidden'), null, 8000), await Z.ev(() => document.querySelector('#coop-wait').textContent));
   await Z.tapSel('.modal-card .actions .btn.primary');
   await Z.until(() => window.__state.screen === 'title');
@@ -843,10 +886,13 @@ try {
   await Z.tapSel('.modal-card .actions .btn.primary'); // Retour au salon
   await Z.until(() => window.__state.screen === 'title' && window.__session.role === 'guest');
 
-  await Z.tapSel('.lobby-leave'); // Quitter ce salon (depuis l'accueil)
+  await Z.tapSel('#btn-multi'); // « Salon » (invité) : la feuille du salon
+  await Z.tapSel('.lobby-leave'); // « Quitter le salon » : armé…
+  check('« Quitter le salon » se confirme (second toucher)', await Z.ev(() => window.__session.role === 'guest' && document.querySelector('.lobby-leave').classList.contains('armed')));
+  await Z.tapSel('.lobby-leave'); // … puis quitté
   await X.until(() => window.__session.lobby.players[1]?.online === false, null, 6000);
   await X.tapSel('#btn-pause');
-  await X.page.locator('.modal-card .actions .btn', { hasText: 'Recommencer' }).click();
+  await pauseAct(X, 'restart');
   check('seul après les départs : « Recommencer » relance une partie seul (4 éléments)', await X.until(() => window.__state.game && !window.__state.coopRole && window.__state.game.players.length === 1 && window.__state.game.players[0].elements.length === 4 && !window.__session.inGame && window.__session.lobby.players.length === 1, null, 6000));
   for (const p of [X, Y, Z]) await p.close();
 
@@ -858,9 +904,9 @@ try {
     const el = document.querySelector('#app-toast');
     new MutationObserver(() => window.__toasts.push(el.textContent)).observe(el, { childList: true, characterData: true, subtree: true });
   });
-  await W.tapSel('.lobby-join-btn');
+  await W.tapSel('#btn-multi');
   await W.page.fill('.lobby-join-input', 'ZZZZ');
-  await W.tapSel('.lobby-join-form .btn.primary');
+  await W.tapSel('.lobby-join-ok');
   await W.until(() => /Recherche du salon/.test(document.querySelector('.lobby-error')?.textContent || ''));
   check('pendant la recherche : « Annuler la recherche »', /Annuler la recherche/.test(await W.ev(() => document.querySelector('.lobby-leave')?.textContent || '')));
   await W.tapSel('.lobby-leave');

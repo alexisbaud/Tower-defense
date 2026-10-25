@@ -35,7 +35,7 @@ await page.screenshot({ path: `${out}/01-start.png` });
 
 // Sans ?level=, on passe par le titre et la carte pour ouvrir le premier niveau.
 if (!(await page.locator('#screen-game.active').count())) {
-  await page.click('#btn-play');
+  await page.click('#btn-levels');
   await page.waitForTimeout(500);
   await page.screenshot({ path: `${out}/01b-map.png` });
   await page.locator('.map-node').first().click();
