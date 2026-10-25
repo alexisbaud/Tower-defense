@@ -14,6 +14,10 @@ export default {
   // l'or de départ des niveaux, plus généreux, permet une vraie première défense.
   waveReward: 25,         // or par défaut à la fin d'une vague
   maxTowerLevel: 3,
+  // Délai de construction (s) : une lanterne, une pierre ou un mur posé apparaît
+  // « en construction » et ne s'active qu'après ce délai (en coopération, il laisse
+  // à la commande le temps de parvenir à tous les joueurs).
+  buildTime: 2,
   // Pierres (chemin modifiable) — un niveau peut surcharger via `stones: { cost, max }`
   stoneCost: 10,
   stoneMax: 10,

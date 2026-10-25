@@ -9,21 +9,58 @@
 import { Grid, T } from './grid.js';
 import { FlowField, bfs, routeOf } from './flowfield.js';
 import { Rng } from './rng.js';
+import { hyp, dsin, fnv } from './dmath.js';
 import { buildComboIndex, computeZones, updateZones, updateTornadoes, comboKey } from './combos.js';
 
 export const STEP = 1 / 60;
 export const PRIORITIES = ['first', 'last', 'strong', 'close'];
 const ALL_ELEMENTS = ['fire', 'water', 'wind', 'earth'];
 
-// Éléments contrôlés par chaque joueur en coopération : chacun garde pour lui
-// l'élément qu'il a choisi ; les éléments que personne n'a choisis sont partagés.
-// `choices` : un élément (ou null) par joueur. Seul, on contrôle tout.
+// Éléments contrôlés par chaque joueur. Seul, on contrôle les quatre. À plusieurs,
+// chacun n'a QUE l'élément qu'il a choisi (lanternes et objets de cet élément) ; un
+// joueur sans choix (ou en double) reçoit le premier élément libre, dans l'ordre.
+// `choices` : un élément (ou null) par joueur.
 export function assignElements(choices, all = ALL_ELEMENTS) {
   if (choices.length <= 1) return [all.slice()];
-  const taken = new Set(choices.filter(Boolean));
-  const free = all.filter((el) => !taken.has(el));
-  return choices.map((el) => (el ? [el, ...free] : free.length ? free.slice() : all.slice()));
+  const taken = new Set();
+  const out = choices.map((el) => {
+    if (el && all.includes(el) && !taken.has(el)) {
+      taken.add(el);
+      return el;
+    }
+    return null;
+  });
+  return out.map((el) => {
+    if (!el) {
+      el = all.find((x) => !taken.has(x)) ?? all[0];
+      taken.add(el);
+    }
+    return [el];
+  });
 }
+
+// Poses : exécutées après le délai de construction (rules.buildTime, 2 s).
+export const PLACEMENTS = new Set(['placeTower', 'placeStone', 'setRally']);
+// Commandes de la file : nombre d'arguments (le joueur est ajouté en dernier).
+export const COMMANDS = {
+  placeTower: 3,
+  sellTower: 1,
+  undoPlace: 1,
+  fuse: 2,
+  setPriority: 2,
+  cyclePriority: 1,
+  placeStone: 2,
+  removeStone: 2,
+  startNextWave: 0,
+  rewind: 0,
+  setRally: 3,
+  cancel: 1,
+};
+
+// Champs du moteur exclus de l'état exporté (statiques, recalculés ou traités à part).
+const EXPORT_SKIP = new Set(['level', 'defs', 'rules', 'rng', 'recordEvents', 'events', 'grid', 'flow', 'comboIndex', 'zones', 'history', 'rewindAnim', 'projectiles', 'chargedKills', 'chargedWaves', 'stoneOwner', '_route', '_routeV', 'localPlayer', 'waves', 'players']);
+const IMPORT_SPECIAL = new Set(['v', 'players', 'rng', 'stones', 'stoneOwner', 'chargedKills', 'chargedWaves', 'projectiles', 'zoneTimers']);
+const STATES = ['build', 'wave', 'won', 'lost'];
 
 export class Game {
   /**
@@ -104,6 +141,21 @@ export class Game {
     this.spawners = [];
     this.waveCleared = [];
     this.stats = { kills: 0, leaks: 0, goldEarned: 0, towersBuilt: 0, stones: 0, elementsUsed: {} };
+
+    // Socles gravés d'un élément qu'aucun joueur ne contrôle : ils deviennent universels.
+    const present = new Set(this.players.flatMap((p) => p.elements));
+    for (let i = 0; i < this.grid.size; i++) {
+      const se = this.grid.slotElement[i];
+      if (se && !present.has(se)) this.grid.slotElement[i] = null;
+    }
+
+    // File de commandes (voir issue()) : chaque action est exécutée à une image
+    // précise (frame), la même pour tous les joueurs d'une partie coopérative.
+    this.frame = 0;
+    this.queue = [];
+    this.recent = []; // poses exécutées récemment (annulation)
+    this.cmdSeq = 1;
+    this.commandDelay = 0; // images d'attente des autres commandes (0 en solo ; réglé par le réseau)
   }
 
   // ───────────────────────── utilitaires ─────────────────────────
@@ -547,6 +599,191 @@ export class Game {
     return !this.busy() && !this.lastChanceT && this.waveIndex + 1 < this.waves.length;
   }
 
+  // ───────────────────────── file de commandes ─────────────────────────
+  //
+  // Toute action d'un joueur passe par issue() : elle reçoit une image d'exécution
+  // (frame) et s'exécute précisément à cette image. Les poses (lanterne, pierre, mur)
+  // attendent le délai de construction (rules.buildTime) : la lanterne apparaît
+  // « en construction » puis s'active. En coopération, tous les téléphones reçoivent
+  // les mêmes commandes datées et calculent exactement la même partie ; les 2 s de
+  // construction laissent aux commandes le temps de parvenir à chacun, sans retour
+  // en arrière. Les autres commandes attendent commandDelay (0 en solo).
+
+  buildFrames() {
+    return Math.round((this.rules.buildTime ?? 0) / STEP);
+  }
+
+  delayFor(op) {
+    return PLACEMENTS.has(op) ? this.buildFrames() : this.commandDelay;
+  }
+
+  // Commande du joueur `pid`. Renvoie l'entrée de la file (exécutée tout de suite si
+  // le délai est nul : entry.done, entry.result) ou null si elle est refusée d'emblée.
+  issue(op, args = [], pid = this.localPlayer) {
+    if (COMMANDS[op] == null) return null;
+    const check = this.canIssue(op, args, pid);
+    if (!check.ok) {
+      if (op === 'placeTower') this.emit('reject', { c: args[1], r: args[2], reason: check.reason, element: check.element, pid });
+      else if (op === 'placeStone') this.emit('reject', { c: args[0], r: args[1], reason: check.reason, pid });
+      return null;
+    }
+    const entry = this.makeEntry(op, args, pid, this.frame + this.delayFor(op));
+    if (entry.frame <= this.frame) this.execute(entry);
+    else this.enqueue(entry);
+    return entry;
+  }
+
+  makeEntry(op, args, pid, frame) {
+    const a = (args || []).slice(0, COMMANDS[op]);
+    while (a.length < COMMANDS[op]) a.push(null);
+    return { id: this.cmdSeq++, frame, issued: this.frame, pid, op, args: a };
+  }
+
+  // Ajoute une commande datée (venue du réseau ou d'issue()), dans l'ordre (image, id).
+  enqueue(entry) {
+    this.cmdSeq = Math.max(this.cmdSeq, entry.id + 1);
+    if (this.queue.some((e) => e.id === entry.id)) return false;
+    let i = this.queue.length;
+    while (i > 0 && (this.queue[i - 1].frame > entry.frame || (this.queue[i - 1].frame === entry.frame && this.queue[i - 1].id > entry.id))) i--;
+    this.queue.splice(i, 0, entry);
+    if (PLACEMENTS.has(entry.op)) this.emit('pending', { entry });
+    return true;
+  }
+
+  // Exécute les commandes arrivées à échéance. Pendant l'animation du Rembobinage ou
+  // la dernière chance, elles patientent (sauf le Rembobinage lui-même).
+  runQueue() {
+    if (!this.queue.length) return;
+    const list = this.queue;
+    this.queue = [];
+    for (const entry of list) {
+      if (entry.cancelled) continue;
+      const b = this.busy();
+      if (entry.frame > this.frame || b === 'rewinding' || (b === 'lastChance' && entry.op !== 'rewind')) this.queue.push(entry);
+      else this.execute(entry);
+    }
+    if (this.queue.some((e) => e.cancelled)) this.queue = this.queue.filter((e) => !e.cancelled);
+  }
+
+  execute(entry) {
+    const { op, args, pid } = entry;
+    let res = null;
+    if (op === 'cancel') res = this.cancelEntry(args[0], pid);
+    else if (op === 'startNextWave') res = this.startNextWave(pid, true);
+    else if (op === 'undoPlace') res = this.undoPlace(args[0], this.undoWindow(), pid);
+    else if (op === 'setRally') res = this.setRally(args[0], args[1], args[2], pid);
+    else if (typeof this[op] === 'function') res = this[op](...args, pid);
+    entry.done = true;
+    entry.ok = !!res;
+    entry.result = res && typeof res === 'object' ? res.id ?? true : res;
+    if (op === 'placeTower' || op === 'placeStone') {
+      this.recent.push({ id: entry.id, pid, op, args: entry.args, result: entry.result, frame: this.frame });
+      while (this.recent.length && this.frame - this.recent[0].frame > 600) this.recent.shift();
+    }
+    this.emit('executed', { entry });
+    return res;
+  }
+
+  // Fenêtre d'annulation d'une pose (s), délai des commandes compris.
+  undoWindow() {
+    return 3 + this.commandDelay * STEP + 0.5;
+  }
+
+  // Annuler une commande : encore en file, elle est retirée (rien n'était payé) ;
+  // déjà exécutée (pose récente), la lanterne est reprise et son prix rendu.
+  cancelEntry(entryId, pid) {
+    const q = this.queue.find((e) => e.id === entryId && !e.cancelled);
+    if (q) {
+      if (q.pid !== pid) return false;
+      q.cancelled = true;
+      this.queue = this.queue.filter((e) => e !== q);
+      this.emit('cancel', { entry: q, pid });
+      return true;
+    }
+    const r = this.recent.find((e) => e.id === entryId);
+    if (!r || r.pid !== pid || !r.result) return false;
+    if (r.op === 'placeTower') return this.undoPlace(r.result, this.undoWindow(), pid);
+    if (r.op === 'placeStone') return this.removeStone(r.args[0], r.args[1], pid);
+    return false;
+  }
+
+  // Poses en attente de construction (pour l'affichage « en construction »).
+  pendingPlacements(pid = null) {
+    return this.queue.filter((e) => PLACEMENTS.has(e.op) && !e.cancelled && (pid == null || e.pid === pid));
+  }
+
+  // Avancement d'une commande en file (0 → 1).
+  progressOf(entry) {
+    const span = entry.frame - entry.issued;
+    return span > 0 ? Math.max(0, Math.min(1, (this.frame - entry.issued) / span)) : 1;
+  }
+
+  // Or déjà promis par les poses en attente d'un joueur.
+  reservedGold(pid = this.localPlayer) {
+    let n = 0;
+    for (const e of this.queue) {
+      if (e.cancelled || e.pid !== pid) continue;
+      if (e.op === 'placeTower') n += this.defs.towers[e.args[0]]?.cost ?? 0;
+      else if (e.op === 'placeStone') n += this.stoneCost();
+    }
+    return n;
+  }
+
+  // Or disponible pour une nouvelle pose.
+  spendable(pid = this.localPlayer) {
+    return this.goldOf(pid) - this.reservedGold(pid);
+  }
+
+  // La commande serait-elle acceptée maintenant ? (poses en attente comprises)
+  canIssue(op, args = [], pid = this.localPlayer) {
+    const pend = this.queue.filter((e) => !e.cancelled);
+    const no = (reason, extra = {}) => ({ ok: false, reason, ...extra });
+    switch (op) {
+      case 'placeTower': {
+        const [type, c, r] = args;
+        const def = this.defs.towers[type];
+        if (!def) return no('unknown');
+        const check = this.canPlaceTower(type, c, r, pid);
+        if (!check.ok && check.reason !== 'gold') return check;
+        if (pend.some((e) => e.op === 'placeTower' && e.args[1] === c && e.args[2] === r)) return no('pending', { owner: pend.find((e) => e.op === 'placeTower' && e.args[1] === c && e.args[2] === r).pid });
+        const max = this.challengeRule?.maxTowers;
+        if (max != null && this.stats.towersBuilt + pend.filter((e) => e.op === 'placeTower').length >= max) return no('challenge');
+        if (this.spendable(pid) < def.cost) return no('gold');
+        return { ok: true };
+      }
+      case 'placeStone': {
+        const [c, r] = args;
+        const check = this.canPlaceStone(c, r, pid);
+        if (!check.ok && check.reason !== 'gold' && check.reason !== 'limit') return check;
+        const stones = pend.filter((e) => e.op === 'placeStone');
+        if (stones.some((e) => e.args[0] === c && e.args[1] === r)) return no('pending');
+        if (this.stonesLeft() - stones.length <= 0) return no('limit');
+        if (this.spendable(pid) < this.stoneCost()) return no('gold');
+        return { ok: true };
+      }
+      case 'setRally': {
+        const t = this.towerById(args[0]);
+        if (!t || (this.players.length > 1 && t.owner !== pid) || this.busy()) return no('unknown');
+        if (!this.grid.inBounds(args[1], args[2]) || !this.rallyTiles(t.id).includes(this.grid.idx(args[1], args[2]))) return no('rally');
+        return { ok: true };
+      }
+      case 'fuse':
+        return this.canFuse(args[0], args[1], pid);
+      case 'sellTower': {
+        const t = this.towerById(args[0]);
+        return t && !this.busy() && (this.players.length === 1 || t.owner === pid) ? { ok: true } : no('unknown');
+      }
+      case 'removeStone':
+        return this.canRemoveStone(args[0], args[1], pid);
+      case 'startNextWave':
+        return this.canCallNextWave() && !pend.some((e) => e.op === 'startNextWave') ? { ok: true } : no('wave');
+      case 'rewind':
+        return this.canRewind() && !pend.some((e) => e.op === 'rewind') ? { ok: true } : no('rewind');
+      default:
+        return { ok: true };
+    }
+  }
+
   // ───────────────────────── vagues ─────────────────────────
 
   waveSpawnDuration(idx) {
@@ -604,6 +841,8 @@ export class Game {
 
   update(dt) {
     if (this.state === 'won' || this.state === 'lost') return;
+    this.frame++;
+    this.runQueue();
     if (this.rewindAnim) {
       this.rewindAnim.t += dt;
       if (this.rewindAnim.t >= this.rewindAnim.dur) this.finishRewind();
@@ -621,7 +860,7 @@ export class Game {
       this.recordHistory(dt);
       if (this.nextWaveT != null) {
         this.nextWaveT -= dt;
-        if (this.nextWaveT <= 0) this.startNextWave(this.localPlayer, false);
+        if (this.nextWaveT <= 0) this.startNextWave(-1, false); // départ automatique (aucun joueur)
       }
       this.updateSpawners(dt);
     }
@@ -771,7 +1010,7 @@ export class Game {
       e.fy0 = e.y;
       e.fx1 = g.cx(goal);
       e.fy1 = g.cy(goal);
-      e.flyLen = Math.hypot(e.fx1 - e.fx0, e.fy1 - e.fy0);
+      e.flyLen = hyp(e.fx1 - e.fx0, e.fy1 - e.fy0);
       e.s = 0;
     } else {
       e.cur = spawnTile;
@@ -790,7 +1029,7 @@ export class Game {
     let bd = Infinity;
     for (let i = 0; i < g.size; i++) {
       if (!g.isWalkable(i) || this.flow.dist[i] < 0) continue;
-      const d = Math.hypot(g.cx(i) - x, g.cy(i) - y);
+      const d = hyp(g.cx(i) - x, g.cy(i) - y);
       if (d < bd) {
         bd = d;
         best = i;
@@ -803,7 +1042,7 @@ export class Game {
     let best = this.grid.goals[0];
     let bd = Infinity;
     for (const gi of this.grid.goals) {
-      const d = Math.hypot(this.grid.cx(gi) - x, this.grid.cy(gi) - y);
+      const d = hyp(this.grid.cx(gi) - x, this.grid.cy(gi) - y);
       if (d < bd) {
         bd = d;
         best = gi;
@@ -818,7 +1057,7 @@ export class Game {
     const d = this.flow.dist[e.target];
     const tx = this.grid.cx(e.target);
     const ty = this.grid.cy(e.target);
-    return (d < 0 ? 999 : d) + Math.hypot(tx - e.mx, ty - e.my);
+    return (d < 0 ? 999 : d) + hyp(tx - e.mx, ty - e.my);
   }
 
   updateEnemies(dt) {
@@ -879,7 +1118,7 @@ export class Game {
         let healed = false;
         for (const o of this.enemies) {
           if (o === e || !o.alive || o.hp >= o.maxHp || o.healT > 0) continue;
-          if (Math.hypot(o.x - e.x, o.y - e.y) > ab.healAura.radius) continue;
+          if (hyp(o.x - e.x, o.y - e.y) > ab.healAura.radius) continue;
           o.hp = Math.min(o.maxHp, o.hp + o.maxHp * ab.healAura.amount);
           o.healT = ab.healAura.interval * 0.9; // plusieurs soigneuses ne se cumulent pas
           healed = true;
@@ -914,7 +1153,7 @@ export class Game {
         tm.stomp += ab.stomp.interval;
         const hit = [];
         for (const t of [...this.towers, ...this.echoes]) {
-          if (Math.hypot(t.x - e.x, t.y - e.y) <= ab.stomp.radius) {
+          if (hyp(t.x - e.x, t.y - e.y) <= ab.stomp.radius) {
             // la Source sacrée voisine dissipe une part de l'étourdissement
             t.stunT = Math.max(t.stunT, ab.stomp.stun * (1 - (t.cleanse || 0)));
             hit.push(t.id);
@@ -946,7 +1185,7 @@ export class Game {
       } else {
         const goal = this.nearestGoal(e.x, e.y);
         Object.assign(e, { fx0: e.x, fy0: e.y, fx1: this.grid.cx(goal), fy1: this.grid.cy(goal), s: 0 });
-        e.flyLen = Math.hypot(e.fx1 - e.fx0, e.fy1 - e.fy0);
+        e.flyLen = hyp(e.fx1 - e.fx0, e.fy1 - e.fy0);
       }
     } else if (parent.flying) {
       // Enfant terrestre d'un volant : il atterrit sur la case marchable la plus proche.
@@ -1006,7 +1245,7 @@ export class Game {
       const ty = g.cy(e.target);
       const dx = tx - e.mx;
       const dy = ty - e.my;
-      const d = Math.hypot(dx, dy);
+      const d = hyp(dx, dy);
       // Une barrière sur la case suivante l'arrête au bord de cette case.
       const bar = e.passTile === e.target ? null : this.barrierAt(e.target);
       if (bar) {
@@ -1075,7 +1314,7 @@ export class Game {
     const g = this.grid;
     let dx = g.cx(e.target) - e.mx;
     let dy = g.cy(e.target) - e.my;
-    const d = Math.hypot(dx, dy);
+    const d = hyp(dx, dy);
     if (d > 1e-3) {
       dx /= d;
       dy /= d;
@@ -1092,7 +1331,7 @@ export class Game {
     const k = e.flyLen > 0 ? e.s / e.flyLen : 1;
     const nx = -(e.fy1 - e.fy0) / (e.flyLen || 1);
     const ny = (e.fx1 - e.fx0) / (e.flyLen || 1);
-    const wob = Math.sin(k * Math.PI * 3 + e.seed * 6) * 0.35 * Math.sin(k * Math.PI);
+    const wob = dsin(k * Math.PI * 3 + e.seed * 6) * 0.35 * dsin(k * Math.PI);
     e.x = e.mx = e.fx0 + (e.fx1 - e.fx0) * k + nx * wob;
     e.y = e.my = e.fy0 + (e.fy1 - e.fy0) * k + ny * wob;
     e.dirX = e.fx1 - e.fx0;
@@ -1114,7 +1353,7 @@ export class Game {
       // On recule d'abord vers le centre de la case courante, puis le long de la trace.
       // Au centre, la case précédente de la trace devient aussitôt la case courante
       // (le yokai repart vers elle ; canPlaceStone la protège donc des pierres).
-      if (Math.hypot(g.cx(e.cur) - e.mx, g.cy(e.cur) - e.my) < 1e-3) {
+      if (hyp(g.cx(e.cur) - e.mx, g.cy(e.cur) - e.my) < 1e-3) {
         const back = e.trail[e.trail.length - 1];
         if (back == null || !g.isWalkable(back) || this.flow.dist[back] < 0 || this.barrierAt(back)) {
           e.knock = 0;
@@ -1127,7 +1366,7 @@ export class Game {
       }
       const bx = g.cx(e.cur);
       const by = g.cy(e.cur);
-      const d = Math.hypot(bx - e.mx, by - e.my);
+      const d = hyp(bx - e.mx, by - e.my);
       if (d <= remain) {
         e.mx = bx;
         e.my = by;
@@ -1244,7 +1483,7 @@ export class Game {
     const ty = g.type(i);
     if (ty !== T.PATH && ty !== T.OPEN && ty !== T.BRIDGE) return false;
     if (g.stone[i] || this.flow.dist[i] < 0) return false;
-    if (Math.hypot(g.cx(i) - t.x, g.cy(i) - t.y) > range + 0.01) return false;
+    if (hyp(g.cx(i) - t.x, g.cy(i) - t.y) > range + 0.01) return false;
     if (this.barriers.some((b) => b.tile === i && b.towerId !== t.id)) return false;
     // Pas de mur sous les pieds d'un yokai (pose, ralliement, déplacement) : seule la
     // case suivante l'arrête, il traverserait. Le mur reste bien sûr sur sa propre case.
@@ -1278,7 +1517,7 @@ export class Game {
     for (let i = 0; i < g.size; i++) {
       if (!ok(i)) continue;
       // de préférence sur le trajet actuel des yokai, puis au plus près de la tour
-      const d = (route.has(i) ? 0 : 100) + Math.hypot(g.cx(i) - t.x, g.cy(i) - t.y) + this.flow.dist[i] * 0.001;
+      const d = (route.has(i) ? 0 : 100) + hyp(g.cx(i) - t.x, g.cy(i) - t.y) + this.flow.dist[i] * 0.001;
       if (d < bestD) {
         bestD = d;
         best = i;
@@ -1388,7 +1627,7 @@ export class Game {
       const st = this.towerStats(s);
       const pow = s.echo ? echoPow : 1;
       for (const t of all) {
-        if (t === s || Math.hypot(t.x - s.x, t.y - s.y) > st.range + 0.01) continue;
+        if (t === s || hyp(t.x - s.x, t.y - s.y) > st.range + 0.01) continue;
         if (st.rateBonus) t.rateMult = Math.max(t.rateMult, 1 + st.rateBonus * pow);
         if (st.cleanse) t.cleanse = Math.max(t.cleanse, st.cleanse * pow);
       }
@@ -1588,7 +1827,7 @@ export class Game {
       }
       placed--;
       const owner = this.stoneOwner[i];
-      this.player(owner >= 0 ? owner : this.localPlayer).gold += refund;
+      this.player(owner >= 0 ? owner : 0).gold += refund;
       this.stoneOwner[i] = -1;
     }
     this.stonesPlaced = placed;
@@ -1681,7 +1920,7 @@ export class Game {
     for (const e of this.enemies) {
       if (!this.canTarget(def, e)) continue;
       if (skipDoomed && e.pend >= e.hp) continue;
-      const d = Math.hypot(e.x - t.x, e.y - t.y);
+      const d = hyp(e.x - t.x, e.y - t.y);
       if (d > range + e.size * 0.5) continue;
       let score;
       if (mode === 'last') score = -this.remaining(e);
@@ -1733,7 +1972,7 @@ export class Game {
     let any = false;
     for (const e of this.enemies) {
       if (!this.canTarget(def, e)) continue;
-      if (Math.hypot(e.x - t.x, e.y - t.y) > st.range + e.size * 0.5) continue;
+      if (hyp(e.x - t.x, e.y - t.y) > st.range + e.size * 0.5) continue;
       this.damage(e, (st.auraDps ?? 0) * power * dt, t.element, { dot: true, owner: t.owner });
       any = true;
     }
@@ -1745,7 +1984,7 @@ export class Game {
 
   // Impulsion (Séisme) : tous les yokai au sol dans la portée.
   updatePulse(t, def, st, power) {
-    const hit = this.enemies.filter((e) => this.canTarget(def, e) && Math.hypot(e.x - t.x, e.y - t.y) <= st.range + e.size * 0.5);
+    const hit = this.enemies.filter((e) => this.canTarget(def, e) && hyp(e.x - t.x, e.y - t.y) <= st.range + e.size * 0.5);
     if (!hit.length) {
       t.cooldown = 0;
       return;
@@ -1765,7 +2004,7 @@ export class Game {
   fireBeam(t, def, st, target, power) {
     const dx = target.x - t.x;
     const dy = target.y - t.y;
-    const d = Math.hypot(dx, dy) || 1;
+    const d = hyp(dx, dy) || 1;
     const ux = dx / d;
     const uy = dy / d;
     const x1 = t.x + ux * st.range;
@@ -1793,7 +2032,7 @@ export class Game {
     for (const b of this.barriers) {
       if (!b.alive || b.hp >= b.maxHp) continue;
       const g = this.grid;
-      if (Math.hypot(g.cx(b.tile) - t.x, g.cy(b.tile) - t.y) > st.range + 0.01) continue;
+      if (hyp(g.cx(b.tile) - t.x, g.cy(b.tile) - t.y) > st.range + 0.01) continue;
       b.hp = Math.min(b.maxHp, b.hp + st.heal * power * dt);
       healed = true;
     }
@@ -1810,7 +2049,7 @@ export class Game {
     let dur = 0;
     if (lob) {
       // Tir en cloche : on vise là où le yokai sera à l'impact (anticipation).
-      dur = Math.max(0.35, Math.hypot(target.x - t.x, target.y - t.y) / speed);
+      dur = Math.max(0.35, hyp(target.x - t.x, target.y - t.y) / speed);
       if (!target.blocked && target.stunT <= 0) {
         tx += (target.vx || 0) * dur;
         ty += (target.vy || 0) * dur;
@@ -1819,6 +2058,7 @@ export class Game {
     const p = {
       id: this.nextId++,
       kind: def.projectile,
+      ttype: t.type,
       element: t.element,
       owner: t.owner,
       level: t.level,
@@ -1868,7 +2108,7 @@ export class Game {
         const k = Math.min(1, p.t / p.dur);
         p.x = p.sx + (p.tx - p.sx) * k;
         p.y = p.sy + (p.ty - p.sy) * k;
-        p.h = Math.sin(k * Math.PI) * 1.1;
+        p.h = dsin(k * Math.PI) * 1.1;
         if (k >= 1) this.impact(p, null);
         continue;
       }
@@ -1882,7 +2122,7 @@ export class Game {
       }
       const dx = p.tx - p.x;
       const dy = p.ty - p.y;
-      const d = Math.hypot(dx, dy);
+      const d = hyp(dx, dy);
       const step = p.speed * dt;
       if (d <= step + 0.12) {
         p.x = p.tx;
@@ -1907,7 +2147,7 @@ export class Game {
       for (const e of this.enemies) {
         if (!e.alive || e.spawnT > 0) continue;
         if (p.lob && e.flying) continue;
-        const d = Math.hypot(e.x - p.x, e.y - p.y);
+        const d = hyp(e.x - p.x, e.y - p.y);
         if (d > st.splash + e.size * 0.5) continue;
         const main = e === target;
         const dmg = (st.damage ?? 0) * pw * (main || p.lob ? 1 : 0.5);
@@ -1956,6 +2196,77 @@ export class Game {
     if (r.minLives != null && this.lives < r.minLives) return true;
     return false;
   }
+  // ───────────────────────── état complet (coopération) ─────────────────────────
+
+  // Instantané complet de la partie, en données JSON : sert à resynchroniser un
+  // joueur (arrivée en cours de partie, écart détecté par l'empreinte). L'historique
+  // du Rembobinage n'est pas transmis (trop lourd) : il se reconstitue en 6 s.
+  exportState() {
+    if (this.rewindAnim) return null;
+    const s = { v: 1 };
+    for (const k of Object.keys(this)) {
+      if (EXPORT_SKIP.has(k)) continue;
+      const v = this[k];
+      if (v === undefined || typeof v === 'function') continue;
+      s[k] = JSON.parse(JSON.stringify(v));
+    }
+    s.players = this.players.map((p) => ({ ...p, elements: p.elements.slice() }));
+    s.rng = this.rng.s;
+    s.stones = Array.from(this.grid.stone);
+    s.stoneOwner = Array.from(this.stoneOwner);
+    s.chargedKills = [...this.chargedKills];
+    s.chargedWaves = [...this.chargedWaves];
+    s.projectiles = this.projectiles.map((p) => {
+      const { target, st, ...rest } = p;
+      return { ...JSON.parse(JSON.stringify(rest)), hasTarget: !!target };
+    });
+    s.zoneTimers = this.zones.map((z) => [z.key, z.timer, z.born, z.pulseT ?? 0]);
+    return s;
+  }
+
+  importState(s) {
+    if (!s || s.v !== 1) return false;
+    for (const [k, v] of Object.entries(s)) {
+      if (IMPORT_SPECIAL.has(k) || EXPORT_SKIP.has(k)) continue;
+      this[k] = v;
+    }
+    s.players.forEach((p, i) => {
+      if (this.players[i]) Object.assign(this.players[i], p, { elements: p.elements.slice() });
+    });
+    this.rng.s = s.rng >>> 0;
+    this.grid.stone.set(s.stones);
+    this.stoneOwner.set(s.stoneOwner);
+    this.flow.compute();
+    this.chargedKills = new Set(s.chargedKills);
+    this.chargedWaves = new Set(s.chargedWaves);
+    const byId = new Map(this.enemies.map((e) => [e.id, e]));
+    this.projectiles = s.projectiles.map(({ hasTarget, ...p }) => {
+      const def = this.defs.towers[p.ttype];
+      const st = def ? def.levels[Math.min(p.level, def.levels.length) - 1] : {};
+      return { ...p, st, target: hasTarget ? byId.get(p.targetId) ?? null : null };
+    });
+    this.history = [];
+    this.rewindAnim = null;
+    this.zones = [];
+    computeZones(this);
+    this.recomputeSupport();
+    const timers = new Map(s.zoneTimers.map(([key, timer, born, pulseT]) => [key, { timer, born, pulseT }]));
+    for (const z of this.zones) if (timers.has(z.key)) Object.assign(z, timers.get(z.key));
+    this.events.length = 0;
+    return true;
+  }
+
+  // Empreinte de l'état (entier 32 bits) : deux joueurs synchronisés ont la même.
+  stateHash() {
+    const v = [this.frame, this.lives, this.waveIndex, STATES.indexOf(this.state), this.rng.s | 0, Math.round(this.rewindCharge * 100), this.queue.length];
+    for (const p of this.players) v.push(Math.round(p.gold * 100));
+    for (const e of this.enemies) v.push(e.id, Math.round(e.x * 4096), Math.round(e.y * 4096), Math.round(e.hp * 64));
+    for (const t of this.towers) v.push(t.id, t.level, t.c * 64 + t.r);
+    for (const b of this.barriers) v.push(b.id, Math.round(b.hp * 16), b.alive ? 1 : 0, b.tile);
+    for (const p of this.projectiles) v.push(p.id, Math.round(p.x * 4096), Math.round(p.y * 4096));
+    return fnv(v);
+  }
+
 }
 
 function cloneEnemy(e) {

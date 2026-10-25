@@ -35,7 +35,8 @@ export function bot(strategy, game, opts = {}) {
   // s'il perd, c'est bien que la lanterne seule ne suffit pas.
 
   const defs = game.defs;
-  const gold = () => game.goldOf(pid);
+  // or disponible : celui des poses en construction est déjà promis
+  const gold = () => game.spendable(pid);
   const available = () => game.towersFor(pid).filter((t) => !mono || t === mono);
   const attackOf = (def) => def.attack ?? 'projectile';
   const isSupport = (type) => ['support', 'barrier'].includes(attackOf(defs.towers[type]));
@@ -163,6 +164,7 @@ export function bot(strategy, game, opts = {}) {
     if (g.type(i) !== T.SLOT || game.towerAt(c, r)) return false;
     const se = g.slotElement[i];
     if (se && se !== defs.towers[type].element) return false;
+    if (game.pendingPlacements().some((e) => e.op === 'placeTower' && e.args[1] === c && e.args[2] === r)) return false;
     return !game.echoes.some((t) => t.c === c && t.r === r);
   }
 
@@ -351,6 +353,8 @@ export function bot(strategy, game, opts = {}) {
     if (!opt.stones || !game.canUseStones(pid) || game.towers.length < 2) return false;
     const cost = game.stoneCost();
     if (game.stonesLeft() <= 0 || gold() < cost + 30) return false;
+    // une pierre à la fois : on attend que la précédente soit posée (2 s)
+    if (game.pendingPlacements().some((e) => e.op === 'placeStone')) return false;
     const base = routeLength();
     const cands = [];
     for (let i = 0; i < g.size; i++) {
@@ -386,7 +390,7 @@ export function bot(strategy, game, opts = {}) {
         }
       }
     }
-    if (best >= 0 && bestGain >= 1 && game.placeStone(g.col(best), g.row(best), pid)) {
+    if (best >= 0 && bestGain >= 1 && game.issue('placeStone', [g.col(best), g.row(best)], pid)) {
       log.push(`t=${game.time.toFixed(1)} pierre (${g.col(best)},${g.row(best)}) +${bestGain}`);
       return true;
     }
@@ -416,7 +420,8 @@ export function bot(strategy, game, opts = {}) {
       if (!type || gold() < defs.towers[type].cost) break;
       const slot = bestSlot(type);
       if (!slot) break;
-      if (!game.placeTower(type, slot.c, slot.r, pid)) break;
+      // comme le joueur : la pose passe par la file et la lanterne se construit 2 s
+      if (!game.issue('placeTower', [type, slot.c, slot.r], pid)) break;
       log.push(`t=${game.time.toFixed(1)} pose ${type} (${slot.c},${slot.r})`);
     }
   }

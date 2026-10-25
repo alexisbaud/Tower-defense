@@ -1,4 +1,5 @@
 // Combos élémentaires : détection des paires adjacentes et effets de zone.
+import { hyp, dsin, dcos } from './dmath.js';
 
 export function comboKey(a, b) {
   return a < b ? `${a}+${b}` : `${b}+${a}`;
@@ -59,7 +60,7 @@ export function computeZones(game) {
 }
 
 function inZone(z, e) {
-  return Math.hypot(e.x - z.x, e.y - z.y) <= z.radius + e.size * 0.5;
+  return hyp(e.x - z.x, e.y - z.y) <= z.radius + e.size * 0.5;
 }
 
 // Statuts d'un combo : deux éléments mêlés, donc aucune immunité d'absorption
@@ -113,7 +114,7 @@ export function updateZones(game, dt) {
     } else if (fx.kind === 'tornado') {
       z.timer += dt;
       if (z.timer < fx.interval) continue;
-      const any = game.enemies.some((e) => e.alive && e.spawnT <= 0 && Math.hypot(e.x - z.x, e.y - z.y) <= z.radius + 1);
+      const any = game.enemies.some((e) => e.alive && e.spawnT <= 0 && hyp(e.x - z.x, e.y - z.y) <= z.radius + 1);
       if (!any) {
         z.timer = fx.interval;
         continue;
@@ -146,11 +147,11 @@ export function updateTornadoes(game, dt) {
   for (const t of game.tornadoes) {
     t.life -= dt;
     t.angle += (t.speed / Math.max(0.5, t.orbit)) * dt;
-    t.x = t.cx + Math.cos(t.angle) * t.orbit;
-    t.y = t.cy + Math.sin(t.angle) * t.orbit * 0.85;
+    t.x = t.cx + dcos(t.angle) * t.orbit;
+    t.y = t.cy + dsin(t.angle) * t.orbit * 0.85;
     for (const e of game.enemies) {
       if (!e.alive || e.spawnT > 0) continue;
-      if (Math.hypot(e.x - t.x, e.y - t.y) > t.size + e.size * 0.5) continue;
+      if (hyp(e.x - t.x, e.y - t.y) > t.size + e.size * 0.5) continue;
       game.applyBurn(e, t.dps * 0.25, 1, 'fire');
       game.damage(e, t.dps * dt, 'fire', { dot: true });
       if (t.knockback && e.knock <= 0) game.applyKnockback(e, t.knockback, null);

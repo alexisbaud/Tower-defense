@@ -1,5 +1,5 @@
 // Tests unitaires du moteur (sans navigateur). Usage : node tools/test-core.mjs
-import { Game, STEP } from '../src/core/game.js';
+import { Game, STEP, assignElements } from '../src/core/game.js';
 import { defs } from '../src/data.js';
 
 let failures = 0;
@@ -799,6 +799,110 @@ console.log('Coopération : pierres');
   g.placeStone(4, 2, 0);
   check('retirer la pierre d’un coéquipier : refusé', !g.removeStone(4, 2, 1) && g.grid.stone[g.grid.idx(4, 2)] === 1 && g.canRemoveStone(4, 2, 1).reason === 'owner');
   check('… celui qui l’a posée la retire et est remboursé', g.removeStone(4, 2, 0) && g.goldOf(0) === a0 - g.stoneCost() + Math.floor(g.stoneCost() * g.rules.stoneRefund) && g.goldOf(1) === b0, `${g.goldOf(0)} ${g.goldOf(1)}`);
+}
+
+console.log('Lockstep : file de commandes, construction, déterminisme');
+{
+  // Mathématiques déterministes
+  const { dsin, dcos, hyp } = await import('../src/core/dmath.js');
+  let err = 0;
+  for (let x = -20; x <= 20; x += 0.013) err = Math.max(err, Math.abs(dsin(x) - Math.sin(x)), Math.abs(dcos(x) - Math.cos(x)));
+  check('dsin / dcos précis (< 1e-9)', err < 1e-9, `${err}`);
+  check('hyp = √(x² + y²)', hyp(3, 4) === 5);
+}
+{
+  // Pose différée : la lanterne apparaît après le délai de construction (2 s).
+  const g = new Game(base(), defs);
+  const gold = g.gold;
+  const e = g.issue('placeTower', ['fire', 1, 1]);
+  check('pose mise en file', e && !e.done && g.pendingPlacements().length === 1 && !g.towerAt(1, 1));
+  check('or réservé, pas encore dépensé', g.gold === gold && g.spendable() === gold - defs.towers.fire.cost);
+  check('socle en construction refusé à une autre pose', g.canIssue('placeTower', ['water', 1, 1]).reason === 'pending');
+  run(g, 1.9);
+  check('pas encore construite à 1,9 s', !g.towerAt(1, 1));
+  run(g, 0.2);
+  check('construite à 2 s, or dépensé', g.towerAt(1, 1) && g.gold === gold - defs.towers.fire.cost && g.pendingPlacements().length === 0);
+  // annulation pendant la construction : rien n'est payé
+  const e2 = g.issue('placeTower', ['water', 2, 1]);
+  run(g, 0.5);
+  g.issue('cancel', [e2.id]);
+  run(g, 2);
+  check('annulée en construction : ni lanterne ni dépense', !g.towerAt(2, 1) && g.gold === gold - defs.towers.fire.cost);
+  // annulation juste après la construction : lanterne reprise, prix rendu
+  const e3 = g.issue('placeTower', ['water', 2, 1]);
+  run(g, 2.2);
+  const before = g.gold;
+  g.issue('cancel', [e3.id]);
+  check('annulée juste après : prix rendu', !g.towerAt(2, 1) && g.gold === before + defs.towers.water.cost);
+  // pierre différée
+  const st = g.issue('placeStone', [4, 2]);
+  check('pierre en construction : chemin inchangé', st && !g.grid.stone[g.grid.idx(4, 2)]);
+  run(g, 2.1);
+  check('pierre posée après 2 s', !!g.grid.stone[g.grid.idx(4, 2)]);
+}
+{
+  // Éléments exclusifs à plusieurs, socles des éléments absents rendus universels.
+  check('assignElements : un élément chacun', JSON.stringify(assignElements(['fire', 'water'])) === JSON.stringify([['fire'], ['water']]));
+  check('assignElements : doublon et absence → premier libre', JSON.stringify(assignElements(['fire', 'fire', null])) === JSON.stringify([['fire'], ['water'], ['wind']]));
+  check('assignElements : seul → les quatre', assignElements(['earth'])[0].length === 4);
+  const map = [',,,,S,,,,', ',1#ooo3#,', ',#ooooo#,', ',#ooooo#,', ',##ooo##,', ',,,,.,,,,', ',,,,G,,,,'];
+  const all = Object.keys(defs.towers);
+  const mp = new Game(base({ map, towers: all }), defs, { players: [{ name: 'A', elements: ['fire'] }, { name: 'B', elements: ['water'] }] });
+  check('socle de Vent sans joueur Vent : universel', mp.grid.slotElement[mp.grid.idx(6, 1)] === null && mp.grid.slotElement[mp.grid.idx(1, 1)] === 'fire');
+  check('joueur Feu : seulement ses lanternes', mp.towersFor(0).every((t) => defs.towers[t].element === 'fire') && mp.towersFor(0).length === 3);
+  check('joueur Feu ne pose pas d’Eau', mp.canIssue('placeTower', ['water', 2, 1], 0).reason === 'element');
+  check('pierres réservées au joueur Terre (absent ici)', !mp.canUseStones(0) && !mp.canUseStones(1));
+}
+{
+  // Deux parties identiques recevant les mêmes commandes datées restent identiques ;
+  // un état exporté puis importé continue exactement comme l'original.
+  const lvl = await (await import('../src/data.js')).loadLevel('1-3');
+  const players = [{ name: 'A', elements: ['fire'] }, { name: 'B', elements: ['water'] }, { name: 'C', elements: ['wind'] }];
+  const mk = () => new Game(lvl, defs, { seed: 42, players });
+  const a = mk();
+  const b = mk();
+  const script = [];
+  // commandes : poses de chacun puis vague, rembobinage plus tard
+  const slots = [];
+  for (let i = 0; i < a.grid.size; i++) if (a.grid.type(i) === 3) slots.push([a.grid.col(i), a.grid.row(i)]);
+  const pick = (pid, type) => slots.find(([c, r]) => a.canIssue('placeTower', [type, c, r], pid).ok && !script.some((x) => x.op === 'placeTower' && x.args[1] === c && x.args[2] === r));
+  const plan = [[0, 'fire'], [1, 'water'], [2, 'wind'], [0, 'fire_mortar'], [2, 'wind_bow']];
+  let id = 1;
+  for (const [pid, type] of plan) {
+    const sl = pick(pid, type);
+    if (sl) script.push({ id: id++, frame: 30 + id * 5, issued: 0, pid, op: 'placeTower', args: [type, sl[0], sl[1]] });
+  }
+  script.push({ id: id++, frame: 200, issued: 0, pid: 1, op: 'startNextWave', args: [] });
+  for (const e of script) {
+    a.enqueue({ ...e, args: e.args.slice() });
+    b.enqueue({ ...e, args: e.args.slice() });
+  }
+  let same = true;
+  let fork = null;
+  for (let f = 0; f < 60 * 70; f++) {
+    a.update(STEP);
+    b.update(STEP);
+    if (f === 60 * 25) {
+      // commande tardive commune : appel anticipé et rembobinage si possible
+      const e = { id: id++, frame: a.frame + 45, issued: a.frame, pid: 2, op: 'startNextWave', args: [] };
+      a.enqueue({ ...e });
+      b.enqueue({ ...e });
+    }
+    if (f === 60 * 30) {
+      // copie de b par export/import, puis la partie continue sur les trois
+      fork = mk();
+      fork.importState(JSON.parse(JSON.stringify(b.exportState())));
+    }
+    if (fork && f > 60 * 30) fork.update(STEP);
+    if (f % 30 === 0 && a.stateHash() !== b.stateHash()) same = false;
+  }
+  check('mêmes commandes → même partie (empreintes égales)', same && a.stateHash() === b.stateHash(), `${a.stateHash()} ${b.stateHash()}`);
+  check('partie active et jouée', a.waveIndex >= 1 && a.towers.length >= 3, `${a.waveIndex} ${a.towers.length}`);
+  check('import d’état : continuation identique', fork && fork.stateHash() === a.stateHash(), fork && `${fork.stateHash()} vs ${a.stateHash()} (frame ${fork.frame}/${a.frame})`);
+  const ex = a.exportState();
+  const c2 = mk();
+  c2.importState(JSON.parse(JSON.stringify(ex)));
+  check('export → import → export identique', JSON.stringify(c2.exportState()) === JSON.stringify(ex));
 }
 
 console.log(failures ? `\n${failures} échec(s)` : '\nTous les tests passent');
